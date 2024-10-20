@@ -49,6 +49,8 @@ void updateIntervals();
 void connectMQTT();
 void createPayload(String topic, float value, String timestamp);
 void connect_wifi();
+void sendToMQTT();
+void processFlowData();
 
 void IRAM_ATTR countRisingEdges() {
   count++;
@@ -122,6 +124,20 @@ void setup() {
  * - createPayload(): Creates a payload for a given topic, value, and timestamp.
  * - countRisingEdges(): Interrupt service routine for counting rising edges of flow sensor pulses.
  */
+/**
+ * @brief Main loop function that handles WiFi and MQTT connections, updates time, 
+ *        processes flow data, and sends data to MQTT.
+ * 
+ * This function performs the following tasks:
+ * - Checks and maintains WiFi connection.
+ * - Checks and maintains MQTT connection.
+ * - Calls the loop function of the MQTT client.
+ * - Updates the time using the time client.
+ * - Updates the heater status (placeholder for actual implementation).
+ * - Updates intervals based on the heater status.
+ * - Processes flow data.
+ * - Sends data to the MQTT broker.
+ */
 void loop() {
 
   if (WiFi.status() != WL_CONNECTED) {
@@ -141,8 +157,37 @@ void loop() {
   // Update intervals based on heater status
   updateIntervals();
   
-  unsigned long currentTime = millis();
   
+  processFlowData();
+
+  sendToMQTT();
+
+}
+
+/**
+ * @brief Processes flow data and updates various sensor readings.
+ * 
+ * This function is called periodically to process flow data from a sensor.
+ * It calculates the flow rate, required temperature delta, and creates payloads
+ * for various sensor readings including humidity, temperature, flow, heating power,
+ * battery voltage, and heater status.
+ * 
+ * The function performs the following steps:
+ * - Checks if the sensor interval has elapsed.
+ * - Detaches the interrupt to process the flow data safely.
+ * - In test mode, generates a random count value.
+ * - Calculates the frequency of pulses and the flow rate.
+ * - Calculates the required temperature delta for the heater.
+ * - Resets the count and updates the last sensor time.
+ * - Reattaches the interrupt for the sensor.
+ * - Creates payloads for humidity, temperature, flow, heating power, battery voltage, and heater status.
+ * 
+ * @note The function assumes the presence of global variables and functions such as `millis()`, 
+ * `Serial.print()`, `detachInterrupt()`, `attachInterrupt()`, `random()`, `timeClient.getFormattedTime()`, 
+ * and `createPayload()`.
+ */
+void processFlowData() {
+  unsigned long currentTime = millis();
   if (currentTime - lastTime_sensor >= sensorInterval) {
     Serial.print(".");
  
@@ -198,9 +243,21 @@ void loop() {
     createPayload("paku/status/heater", -1000, timestamp);
     createPayload("paku/status/heater_timer", -1000, timestamp);
     createPayload("paku/status/pump", -1000, timestamp);
-
-
  }
+}
+
+/**
+ * @brief Sends payload data to the MQTT broker if the specified interval has elapsed.
+ *
+ * This function checks if the current time has surpassed the last time data was sent to the MQTT broker
+ * by the defined interval. If so, it iterates through the payloads and publishes each one to the MQTT broker.
+ * After sending the data, it resets the payload index and updates the last time data was sent.
+ *
+ * @note This function assumes that `currentTime`, `lastTime_mqtt`, `mqttInterval`, `payloadIndex`, 
+ *       `payloads`, and `client` are defined and accessible in the scope where this function is used.
+ */
+void sendToMQTT() {
+  unsigned long currentTime = millis();
 
   if (currentTime - lastTime_mqtt >= mqttInterval) {
     Serial.println("send to MQTT");
@@ -213,7 +270,6 @@ void loop() {
     lastTime_mqtt = currentTime;
   }
 }
-
 
 /**
  * @brief Attempts to connect to a WiFi network from a list of SSIDs and passwords.
