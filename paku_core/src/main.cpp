@@ -3,6 +3,12 @@
 #include <ArduinoJson.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include "BLEDevice.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+// BT settings
+bool scanBT_enabled = true;
 
 // WiFi settings
 const char* wifi_ssid[] = {"iPhone", "JosPar_2.4G", "JosPar_paku"};
@@ -51,6 +57,7 @@ void createPayload(String topic, float value, String timestamp);
 void connect_wifi();
 void sendToMQTT();
 void processFlowData();
+void scanBT(void* parameter);
 
 void IRAM_ATTR countRisingEdges() {
   count++;
@@ -87,7 +94,19 @@ void setup() {
     
     // Initialize intervals based on heater status
     updateIntervals();
+    
+    // Create a task for scanning Bluetooth devices
+    xTaskCreate(
+      scanBT,          // Function to be called
+      "scanBT",        // Name of the task
+      10000,           // Stack size (bytes)
+      NULL,            // Parameter to pass
+      1,               // Task priority
+      NULL             // Task handle
+    );
+
     Serial.println("Setup complete.");
+
   }
 
 /**
@@ -156,7 +175,6 @@ void loop() {
 
   // Update intervals based on heater status
   updateIntervals();
-  
   
   processFlowData();
 
@@ -345,6 +363,47 @@ void connectMQTT() {
       delay(5000);
     }
   }
+}
+
+// Function to scan for Bluetooth devices
+void scanBT(void* parameter) {
+  while (scanBT_enabled) {
+    Serial.println("Starting Bluetooth scan...");
+
+    // Initialize BLE
+    BLEDevice::init("");
+
+    // Create a BLE scan object
+    BLEScan* pBLEScan = BLEDevice::getScan();
+    pBLEScan->setActiveScan(true);  // Set active scan to get more data
+    pBLEScan->setInterval(100);     // Set scan interval
+    pBLEScan->setWindow(99);        // Set scan window
+
+    // Start scanning for 5 seconds
+    BLEScanResults foundDevices = pBLEScan->start(5, false);
+
+    // Print the number of devices found
+    Serial.print("Devices found: ");
+    Serial.println(foundDevices.getCount());
+
+    // Iterate through the found devices and print their details
+    for (int i = 0; i < foundDevices.getCount(); i++) {
+      BLEAdvertisedDevice device = foundDevices.getDevice(i);
+      Serial.print("Device ");
+      Serial.print(i + 1);
+      Serial.print(": ");
+      Serial.println(device.toString().c_str());
+    }
+
+    // Clear the scan results
+    pBLEScan->clearResults();
+
+    // Delay before the next scan
+    vTaskDelay(1000 / portTICK_PERIOD_MS);  // Delay for 1 second
+  }
+
+  // Delete the task if scanBT_enabled is set to false
+  vTaskDelete(NULL);
 }
 
 /**
