@@ -1,4 +1,4 @@
-# paku_core
+# paku-core
 Paku core based on ESP32
 For:
 - Heater related
