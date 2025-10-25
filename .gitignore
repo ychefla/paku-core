@@ -1,0 +1,26 @@
+# --- Secrets & credentials ---
+include/secrets.h
+paku_core/include/secrets.h
+**/secrets.h
+**/wifi_credentials.h
+**/*.pem
+**/*.key
+**/*.der
+**/*.p12
+**/.env
+**/.env.*
+
+# --- Local build/output ---
+.pio/
+.build/
+build/
+dist/
+*.bin
+*.elf
+
+# --- Editor/OS noise ---
+.vscode/
+.DS_Store
+
+# --- Misc project data not for Git ---
+data/
