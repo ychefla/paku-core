@@ -1,26 +1,34 @@
-**Path:** `docs/edge/config.md`
-```markdown
 # EDGE configuration
 
 Create a header for secrets (not committed to git).
 
 ## 1) Wi-Fi & MQTT secrets
-Create `include/secrets.h` with:
+
+Copy the template file to create your secrets file:
+```bash
+cp paku_core/include/secrets.h.template paku_core/include/secrets.h
+```
+
+Edit `paku_core/include/secrets.h` with your credentials:
 
 ```cpp
 #pragma once
 
-// Wi-Fi
-static const char* WIFI_SSIDS[] = { "HomeWiFi", "PhoneHotspot", "Van" };
-static const char* WIFI_PASSWORDS[] = { "home-pass", "phone-pass", "van-pass" };
-static const size_t WIFI_COUNT = sizeof(WIFI_SSIDS) / sizeof(WIFI_SSIDS[0]);
+// Wi-Fi Networks (in order of priority)
+#define WIFI_SSID_HOME                "your-home-wifi-ssid"
+#define WIFI_PASSWORD_HOME            "your-home-wifi-password"
+#define WIFI_SSID_IPHONE              "your-iphone-hotspot-ssid"
+#define WIFI_PASSWORD_IPHONE          "your-iphone-hotspot-password"
+#define WIFI_SSID_PAKU                "your-paku-wifi-ssid"
+#define WIFI_PASSWORD_PAKU            "your-paku-wifi-password"
 
-// MQTT
-#define MQTT_HOST        "192.168.1.10"
-#define MQTT_PORT        1883
-#define MQTT_USERNAME    "mqtt_user"
-#define MQTT_PASSWORD    "mqtt_pass"
+// MQTT Broker
+#define MQTT_SERVER                   "your-mqtt-server-hostname"
+#define MQTT_PORT                     1883
+```
 
-// Identity
-#define DEVICE_ID        "edge-1"      // short, URL-safe
-#define MQTT_BASE_TOPIC  "paku"        // topic namespace root
+The firmware will try each WiFi network in sequence until a connection is established.
+
+## 2) Pin Configuration
+
+Pin assignments are defined in `src/pin_config.h`. These are configured for the LilyGo T-Display S3 board and should not need modification unless you're using different hardware.
