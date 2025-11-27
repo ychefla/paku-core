@@ -27,7 +27,10 @@ Edit `paku_core/include/secrets.h` with your credentials:
 #define MQTT_PORT                     1883
 ```
 
-The firmware will try each WiFi network in sequence until a connection is established.
+The firmware will try each WiFi network in the following order until a connection is established:
+1. HOME
+2. IPHONE
+3. PAKU
 
 ## 2) Pin Configuration
 
