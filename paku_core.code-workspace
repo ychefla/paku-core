@@ -8,21 +8,5 @@
 			"path": "paku_core"
 		}
 	],
-	"settings": {
-		"platformio-ide.useBuiltinPIOCore": true
-	},
-	"extensions": {
-		"recommendations": [
-			"platformio.platformio-ide",
-			"ms-vscode.cpptools"
-		]
-	},
-	// This workspace supports both container and local development:
-	// - Container: Use "Reopen in Container" for isolated development
-	// - Local: Open directly on host for USB device access (embedded flashing)
-	// See docs/development-modes.md for details.
-	"launch": {
-		"version": "0.2.0",
-		"configurations": []
-	}
+	"settings": {}
 }

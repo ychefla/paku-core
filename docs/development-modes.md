@@ -18,7 +18,7 @@ Use the development container for an isolated, pre-configured environment.
 ### How to Open
 
 1. Open VS Code
-2. Open the repository folder or `paku_core.code-workspace`
+2. Open `paku.ws.code-workspace` from the parent folder (or the repository folder directly)
 3. When prompted, click **"Reopen in Container"**
    - Or use Command Palette: `Dev Containers: Reopen in Container`
 
@@ -55,7 +55,7 @@ Use local development when you need direct access to USB devices for flashing or
 ### How to Open
 
 1. Open VS Code
-2. Open the repository folder or `paku_core.code-workspace`
+2. Open `paku.ws.code-workspace` from the parent folder (or the repository folder directly)
 3. **Do NOT** reopen in container—stay on the host machine
 
 ### USB Device Access
@@ -102,8 +102,8 @@ You can:
 
 The workspace configuration includes:
 
+- **`../paku.ws.code-workspace`**: Multi-root workspace in the parent folder (`paku/`) that includes both `paku-core` and `paku-iot` repositories. If this file doesn't exist, you can create it or open each repository folder directly.
 - **`.devcontainer/devcontainer.json`**: Container configuration with PlatformIO and USB passthrough attempts
-- **`paku_core.code-workspace`**: Multi-root workspace supporting both modes
 - **Privileged mode**: Enabled in the container for USB access on Linux
 
 ### Why Minimal Changes Matter
