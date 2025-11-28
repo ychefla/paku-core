@@ -83,17 +83,45 @@ The Paku system consists of two main components:
 
 ### MQTT Topic Structure
 
-All topics are prefixed with `paku/` and follow this hierarchy:
+The MQTT topic hierarchy is designed for multi-device support and extensibility.
+
+#### Topic Prefix
+
+All topics use the prefix: `paku/devices/{device_id}/`
+
+Where `{device_id}` is derived from the ESP32 MAC address (e.g., `paku-AABBCC`).
+
+#### Topic Hierarchy
 
 | Topic Pattern | Direction | Description |
 |---------------|-----------|-------------|
-| `paku/temperature/{sensor}/{location}` | EDGE → IOT | Temperature readings |
-| `paku/humidity/{sensor}/{location}` | EDGE → IOT | Humidity readings |
-| `paku/flow/{type}` | EDGE → IOT | Coolant flow measurements |
-| `paku/power/{type}` | EDGE → IOT | Power metrics |
-| `paku/voltage/{source}` | EDGE → IOT | Battery voltage readings |
-| `paku/status/{device}` | EDGE → IOT | Device status updates |
-| `paku/control` | IOT → EDGE | Commands for device control |
+| `paku/devices/{device_id}/state` | EDGE → IOT | Device online/offline status (retained) |
+| `paku/devices/{device_id}/telemetry` | EDGE → IOT | Periodic metrics and sensor data |
+| `paku/devices/{device_id}/cmd` | IOT → EDGE | Inbound commands (JSON) |
+| `paku/devices/{device_id}/lwt` | Broker | Last Will and Testament (offline on disconnect) |
+
+#### Telemetry Sub-topics
+
+Sensor data is published under the telemetry namespace:
+
+| Topic Pattern | Data Type | Description |
+|---------------|-----------|-------------|
+| `.../telemetry/temperature/{location}` | float (°C) | Temperature readings |
+| `.../telemetry/humidity/{location}` | float (%) | Humidity readings |
+| `.../telemetry/flow/{type}` | float (L/min) | Flow measurements |
+| `.../telemetry/power/{type}` | float (W) | Power metrics |
+| `.../telemetry/voltage/{source}` | float (V) | Voltage readings |
+| `.../telemetry/status/{component}` | int | Component status (0/1) |
+
+> **Note**: The current implementation uses a legacy `paku/{type}/{sensor}/{location}` format. 
+> See [INTEGRATION.md](INTEGRATION.md) for migration guidance.
+
+#### Expansion Points
+
+New sensors and devices can be added by:
+- Adding new `{location}` values under existing topic types
+- Adding new topic types under `telemetry/`
+- Registering additional `{device_id}` prefixes for new EDGE devices
 
 ### Payload Format
 
@@ -102,7 +130,20 @@ All sensor data is published as JSON with a consistent format:
 ```json
 {
   "value": 23.5,
-  "timestamp": "12:34:56"
+  "timestamp": "12:34:56",
+  "device_id": "paku-AABBCC"
+}
+```
+
+System telemetry includes additional metadata:
+
+```json
+{
+  "uptime_s": 3600,
+  "rssi": -65,
+  "heap_free": 45000,
+  "fw_version": "1.0.0",
+  "device_id": "paku-AABBCC"
 }
 ```
 

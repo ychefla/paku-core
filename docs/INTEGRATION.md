@@ -46,39 +46,98 @@ On the paku-iot side, configure your MQTT broker to accept connections from paku
    allow_anonymous false
    ```
 
-## Topic Mapping
+## Topic Structure
 
-### Topics Published by paku-core
+### Recommended Topic Hierarchy
+
+The topic structure supports multiple EDGE devices and aligns with paku-iot expectations:
+
+```
+paku/
+└── devices/
+    └── {device_id}/           # e.g., paku-AABBCC (derived from MAC)
+        ├── state              # Online/offline status (retained)
+        ├── lwt                # Last Will and Testament
+        ├── cmd                # Inbound commands
+        └── telemetry/
+            ├── temperature/
+            │   ├── cabin
+            │   ├── kitchen
+            │   ├── lounge
+            │   ├── dryer
+            │   ├── floor
+            │   ├── heater_in
+            │   └── heater_out
+            ├── humidity/
+            │   ├── cabin
+            │   ├── kitchen
+            │   ├── lounge
+            │   └── dryer
+            ├── flow/
+            │   ├── coolant
+            │   └── coolant_frequency
+            ├── power/
+            │   ├── heat
+            │   └── cool
+            ├── voltage/
+            │   ├── car
+            │   └── leisure
+            └── status/
+                ├── heater
+                ├── heater_timer
+                └── pump
+```
+
+### Topic Reference
+
+#### Device State Topics
+
+| Topic | Direction | Retained | Description |
+|-------|-----------|----------|-------------|
+| `paku/devices/{device_id}/state` | EDGE → IOT | Yes | Device status: `online`, `offline` |
+| `paku/devices/{device_id}/lwt` | Broker | Yes | Last Will: set to `offline` on disconnect |
+| `paku/devices/{device_id}/cmd` | IOT → EDGE | No | JSON commands for device control |
+
+#### Telemetry Topics
+
+All telemetry topics follow the pattern: `paku/devices/{device_id}/telemetry/{type}/{location}`
 
 | Topic | Data Type | Unit | Description |
 |-------|-----------|------|-------------|
-| `paku/temperature/moko/cabin` | float | °C | Cabin temperature |
-| `paku/temperature/moko/dryer` | float | °C | Dryer temperature |
-| `paku/temperature/moko/kitchen` | float | °C | Kitchen temperature |
-| `paku/temperature/moko/lounge` | float | °C | Lounge temperature |
-| `paku/temperature/heating/floor` | float | °C | Floor heating temperature |
-| `paku/temperature/heating/heater_in` | float | °C | Heater inlet temperature |
-| `paku/temperature/heating/heater_out` | float | °C | Heater outlet temperature |
-| `paku/temperature/heating/required_dt` | float | °C | Required temperature delta |
-| `paku/humidity/moko/cabin` | float | % | Cabin humidity |
-| `paku/humidity/moko/dryer` | float | % | Dryer humidity |
-| `paku/humidity/moko/kitchen` | float | % | Kitchen humidity |
-| `paku/humidity/moko/lounge` | float | % | Lounge humidity |
-| `paku/flow/coolant` | float | L/min | Coolant flow rate |
-| `paku/flow/coolant_frequency` | float | Hz | Flow sensor frequency |
-| `paku/power/heat` | float | W | Heating power |
-| `paku/power/cool` | float | W | Cooling power |
-| `paku/voltage/car` | float | V | Car battery voltage |
-| `paku/voltage/leisure` | float | V | Leisure battery voltage |
-| `paku/status/heater` | int | - | Heater status (0/1) |
-| `paku/status/heater_timer` | int | - | Heater timer status |
-| `paku/status/pump` | int | - | Pump status |
+| `.../telemetry/temperature/cabin` | float | °C | Cabin temperature |
+| `.../telemetry/temperature/kitchen` | float | °C | Kitchen temperature |
+| `.../telemetry/temperature/lounge` | float | °C | Lounge temperature |
+| `.../telemetry/temperature/dryer` | float | °C | Dryer temperature |
+| `.../telemetry/temperature/floor` | float | °C | Floor heating temperature |
+| `.../telemetry/temperature/heater_in` | float | °C | Heater inlet temperature |
+| `.../telemetry/temperature/heater_out` | float | °C | Heater outlet temperature |
+| `.../telemetry/temperature/required_dt` | float | °C | Required temperature delta |
+| `.../telemetry/humidity/cabin` | float | % | Cabin humidity |
+| `.../telemetry/humidity/kitchen` | float | % | Kitchen humidity |
+| `.../telemetry/humidity/lounge` | float | % | Lounge humidity |
+| `.../telemetry/humidity/dryer` | float | % | Dryer humidity |
+| `.../telemetry/flow/coolant` | float | L/min | Coolant flow rate |
+| `.../telemetry/flow/coolant_frequency` | float | Hz | Flow sensor frequency |
+| `.../telemetry/power/heat` | float | W | Heating power |
+| `.../telemetry/power/cool` | float | W | Cooling power |
+| `.../telemetry/voltage/car` | float | V | Car battery voltage |
+| `.../telemetry/voltage/leisure` | float | V | Leisure battery voltage |
+| `.../telemetry/status/heater` | int | - | Heater status (0/1) |
+| `.../telemetry/status/heater_timer` | int | - | Heater timer status |
+| `.../telemetry/status/pump` | int | - | Pump status |
 
-### Topics Subscribed by paku-core
+### Legacy Topic Mapping
 
-| Topic | Payload | Description |
-|-------|---------|-------------|
-| `paku/control` | JSON | Commands for device control |
+The current firmware uses a legacy topic format. This table maps legacy topics to the recommended structure:
+
+| Legacy Topic | Recommended Topic |
+|--------------|-------------------|
+| `paku/temperature/moko/cabin` | `paku/devices/{id}/telemetry/temperature/cabin` |
+| `paku/humidity/moko/cabin` | `paku/devices/{id}/telemetry/humidity/cabin` |
+| `paku/flow/coolant` | `paku/devices/{id}/telemetry/flow/coolant` |
+| `paku/control` | `paku/devices/{id}/cmd` |
+
+> **Migration Note**: paku-iot should subscribe to both legacy and recommended topic patterns during transition.
 
 ### Payload Format
 
@@ -87,11 +146,27 @@ All sensor data follows this JSON format:
 ```json
 {
   "value": 23.5,
-  "timestamp": "12:34:56"
+  "timestamp": "12:34:56",
+  "device_id": "paku-AABBCC"
 }
 ```
 
-**Note**: Timestamps are in HH:MM:SS format from the NTP client. The paku-iot collector should add full date information server-side.
+**Fields:**
+- `value`: Sensor reading (type depends on topic)
+- `timestamp`: Time in HH:MM:SS format (NTP synchronized)
+- `device_id`: Device identifier (optional but recommended)
+
+> **Note**: paku-iot should add ISO 8601 timestamps server-side for storage.
+
+### Expanding the Topic Structure
+
+To add new sensors or locations:
+
+1. **New location**: Add topic under existing type (e.g., `.../temperature/outdoor`)
+2. **New sensor type**: Add new type under telemetry (e.g., `.../telemetry/pressure/...`)
+3. **New device**: Register new `{device_id}` prefix for additional EDGE devices
+
+Both paku-core and paku-iot should be updated to support new topics.
 
 ## Hardware Setup
 
