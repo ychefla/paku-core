@@ -59,10 +59,13 @@ pio device monitor # Serial monitor (optional)
 ```
 
 ## Documentation
-- [Development Modes](docs/development-modes.md) - Container vs. local development
-- [Quickstart Guide](docs/edge/quickstart.md)
-- [Configuration Reference](docs/edge/config.md)
-- [Naming Conventions](docs/naming.md)
+- [Architecture](ARCHITECTURE.md) - System architecture and data flow
+- [Integration Guide](INTEGRATION.md) - Connecting paku-core to paku-iot
+- [Development Modes](development-modes.md) - Container vs. local development
+- [Quickstart Guide](edge/quickstart.md) - Detailed setup instructions
+- [Configuration Reference](edge/config.md) - Configuration options
+- [Naming Conventions](naming.md) - Terminology and naming
+- [Requirements](requirements.md) - Functional and non-functional requirements
 
 ## Repository Structure
 ```
