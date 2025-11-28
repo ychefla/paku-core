@@ -291,20 +291,24 @@ String PakuIotClient::buildUrl() const {
 PakuIotResult PakuIotClient::sendRequest(const String& jsonPayload) {
     HTTPClient http;
     String url = buildUrl();
+    
+    // Create client on stack to ensure proper cleanup
+    WiFiClient plainClient;
+    WiFiClientSecure secureClient;
 
     // For HTTPS, we need to use WiFiClientSecure
     if (_config.useTls) {
-        WiFiClientSecure* secureClient = new WiFiClientSecure();
-        secureClient->setInsecure(); // Skip certificate verification for now
+        // Note: setInsecure() skips certificate verification.
+        // For production use, implement proper certificate pinning
+        // by calling secureClient.setCACert() with the server's CA certificate.
+        // This is acceptable for development/testing only.
+        secureClient.setInsecure();
         
-        if (!http.begin(*secureClient, url)) {
-            delete secureClient;
+        if (!http.begin(secureClient, url)) {
             return PakuIotResult::ERROR_CONNECTION;
         }
     } else {
-        WiFiClient* client = new WiFiClient();
-        if (!http.begin(*client, url)) {
-            delete client;
+        if (!http.begin(plainClient, url)) {
             return PakuIotResult::ERROR_CONNECTION;
         }
     }
@@ -348,16 +352,6 @@ bool PakuIotClient::enqueue(const TelemetryReading& reading) {
     _queueCount++;
 
     return true;
-}
-
-bool PakuIotClient::dequeue(TelemetryReading& reading) {
-    if (_queueCount == 0) {
-        return false;
-    }
-
-    // Note: This method is not used in current implementation
-    // but provided for future use
-    return false;
 }
 
 PakuIotResult PakuIotClient::httpCodeToResult(int httpCode) {

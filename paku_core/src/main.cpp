@@ -484,7 +484,11 @@ void sendToPakuIot() {
   if (currentTime - lastTime_pakuIot >= pakuIotInterval) {
     Serial.println("Sending to paku-iot...");
     
+    // Store timestamp in a static buffer to ensure pointer validity
+    static char timestampBuf[32];
     String timestamp = timeClient.getFormattedTime();
+    strncpy(timestampBuf, timestamp.c_str(), sizeof(timestampBuf) - 1);
+    timestampBuf[sizeof(timestampBuf) - 1] = '\0';
     
     // Create batch of readings
     TelemetryReading readings[4];
@@ -495,7 +499,7 @@ void sendToPakuIot() {
       readings[readingCount].metric = "flow/coolant";
       readings[readingCount].value = flowRate;
       readings[readingCount].unit = "l_per_min";
-      readings[readingCount].timestamp = timestamp.c_str();
+      readings[readingCount].timestamp = timestampBuf;
       readingCount++;
     }
     
@@ -503,7 +507,7 @@ void sendToPakuIot() {
       readings[readingCount].metric = "temperature/heating/required_dt";
       readings[readingCount].value = requiredDeltaT;
       readings[readingCount].unit = "celsius";
-      readings[readingCount].timestamp = timestamp.c_str();
+      readings[readingCount].timestamp = timestampBuf;
       readingCount++;
     }
     
@@ -511,7 +515,7 @@ void sendToPakuIot() {
     readings[readingCount].metric = "status/heater";
     readings[readingCount].value = (float)heaterStatus;
     readings[readingCount].unit = nullptr;
-    readings[readingCount].timestamp = timestamp.c_str();
+    readings[readingCount].timestamp = timestampBuf;
     readingCount++;
     
     if (readingCount > 0) {

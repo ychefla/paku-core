@@ -187,12 +187,7 @@ private:
     bool enqueue(const TelemetryReading& reading);
 
     /**
-     * @brief Remove and return the oldest message from queue
-     * 
-     * @param reading Output reading structure
-     * @return true if a message was dequeued
-     */
-    bool dequeue(TelemetryReading& reading);
+     * @brief Convert result to HTTP-like status
 
     /**
      * @brief Convert result to HTTP-like status
