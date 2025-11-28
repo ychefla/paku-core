@@ -106,7 +106,7 @@ paku-core includes a BLE scanner for reading data from Ruuvi tags (or equivalent
 
 #### Setup Steps
 
-1. **Power on Ruuvi tags** - Insert batteries and verify LED blinks
+1. **Power on Ruuvi tags** - Insert batteries and verify LED blink
 
 2. **Position tags** - Place in locations to monitor:
    - Cabin
