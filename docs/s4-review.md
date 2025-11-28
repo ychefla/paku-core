@@ -189,7 +189,8 @@ Fields: temperature, humidity, pressure, acceleration (x,y,z), battery voltage, 
    // In scanBT loop
    if (device.haveManufacturerData()) {
      std::string mfr = device.getManufacturerData();
-     if (mfr.length() > 2 && mfr[0] == 0x99 && mfr[1] == 0x04) {
+     // Ruuvi manufacturer ID is 0x0499, transmitted little-endian as [0x99, 0x04]
+     if (mfr.length() > 2 && (uint8_t)mfr[0] == 0x99 && (uint8_t)mfr[1] == 0x04) {
        RuuviData ruuvi;
        if (parseRuuviRAWv2((uint8_t*)mfr.data(), mfr.length(), ruuvi)) {
          // Create and queue payload
@@ -215,8 +216,17 @@ Fields: temperature, humidity, pressure, acceleration (x,y,z), battery voltage, 
 4. **Add configuration for paku-iot endpoint**:
    ```cpp
    // In secrets.h.template
-   #define PAKU_IOT_MQTT_TOPIC_PREFIX  "paku-iot/ingest"
+   // Topic format options (configure based on paku-iot requirements):
+   // Option A: Device-centric topics (recommended for device management)
+   #define PAKU_IOT_MQTT_TOPIC_PREFIX  "devices"
+   // Results in: devices/{device_id}/telemetry
+   
+   // Option B: Ingestion-centric topics (for simpler pub/sub)
+   // #define PAKU_IOT_MQTT_TOPIC_PREFIX  "paku-iot/ingest"
+   // Results in: paku-iot/ingest/{device_id}
    ```
+   
+   > **Note**: The exact topic structure should be confirmed with the paku-iot team during S4-4 implementation. The `devices/{device_id}/telemetry` format aligns with section 2.2 MQTT requirements in `docs/requirements.md`.
 
 ---
 
