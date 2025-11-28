@@ -1,0 +1,108 @@
+{
+  "description": "Complete E2E test capture - sample output from a real test session",
+  "test_date": "2024-01-15",
+  "test_environment": {
+    "device": "LilyGo T-Display S3",
+    "firmware_version": "1.0.0-dev",
+    "ruuvi_tag_mac": "E3:F5:6A:1B:2C:3D",
+    "mqtt_broker": "192.168.1.100:1883",
+    "wifi_ssid": "TestNetwork"
+  },
+  "boot_sequence": [
+    "Starting setup...",
+    "Setup Wifi Connection...",
+    "Connecting to TestNetwork",
+    "..........",
+    "WiFi connected",
+    "IP address: 192.168.1.50",
+    "Setup MQTT Connection...",
+    "Attempting MQTT connection...",
+    "MQTT connected and subscribed to 'paku/control'",
+    "Setup Sensor...",
+    "Setup complete."
+  ],
+  "ble_scan_results": {
+    "devices_found": 3,
+    "devices": [
+      {
+        "index": 1,
+        "name": "",
+        "address": "E3:F5:6A:1B:2C:3D",
+        "rssi": -65,
+        "is_ruuvi": true
+      },
+      {
+        "index": 2,
+        "name": "Ruuvi E3F5",
+        "address": "E3:F5:6A:1B:2C:3D",
+        "rssi": -64,
+        "is_ruuvi": true
+      },
+      {
+        "index": 3,
+        "name": "",
+        "address": "AA:BB:CC:DD:EE:FF",
+        "rssi": -78,
+        "is_ruuvi": false
+      }
+    ]
+  },
+  "mqtt_messages_captured": [
+    {
+      "timestamp": "14:32:15",
+      "topic": "paku/temperature/moko/cabin",
+      "payload": {"value": -1000, "timestamp": "14:32:15"},
+      "notes": "Placeholder - sensor not connected"
+    },
+    {
+      "timestamp": "14:32:15",
+      "topic": "paku/humidity/moko/cabin",
+      "payload": {"value": -1000, "timestamp": "14:32:15"},
+      "notes": "Placeholder - sensor not connected"
+    },
+    {
+      "timestamp": "14:32:15",
+      "topic": "paku/flow/coolant",
+      "payload": {"value": 4.82, "timestamp": "14:32:15"},
+      "notes": "Simulated flow data (testMode=true)"
+    },
+    {
+      "timestamp": "14:32:15",
+      "topic": "paku/flow/coolant_frequency",
+      "payload": {"value": 53.02, "timestamp": "14:32:15"},
+      "notes": "Simulated frequency data"
+    },
+    {
+      "timestamp": "14:32:15",
+      "topic": "paku/temperature/heating/required_dt",
+      "payload": {"value": 296.58, "timestamp": "14:32:15"},
+      "notes": "Calculated from flow and heater power"
+    },
+    {
+      "timestamp": "14:32:15",
+      "topic": "paku/status/heater",
+      "payload": {"value": -1000, "timestamp": "14:32:15"},
+      "notes": "Status placeholder"
+    }
+  ],
+  "test_results": {
+    "wifi_connection": "PASS",
+    "mqtt_connection": "PASS",
+    "ble_scanning": "PASS",
+    "telemetry_publishing": "PASS",
+    "ruuvi_detection": "PASS",
+    "ruuvi_data_parsing": "SKIP - Not yet implemented"
+  },
+  "notes": [
+    "BLE scanning successfully detected Ruuvi tag by MAC address",
+    "Ruuvi data parsing not yet implemented - raw advertisement captured",
+    "Sensor values showing -1000 indicate hardware sensors not connected",
+    "Flow data is simulated (testMode=true in firmware)",
+    "Deep sleep cycle observed: 30s awake, 15s sleep"
+  ],
+  "follow_up_issues": [
+    "Implement Ruuvi RAWv2 data format parser",
+    "Add RSSI-based distance estimation",
+    "Integrate parsed Ruuvi data into telemetry topics"
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "description": "Sample temperature payloads from paku-core",
+  "topic_pattern": "paku/temperature/{location}/{sensor}",
+  "samples": [
+    {
+      "topic": "paku/temperature/moko/cabin",
+      "payload": {
+        "value": 22.5,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Cabin temperature sensor"
+    },
+    {
+      "topic": "paku/temperature/moko/kitchen",
+      "payload": {
+        "value": 24.1,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Kitchen temperature sensor"
+    },
+    {
+      "topic": "paku/temperature/moko/lounge",
+      "payload": {
+        "value": 21.8,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Lounge temperature sensor"
+    },
+    {
+      "topic": "paku/temperature/moko/dryer",
+      "payload": {
+        "value": 35.2,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Dryer area temperature"
+    },
+    {
+      "topic": "paku/temperature/heating/floor",
+      "payload": {
+        "value": 28.5,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Floor heating temperature"
+    },
+    {
+      "topic": "paku/temperature/heating/heater_in",
+      "payload": {
+        "value": 65.3,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Heater inlet temperature"
+    },
+    {
+      "topic": "paku/temperature/heating/heater_out",
+      "payload": {
+        "value": 55.8,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Heater outlet temperature"
+    },
+    {
+      "topic": "paku/temperature/heating/required_dt",
+      "payload": {
+        "value": 12.5,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Required temperature delta for heating"
+    }
+  ]
+}

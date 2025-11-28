@@ -1,0 +1,38 @@
+{
+  "description": "Sample humidity payloads from paku-core",
+  "topic_pattern": "paku/humidity/{location}/{sensor}",
+  "samples": [
+    {
+      "topic": "paku/humidity/moko/cabin",
+      "payload": {
+        "value": 55.2,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Cabin humidity sensor"
+    },
+    {
+      "topic": "paku/humidity/moko/kitchen",
+      "payload": {
+        "value": 62.8,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Kitchen humidity sensor"
+    },
+    {
+      "topic": "paku/humidity/moko/lounge",
+      "payload": {
+        "value": 48.5,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Lounge humidity sensor"
+    },
+    {
+      "topic": "paku/humidity/moko/dryer",
+      "payload": {
+        "value": 72.1,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Dryer area humidity"
+    }
+  ]
+}

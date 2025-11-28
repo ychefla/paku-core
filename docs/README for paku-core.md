@@ -62,7 +62,9 @@ pio device monitor # Serial monitor (optional)
 - [Development Modes](docs/development-modes.md) - Container vs. local development
 - [Quickstart Guide](docs/edge/quickstart.md)
 - [Configuration Reference](docs/edge/config.md)
+- [E2E Testing with Ruuvi](docs/edge/e2e-test-ruuvi.md) - Hardware testing guide
 - [Naming Conventions](docs/naming.md)
+- [Sample Messages](docs/samples/) - Example MQTT payloads
 
 ## Repository Structure
 ```
@@ -75,6 +77,9 @@ paku-core/
 │   ├── boards/         # Custom board definitions
 │   └── platformio.ini  # PlatformIO configuration
 ├── docs/               # Documentation
+│   ├── edge/           # EDGE device docs
+│   └── samples/        # Sample MQTT payloads
+├── tools/              # Development and testing utilities
 └── README.md           # This file
 ```
 

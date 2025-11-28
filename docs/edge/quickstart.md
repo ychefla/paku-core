@@ -42,3 +42,10 @@ pio run            # Build
 pio run -t upload  # Upload to device
 pio device monitor # Serial monitor (optional)
 ```
+
+## Next Steps
+
+After flashing, see [E2E Testing with Ruuvi](e2e-test-ruuvi.md) for:
+- Hardware testing with Ruuvi tags
+- MQTT broker configuration
+- Integration with paku-iot
