@@ -42,3 +42,10 @@ pio run            # Build
 pio run -t upload  # Upload to device
 pio device monitor # Serial monitor (optional)
 ```
+
+## Next Steps
+
+After flashing the firmware:
+
+- See [Architecture](../ARCHITECTURE.md) for system overview and data flow
+- See [Integration Guide](../INTEGRATION.md) for connecting to paku-iot
