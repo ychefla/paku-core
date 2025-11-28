@@ -1,280 +1,264 @@
-# S4-1: Codebase Review and Feature Assessment
+# S4-1 Code Review — Reusable Features Analysis
 
-> Review document for the paku-core repository, identifying reusable components, required changes, and features to preserve for the S4 sprint.
-
-## 1. Executive Summary
-
-The paku-core repository contains ESP32-S3 firmware for the Paku IoT edge device. The codebase is functional but requires modifications to support Ruuvi tag data collection and paku-iot integration. Key findings:
-
-- **Core infrastructure is solid**: WiFi, MQTT, BLE scanning, and display modules work together
-- **BLE scanning exists** but needs enhancement for Ruuvi-specific data parsing
-- **MQTT publishing works** but topic structure needs alignment with paku-iot
-- **Many bundled libraries are unused** and can remain ignored during build
-- **No existing tests** — test infrastructure needs to be established
+**Date:** 2025-11-28  
+**Branch:** `s4/S4-1-review` (based on `dev`)  
+**Purpose:** Identify reusable modules, refactor candidates, and out-of-scope features for the Sprint 4 work.
 
 ---
 
-## 2. Architecture Overview
+## Executive Summary
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        paku-core (ESP32-S3)                     │
-├─────────────────────────────────────────────────────────────────┤
-│  main.cpp                                                       │
-│  ├── setup()          - Initializes WiFi, MQTT, TFT, sensors    │
-│  ├── loop()           - Main control loop                       │
-│  ├── scanBT()         - FreeRTOS task for BLE scanning          │
-│  ├── connect_wifi()   - Multi-SSID connection handler           │
-│  ├── connectMQTT()    - MQTT broker connection                  │
-│  ├── processData()    - Sensor data aggregation                 │
-│  ├── sendToMQTT()     - Payload publishing                      │
-│  └── updateDisplay()  - TFT status display                      │
-├─────────────────────────────────────────────────────────────────┤
-│  Configuration                                                  │
-│  ├── secrets.h         - WiFi/MQTT credentials (git-ignored)    │
-│  ├── pin_config.h      - Hardware pin assignments               │
-│  └── platformio.ini    - Build configuration                    │
-├─────────────────────────────────────────────────────────────────┤
-│  Libraries (bundled in lib/)                                    │
-│  ├── TFT_eSPI          - Display driver (ACTIVE)                │
-│  ├── lvgl              - UI library (IGNORED in build)          │
-│  ├── OneButton         - Button handling (available)            │
-│  ├── SensorLib         - Sensor abstractions (available)        │
-│  └── Others            - Various libraries (IGNORED in build)   │
-└─────────────────────────────────────────────────────────────────┘
-```
+The current `paku-core` codebase is an ESP32-based IoT edge device firmware built with PlatformIO and Arduino framework. It targets the LilyGo T-Display S3 board and provides:
+- Multi-network WiFi connectivity
+- MQTT telemetry publishing
+- TFT display output
+- Bluetooth LE scanning
+- Flow sensor monitoring with ISR-based pulse counting
+- Deep sleep power management
+
+The firmware is functional but monolithic (~613 lines in `main.cpp`). To support sprint goals (S4-3, S4-4), the code needs modularization and cleanup.
 
 ---
 
-## 3. Component Analysis
+## 1. Modules/Components — Reusability Assessment
 
-### 3.1 Reusable with Minimal Changes
+### 1.1 Reusable with Minimal Changes ✅
 
-| Component | Location | Status | Notes |
-|-----------|----------|--------|-------|
-| WiFi connection | `main.cpp:connect_wifi()` | ✅ Ready | Multi-SSID fallback works well |
-| MQTT client | `main.cpp:connectMQTT()` | ✅ Ready | Uses PubSubClient, stable |
-| BLE scanning | `main.cpp:scanBT()` | ⚠️ Needs work | Generic scan, needs Ruuvi parsing |
-| TFT display | `main.cpp:updateDisplay()` | ✅ Ready | Shows status, useful for debugging |
-| Secrets template | `include/secrets.h.template` | ✅ Ready | Well-documented template |
-| Board definition | `boards/lilygo-t-displays3.json` | ✅ Ready | Correct for T-Display S3 |
-| Pin configuration | `src/pin_config.h` | ✅ Ready | Hardware-specific, complete |
+| Component | Location | Description | Sprint Relevance |
+|-----------|----------|-------------|------------------|
+| **WiFi Connection** | `main.cpp:414-460` | Multi-SSID fallback with retry logic | Core requirement |
+| **Pin Configuration** | `src/pin_config.h` | Hardware abstraction for pins | Foundation |
+| **Secrets Template** | `include/secrets.h.template` | Credential management pattern | Best practice |
+| **NTP Time Sync** | `main.cpp:59, 245` | Time synchronization via NTPClient | Telemetry timestamps |
+| **MQTT Client Setup** | `main.cpp:157-158, 471-494` | PubSubClient configuration | Core requirement |
+| **Build Configuration** | `platformio.ini` | Board, platform, and library setup | Foundation |
 
-### 3.2 Modules Requiring Moderate Refactor
+**Rationale:** These components follow established patterns and have clear boundaries. They can be extracted into separate modules with minimal refactoring.
 
-| Component | Location | Required Changes |
-|-----------|----------|------------------|
-| `scanBT()` | `main.cpp:497-535` | Add Ruuvi advertisement parsing, extract temperature/humidity/pressure from manufacturer data |
-| `createPayload()` | `main.cpp:550-557` | Update JSON structure to match paku-iot expected format |
-| `processData()` | `main.cpp:310-368` | Integrate BLE scan results into payload creation |
-| Topic structure | `main.cpp` | Change from `paku/{type}/{location}/{device}` to paku-iot compatible format |
-| Interval configuration | `main.cpp:63-70` | Make configurable via config.h or runtime |
+### 1.2 Modules Requiring Moderate Refactor 🔧
 
-### 3.3 Modules to Remove or Replace
+| Component | Location | Issue | Recommended Action |
+|-----------|----------|-------|-------------------|
+| **Display Initialization** | `main.cpp:117-150` | Mixed with setup; uses raw LCD commands | Extract to `display.cpp/h`; use TFT_eSPI properly |
+| **Payload System** | `main.cpp:80-88, 550-557` | Fixed-size array (30), no overflow protection | Refactor to circular buffer or dynamic list |
+| **Flow Sensor** | `main.cpp:310-368` | Hardcoded calibration, mixed concerns | Extract to `sensors/flow.cpp` with config |
+| **Interval Management** | `main.cpp:63-78, 566-586` | Static state, heater-coupled logic | Decouple; make intervals configurable |
+| **sendToMQTT** | `main.cpp:380-393` | Topic hardcoded, no error handling | Add topic prefix config per requirements.md |
 
-| Component | Reason | Action |
-|-----------|--------|--------|
-| Flow sensor code | Not relevant to Ruuvi | **Preserve** but disable (out of scope) |
-| Heater control | Not in S4 scope | **Preserve** but disable (out of scope) |
-| Hardware-specific LCD init | Legacy code | **Keep** — needed for display |
+**Refactor Priority:** Medium — These need cleanup before S4-3/S4-4 work to avoid technical debt accumulation.
 
-### 3.4 Out-of-Scope Features to Preserve
+### 1.3 Modules Likely to Be Removed or Replaced ❌
 
-These features exist in the codebase and should **NOT be removed**. They represent future functionality:
+| Component | Location | Reason | Recommendation |
+|-----------|----------|--------|----------------|
+| **LCD_MODULE_CMD_1 commands** | `main.cpp:22-44` | ST7789V raw commands; TFT_eSPI handles this | Remove; rely on library init |
+| **Hardcoded test mode** | `main.cpp:77, 318-320` | `testMode = true` simulates random data | Remove or make runtime configurable |
+| **Duplicate loop docstrings** | `main.cpp:181-228` | Redundant documentation | Keep one, remove duplicate |
+| **Version check errors** | `main.cpp:612-613` | Outdated ESP-IDF version constraint | Update or remove for compatibility |
+| **Unused BLE globals** | `main.cpp:48` | `scanBT_enabled` never toggled runtime | Consider removing if not needed |
 
-| Feature | Location | Reason to Keep |
-|---------|----------|----------------|
-| Heater monitoring | `main.cpp:76-88, 310-368` | Future home automation integration |
-| Flow sensor | `main.cpp:101-104, 310-330` | Future flow meter support |
-| Temperature topics (floor, heater_in, heater_out) | `main.cpp:346-349` | Future sensor expansion |
-| Power topics | `main.cpp:356-357` | Future power monitoring |
-| Voltage monitoring | `main.cpp:360-361` | Future battery monitoring |
-| Sleep mode | `main.cpp:253-270` | Power optimization, may be useful |
-| Humidity topics | `main.cpp:336-339` | Future sensor expansion |
-| lvgl library | `lib/lvgl/` | Future advanced UI |
-| OneButton library | `lib/OneButton/` | Future button interactions |
-| Audio library | `lib/ESP32-audioI2S-3.0.6/` | Future audio notifications |
+### 1.4 Third-Party Libraries Assessment
 
----
+| Library | Status in `lib/` | Used | Action |
+|---------|------------------|------|--------|
+| TFT_eSPI | Local copy | ✅ Yes | Keep — display driver |
+| lvgl + lv_conf.h | Local copy | ❌ No (lib_ignore) | Remove if not planned |
+| TouchLib | Local copy | ❌ No (lib_ignore) | Remove if not planned |
+| SensorLib | Local copy | ❌ No | Evaluate for sensor abstraction |
+| arduino-nofrendo | Local copy | ❌ No (lib_ignore) | Remove — NES emulator irrelevant |
+| OneButton | Local copy | ❌ No | Keep — useful for button handling |
+| DabbleESP32 | Local copy | ❌ No (lib_ignore) | Remove if not needed |
+| Adafruit_MPR121 | Local copy | ❌ No (lib_ignore) | Remove if not needed |
+| PCA95x5, PCF8575 | Local copy | ❌ No (lib_ignore) | Remove if not needed |
+| GFX Library | Local copy | ❌ No (lib_ignore) | Remove — redundant with TFT_eSPI |
+| ESP32-audioI2S | Local copy | ❌ No | Remove if not planned |
 
-## 4. Ruuvi Tag Integration Requirements
-
-### 4.1 What Ruuvi Tags Broadcast
-
-Ruuvi tags broadcast BLE advertisements containing sensor data in manufacturer-specific format (RAWv2 format):
-
-```
-Manufacturer ID: 0x0499 (Ruuvi Innovations)
-Data Format: 5 (RAWv2)
-Fields: temperature, humidity, pressure, acceleration (x,y,z), battery voltage, tx power, movement counter, measurement sequence
-```
-
-### 4.2 Required Code Changes
-
-1. **Parse Ruuvi advertisements in `scanBT()`**:
-   - Filter for manufacturer ID 0x0499
-   - Decode RAWv2 data format
-   - Extract: temperature, humidity, pressure, battery voltage
-
-2. **Create Ruuvi-specific payloads**:
-   - New function: `parseRuuviData(BLEAdvertisedDevice& device)`
-   - New function: `createRuuviPayload(RuuviData& data)`
-
-3. **Update MQTT topics** for paku-iot compatibility:
-   - Current: `paku/temperature/moko/cabin`
-   - Proposed: `devices/{device_id}/telemetry` or as specified by paku-iot
+**Recommendation:** Clean up unused libraries to reduce repository size and build complexity. Keep only TFT_eSPI, OneButton, and SensorLib (if sensors are planned).
 
 ---
 
-## 5. Build and Configuration Issues
+## 2. Features Out of Current Sprint Scope — Preserve for Later
 
-### 5.1 Known Build Considerations
+These features exist in the codebase but are not part of the immediate sprint work. They should be preserved and cataloged for future implementation.
 
-| Issue | Severity | Resolution |
-|-------|----------|------------|
-| `secrets.h` missing | Blocking | Copy from template (documented in README) |
-| ESP-IDF v5 unsupported | Warning | Code has `#error` for IDF v5, use Arduino ESP32 < 3.0 |
-| TFT library config | Warning | Requires `Setup206_LilyGo_T_Display_S3.h` selection |
-| Platform version locked | Info | `espressif32@6.5.0` is explicit, good for reproducibility |
+| Feature | Location | Status | Preservation Notes |
+|---------|----------|--------|-------------------|
+| **Bluetooth LE Scanning** | `main.cpp:497-535` | Functional (FreeRTOS task) | Keep code; document for future proximity features |
+| **Deep Sleep** | `main.cpp:253-270` | Partially implemented | Keep; essential for battery operation |
+| **Heater Control Logic** | `main.cpp:569-586` | Stub (status hardcoded) | Keep structure; add actual control later |
+| **Multiple Sensor Types** | `main.cpp:336-366` | Placeholders (`-1000` values) | Keep topic structure; implement sensors later |
+| **Touch Display Support** | `lib/TouchLib` | Library present, not used | Keep for interactive UI later |
+| **LVGL Graphics** | `lib/lvgl` | Library present, ignored | Keep for rich UI; low priority |
+| **Battery Voltage Reading** | `pin_config.h:42` | Pin defined, not read | Keep; implement battery monitoring |
+| **OTA Updates** | Not implemented | Mentioned in requirements.md | Plan for v1.1 per roadmap |
 
-### 5.2 Dependencies (platformio.ini)
-
-| Library | Version | Purpose | Status |
-|---------|---------|---------|--------|
-| PubSubClient | ^2.8 | MQTT client | ✅ Required |
-| ArduinoJson | ^7.2.0 | JSON serialization | ✅ Required |
-| NTPClient | ^3.2.1 | Time synchronization | ✅ Required |
-| TFT_eSPI | bundled | Display driver | ✅ Required |
+**Action:** Tag these features as `// TODO(future): <description>` comments to ensure they're not accidentally removed.
 
 ---
 
-## 6. Risks and Mitigations
+## 3. Risks and Technical Debt
+
+### 3.1 High-Risk Issues
+
+| Risk | Impact | Location | Mitigation |
+|------|--------|----------|------------|
+| **Monolithic main.cpp** | Hard to test, maintain | `src/main.cpp` | Split into modules (network, display, sensors, mqtt) |
+| **Blocking WiFi/MQTT loops** | Watchdog timeout risk | `connect_wifi`, `connectMQTT` | Add timeout limits; use non-blocking patterns |
+| **No error handling for MQTT publish** | Silent data loss | `main.cpp:387` | Check return value of `client.publish()` |
+| **ESP-IDF version constraint** | Won't compile on newer SDK | `main.cpp:612-613` | Update or conditionally compile |
+| **Hardcoded topic prefixes** | Violates requirements.md | `main.cpp:336-366` | Use `devices/{device_id}/` per spec |
+
+### 3.2 Medium-Risk Issues
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| BLE + WiFi coexistence | Medium | ESP32-S3 handles this well, but test carefully |
-| Memory pressure | Medium | Limit BLE scan results, use static buffers |
-| MQTT message loss | Low | Current QoS 0 is fine; consider QoS 1 for critical data |
-| Display refresh blocking | Low | Current 1s update is acceptable |
+| Fixed payload buffer (30) | Overflow if too many sensors | Use dynamic allocation or larger buffer |
+| No device_id implementation | Can't identify devices | Generate from MAC address per requirements.md |
+| Missing telemetry heartbeat | No health monitoring | Add per requirements.md 2.3 |
+| Serial-only logging | No remote visibility | Add optional MQTT logging per 2.4 |
+
+### 3.3 Technical Debt
+
+- Duplicate code between `tft.println()` for console and display
+- Magic numbers throughout (e.g., `30`, `5000`, `120`)
+- Inconsistent naming (`wifi_ssid` vs `mqtt_server`, `payloadIndex` vs `lastTime_sensor`)
+- No unit tests in `test/` directory
+- Large unused library footprint in `lib/`
 
 ---
 
-## 7. Concrete Code Changes for S4-3 and S4-4
+## 4. Recommended Code Changes for Sprint Work
 
-### S4-3: Fix Build and Run
+### 4.1 Prerequisites for S4-3 and S4-4
 
-1. **Document secrets setup** — already done in README
-2. **Verify build** with `pio run`
-3. **Add build CI workflow** — `.github/workflows/build.yml`
-4. **Smoke test** — device boots, connects WiFi, publishes heartbeat
+Based on the sprint requirements, the following changes are needed to enable subsequent tasks:
 
-### S4-4: paku-iot Integration
+#### Priority 1 — Foundation (Required for S4-3)
 
-1. **Add Ruuvi parser module**:
-   ```cpp
-   // src/ruuvi_parser.h / ruuvi_parser.cpp
-   struct RuuviData {
-     String mac;
-     float temperature;
-     float humidity;
-     float pressure;
-     float battery;
-     int rssi;
-   };
-   bool parseRuuviRAWv2(uint8_t* data, size_t len, RuuviData& result);
+1. **Create modular structure**
+   ```
+   src/
+   ├── main.cpp          # Setup/loop only
+   ├── network/
+   │   ├── wifi.cpp/h    # WiFi connection logic
+   │   └── mqtt.cpp/h    # MQTT client wrapper
+   ├── display/
+   │   └── display.cpp/h # TFT initialization and updates
+   ├── sensors/
+   │   └── flow.cpp/h    # Flow sensor handling
+   └── config.h          # Configurable constants
    ```
 
-2. **Update scanBT() to use parser**:
+2. **Implement device_id**
    ```cpp
-   // In scanBT loop
-   if (device.haveManufacturerData()) {
-     std::string mfr = device.getManufacturerData();
-     // Ruuvi manufacturer ID is 0x0499, transmitted little-endian as [0x99, 0x04]
-     if (mfr.length() > 2 && (uint8_t)mfr[0] == 0x99 && (uint8_t)mfr[1] == 0x04) {
-       RuuviData ruuvi;
-       if (parseRuuviRAWv2((uint8_t*)mfr.data(), mfr.length(), ruuvi)) {
-         // Create and queue payload
-       }
-     }
+   // In config.h or identity.cpp
+   String getDeviceId() {
+       uint8_t mac[6];
+       WiFi.macAddress(mac);
+       // Uses last 3 bytes of MAC for device ID (unique per device on same network).
+       // For large deployments, consider using all 6 bytes or a UUID.
+       return String("paku-") + String(mac[3], HEX) + String(mac[4], HEX) + String(mac[5], HEX);
    }
    ```
 
-3. **Create paku-iot compatible payload**:
-   ```cpp
-   // JSON format to match paku-iot expectations
-   {
-     "device_id": "ruuvi-{MAC}",
-     "timestamp": "2024-01-01T12:00:00Z",
-     "temperature": 21.5,
-     "humidity": 45.0,
-     "pressure": 1013.25,
-     "battery": 2.95,
-     "rssi": -65
-   }
-   ```
+3. **Fix topic structure** — Change from `paku/humidity/...` to `devices/{device_id}/telemetry`
 
-4. **Add configuration for paku-iot endpoint**:
-   ```cpp
-   // In secrets.h.template
-   // Topic format options (configure based on paku-iot requirements):
-   // Option A: Device-centric topics (recommended for device management)
-   #define PAKU_IOT_MQTT_TOPIC_PREFIX  "devices"
-   // Results in: devices/{device_id}/telemetry
-   
-   // Option B: Ingestion-centric topics (for simpler pub/sub)
-   // #define PAKU_IOT_MQTT_TOPIC_PREFIX  "paku-iot/ingest"
-   // Results in: paku-iot/ingest/{device_id}
-   ```
-   
-   > **Note**: The exact topic structure should be confirmed with the paku-iot team during S4-4 implementation. The `devices/{device_id}/telemetry` format aligns with section 2.2 MQTT requirements in `docs/requirements.md`.
+4. **Add config.h** for compile-time settings (intervals, log level, topic prefix)
+
+#### Priority 2 — Cleanup (Recommended for S4-4)
+
+5. **Remove unused libraries** from `lib/`
+6. **Remove ESP-IDF version check** or update for compatibility
+7. **Add basic error handling** to WiFi/MQTT connection loops
+8. **Implement non-blocking reconnection** for network failures
+9. **Add firmware version macro** per requirements.md
+
+#### Priority 3 — Nice to Have
+
+10. Clean up duplicate docstrings
+11. Add `.clang-format` for consistent code style
+12. Create stub unit tests in `test/`
 
 ---
 
-## 8. Test Strategy (for S4-5)
+## 5. Cleanup Checklist
 
-### Unit Tests
-- Ruuvi RAWv2 parser (can be tested on host with mock data)
-- JSON payload generation
-- Configuration loading
+### Files to Keep
 
-### Integration Tests
-- WiFi connection + MQTT publish (requires device)
-- BLE scan + data extraction (requires Ruuvi tag)
+- [x] `paku_core/src/main.cpp` — refactor, don't remove
+- [x] `paku_core/src/pin_config.h` — keep as-is
+- [x] `paku_core/src/img_logo.h` — keep for boot splash
+- [x] `paku_core/include/secrets.h.template` — keep
+- [x] `paku_core/platformio.ini` — keep, update lib_ignore
+- [x] `paku_core/boards/lilygo-t-displays3.json` — keep
+- [x] `paku_core/lib/TFT_eSPI/` — keep (display driver)
+- [x] `paku_core/lib/OneButton/` — keep (button handler)
+- [x] All `docs/` files — keep and update
 
-### Mocking Strategy
-- Use simulated BLE data for CI
-- Mock MQTT broker for integration tests
+### Files/Directories to Remove
 
----
+- [ ] `paku_core/lib/arduino-nofrendo/` — NES emulator, not needed
+- [ ] `paku_core/lib/GFX Library for Arduino/` — redundant
+- [ ] `paku_core/lib/DabbleESP32/` — not used
+- [ ] `paku_core/lib/Adafruit_MPR121/` — not used
+- [ ] `paku_core/lib/PCA95x5/` — not used
+- [ ] `paku_core/lib/PCF8575 library/` — not used
+- [ ] `paku_core/lib/ESP32-audioI2S-3.0.6/` — not used
+- [ ] `paku_core/lib/lvgl/` — not currently used (keep if UI planned)
+- [ ] `paku_core/lib/lv_conf.h` — not currently used
+- [ ] `todo` file at root — merge into issue tracker
 
-## 9. Files Modified/Added Summary
+### Files to Evaluate
 
-| File | Action | Purpose |
-|------|--------|---------|
-| `docs/s4-review.md` | **Added** | This review document |
-| `src/ruuvi_parser.h` | To Add (S4-4) | Ruuvi data structures |
-| `src/ruuvi_parser.cpp` | To Add (S4-4) | Ruuvi parsing implementation |
-| `src/main.cpp` | To Modify (S4-4) | Integration of Ruuvi parser |
-| `include/config.h` | To Add (S4-4) | Configuration options |
-| `.github/workflows/build.yml` | To Add (S4-3) | CI build verification |
-| `docs/ARCHITECTURE.md` | To Add (S4-2) | Architecture documentation |
-| `docs/INTEGRATION.md` | To Add (S4-2) | paku-iot integration docs |
-
----
-
-## 10. Recommendations
-
-1. **Start with S4-3** — ensure the project builds cleanly before adding features
-2. **Create minimal Ruuvi parser** — don't over-engineer; parse only needed fields
-3. **Preserve existing features** — use `#ifdef` guards rather than deletion
-4. **Add CI early** — prevents regression during integration work
-5. **Document as you go** — update README/docs with each change
+- [ ] `paku_core/lib/SensorLib/` — evaluate for sensor abstraction
+- [ ] `paku_core/lib/TouchLib/` — keep if touch UI planned
 
 ---
 
-## Appendix: Reference Links
+## 6. Next Steps (Prioritized)
 
-- [Ruuvi RAWv2 Data Format](https://docs.ruuvi.com/communication/bluetooth-advertisements/data-format-5-rawv2)
-- [paku-iot Repository](https://github.com/ychefla/paku-iot)
-- [ESP32 BLE Arduino Documentation](https://github.com/espressif/arduino-esp32/tree/master/libraries/BLE)
-- [PlatformIO ESP32 Documentation](https://docs.platformio.org/en/latest/platforms/espressif32.html)
+| # | Task | Sprint | Effort |
+|---|------|--------|--------|
+| 1 | Create `config.h` with constants | S4-3 | Low |
+| 2 | Implement `getDeviceId()` from MAC | S4-3 | Low |
+| 3 | Fix MQTT topic structure | S4-3 | Medium |
+| 4 | Extract WiFi to `network/wifi.cpp` | S4-3 | Medium |
+| 5 | Extract MQTT to `network/mqtt.cpp` | S4-3 | Medium |
+| 6 | Remove unused libraries | S4-4 | Low |
+| 7 | Add error handling to network code | S4-4 | Medium |
+| 8 | Extract display code | S4-4 | Medium |
+| 9 | Add telemetry heartbeat | S4-4 | Low |
+| 10 | Create unit test stubs | Future | Medium |
+
+---
+
+## 7. Appendix
+
+### A. File Statistics
+
+```
+paku_core/src/main.cpp:     613 lines
+paku_core/src/pin_config.h:  53 lines
+Total project source:       ~666 lines (excluding libraries)
+```
+
+### B. External Dependencies (from platformio.ini — verified)
+
+```ini
+lib_deps = 
+    knolleary/PubSubClient@^2.8
+    bblanchon/ArduinoJson@^7.2.0
+    arduino-libraries/NTPClient@^3.2.1
+```
+
+### C. Reference Documents
+
+- `docs/requirements.md` — EDGE device requirements specification
+- `docs/README for paku-core.md` — Project overview
+- `docs/development-modes.md` — Container vs. local development
+- `docs/edge/quickstart.md` — Build and flash instructions
+- `docs/edge/config.md` — Configuration reference
+
+---
+
+*Review completed by automated analysis. Manual verification recommended before implementing changes.*
