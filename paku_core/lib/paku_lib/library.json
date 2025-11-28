@@ -1,0 +1,16 @@
+{
+    "name": "paku_lib",
+    "version": "1.0.0",
+    "description": "Core library for Paku IoT system - testable business logic",
+    "keywords": ["iot", "paku", "mqtt", "flow"],
+    "authors": [
+        {
+            "name": "Paku Team"
+        }
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/ychefla/paku-core.git"
+    },
+    "license": "MIT"
+}

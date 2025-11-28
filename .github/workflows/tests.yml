@@ -1,0 +1,65 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, dev, 's4/**' ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Configure tests
+        run: |
+          mkdir -p test/build
+          cd test/build
+          cmake ..
+
+      - name: Build tests
+        run: |
+          cd test/build
+          cmake --build .
+
+      - name: Run unit tests
+        run: |
+          cd test/build
+          ./test_payload
+          ./test_intervals
+          ./test_flow
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Build integration test
+        run: |
+          mkdir -p test/build
+          cd test/build
+          cmake ..
+          cmake --build .
+
+      - name: Run integration tests
+        run: |
+          cd test/build
+          ./test_integration
