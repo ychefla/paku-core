@@ -1,17 +1,8 @@
 #pragma once
 
-// #define WIFI_SSID                    "Your-ssid"
-// #define WIFI_PASSWORD                "Your-password"
-
-#define WIFI_SSID_IPHONE                    "iPhone"
-#define WIFI_PASSWORD_IPHONE                "1234567890"
-#define WIFI_SSID_HOME                    "JosPar_2.4G"
-#define WIFI_PASSWORD_HOME                "V11vuskaBaabuska"
-#define WIFI_SSID_PAKU                    "JosPar_paku"
-#define WIFI_PASSWORD_PAKU                "V11vuskaBaabuska"
-
-#define MQTT_SERVER                   "static.107.192.27.37.clients.your-server.de"                                       
-#define MQTT_PORT                     1883
+// Include secrets (WiFi and MQTT credentials)
+// Copy include/secrets.h.template to include/secrets.h and fill in your credentials
+#include "secrets.h"
 
 
 #define WIFI_CONNECT_WAIT_MAX        (30 * 1000)
