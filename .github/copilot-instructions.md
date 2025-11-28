@@ -123,10 +123,10 @@ paku-core/
 
 ## Dependencies
 
-Managed via PlatformIO:
-- PubSubClient ^2.8 - MQTT client
-- ArduinoJson ^7.2.0 - JSON serialization
-- NTPClient ^3.2.1 - Time synchronization
+Managed via PlatformIO (see `paku_core/platformio.ini`):
+- PubSubClient@^2.8 - MQTT client
+- ArduinoJson@^7.2.0 - JSON serialization
+- NTPClient@^3.2.1 - Time synchronization
 - TFT_eSPI (bundled) - Display driver
 
 ## Best Practices for Tasks
