@@ -11,7 +11,6 @@
 #include "ruuvi.h"
 #include "payload.h"
 #include "flow.h"
-#include <cstdio>
 
 void setUp(void) {}
 void tearDown(void) {}

@@ -28,12 +28,12 @@ public:
     String(long value) : _str(std::to_string(value)) {}
     String(unsigned long value) : _str(std::to_string(value)) {}
     String(float value) {
-        char buffer[32];
+        char buffer[64];  // Increased buffer size for safety with extreme values
         snprintf(buffer, sizeof(buffer), "%.2f", value);
         _str = buffer;
     }
     String(double value) {
-        char buffer[32];
+        char buffer[64];  // Increased buffer size for safety with extreme values
         snprintf(buffer, sizeof(buffer), "%.2f", value);
         _str = buffer;
     }

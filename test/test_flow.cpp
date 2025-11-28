@@ -4,7 +4,6 @@
  */
 #include <unity.h>
 #include "flow.h"
-#include <cmath>
 
 void setUp(void) {
     // Called before each test
