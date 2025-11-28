@@ -1,5 +1,14 @@
 # EDGE quickstart (ESP32 + PlatformIO)
 
+## Development Modes
+
+This project supports both **container** and **local** development:
+
+- **Container**: Isolated, reproducible environment (use "Reopen in Container" in VS Code)
+- **Local**: Direct USB access for flashing physical devices
+
+For embedded development with USB flashing, **local development is recommended** for reliable device access. See [development-modes.md](../development-modes.md) for details.
+
 ## Requirements
 - VS Code + PlatformIO extension, or PlatformIO CLI
 - LilyGo T-Display S3 (ESP32-S3) board

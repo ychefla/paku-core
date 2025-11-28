@@ -1,0 +1,36 @@
+{
+    "name": "Paku EDGE Development",
+    "image": "mcr.microsoft.com/devcontainers/base:debian",
+    "features": {
+        "ghcr.io/devcontainers/features/python:1": {
+            "version": "3.11"
+        }
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "platformio.platformio-ide",
+                "ms-vscode.cpptools"
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash"
+            }
+        }
+    },
+    "postCreateCommand": "pip install platformio",
+    "remoteUser": "vscode",
+
+    // USB device passthrough for embedded development.
+    // NOTE: USB passthrough requires Docker Desktop or a privileged container.
+    // SECURITY: The mount below exposes all USB devices to the container.
+    // This is necessary for ESP32 flashing but grants broad device access.
+    // For local development with physical USB devices, open the workspace
+    // directly on the host machine (not in a container) for seamless access.
+    // See docs/development-modes.md for details.
+    "runArgs": [
+        "--privileged"
+    ],
+    "mounts": [
+        "source=/dev/bus/usb,target=/dev/bus/usb,type=bind"
+    ]
+}

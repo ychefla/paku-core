@@ -20,6 +20,13 @@ ESP32-based edge firmware for the Paku IoT system.
 
 ## Development Setup
 
+This workspace supports both **container** and **local** development modes:
+
+- **Container**: Use "Reopen in Container" in VS Code for an isolated, pre-configured environment
+- **Local**: Open directly on host machine for USB device access (recommended for flashing)
+
+> **Note**: For embedded development requiring USB flashing, local development is recommended for reliable device access. While USB passthrough in containers is supported, it may not work on all platforms. See [Development Modes](docs/development-modes.md) for details.
+
 ### Prerequisites
 - [VS Code](https://code.visualstudio.com/) with [PlatformIO extension](https://platformio.org/install/ide?install=vscode)
 - Or [PlatformIO CLI](https://docs.platformio.org/en/latest/core/installation.html)
@@ -52,6 +59,7 @@ pio device monitor # Serial monitor (optional)
 ```
 
 ## Documentation
+- [Development Modes](docs/development-modes.md) - Container vs. local development
 - [Quickstart Guide](docs/edge/quickstart.md)
 - [Configuration Reference](docs/edge/config.md)
 - [Naming Conventions](docs/naming.md)
@@ -59,6 +67,7 @@ pio device monitor # Serial monitor (optional)
 ## Repository Structure
 ```
 paku-core/
+├── .devcontainer/      # Development container configuration
 ├── paku_core/          # PlatformIO project
 │   ├── src/            # Source code
 │   ├── include/        # Header files (including secrets.h)
