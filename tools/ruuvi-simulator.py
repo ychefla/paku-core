@@ -21,7 +21,8 @@ import argparse
 import json
 import random
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 
 try:
     import paho.mqtt.client as mqtt
@@ -44,7 +45,7 @@ class RuuviSimulator:
 
     def get_reading(self) -> dict:
         """Generate a simulated Ruuvi sensor reading."""
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
         return {
             "mac": self.mac_address,
@@ -116,9 +117,10 @@ def main():
 
     args = parser.parse_args()
 
-    # Create MQTT client
+    # Create MQTT client with unique ID to avoid conflicts
+    client_id = f"ruuvi-simulator-{uuid.uuid4().hex[:8]}"
     client = mqtt.Client(
-        client_id="ruuvi-simulator",
+        client_id=client_id,
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2
     )
     client.on_connect = on_connect

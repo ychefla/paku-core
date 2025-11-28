@@ -118,7 +118,7 @@ Device 1: Name: , Address: e3:f5:6a:1b:2c:3d, ...
 
 ## Configuring paku-iot
 
-> **Note**: paku-iot is a separate repository for host-side tools and services. Refer to the [paku-iot documentation](https://github.com/ychefla/paku-iot) for detailed setup.
+> **Note**: paku-iot is a separate repository for host-side tools and services. If available, refer to the paku-iot documentation for detailed setup. The repository may be located at the same GitHub organization as paku-core.
 
 ### MQTT Broker Setup
 
