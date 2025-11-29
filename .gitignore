@@ -18,6 +18,10 @@ dist/
 *.bin
 *.elf
 
+# --- Test build artifacts ---
+test/build/
+_deps/
+
 # --- Editor/OS noise ---
 .vscode/
 .DS_Store
