@@ -39,7 +39,7 @@ public:
     }
 
     const char* c_str() const { return _str.c_str(); }
-    unsigned int length() const { return _str.length(); }
+    unsigned int length() const { return static_cast<unsigned int>(_str.length()); }
     bool isEmpty() const { return _str.empty(); }
     
     String& operator=(const String& rhs) {
@@ -100,7 +100,8 @@ public:
     
     String substring(unsigned int beginIndex, unsigned int endIndex) const {
         if (beginIndex >= _str.length()) return String();
-        if (endIndex > _str.length()) endIndex = _str.length();
+        if (endIndex > _str.length()) endIndex = static_cast<unsigned int>(_str.length());
+        if (beginIndex >= endIndex) return String();
         return String(_str.substr(beginIndex, endIndex - beginIndex));
     }
 };
