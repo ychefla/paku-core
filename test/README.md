@@ -8,6 +8,7 @@ This directory contains the test suite for paku-core.
 - `test_intervals.cpp` - Unit tests for interval management logic
 - `test_flow.cpp` - Unit tests for flow calculation module
 - `test_integration.cpp` - Integration tests for end-to-end data flow
+- `native_compat/` - Arduino compatibility layer for native testing (provides String class and other Arduino types for desktop builds)
 
 ## Running Tests Locally
 

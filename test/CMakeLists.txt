@@ -16,6 +16,9 @@ FetchContent_MakeAvailable(unity)
 # Include paths for paku_lib
 set(PAKU_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../paku_core/lib/paku_lib/src)
 
+# Arduino compatibility layer for native testing (not used in ESP32 build)
+set(NATIVE_COMPAT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/native_compat)
+
 # Source files to test
 set(PAKU_LIB_SOURCES
     ${PAKU_LIB_DIR}/payload.cpp
@@ -41,6 +44,7 @@ foreach(test_source ${UNIT_TEST_SOURCES})
     )
     
     target_include_directories(${test_name} PRIVATE
+        ${NATIVE_COMPAT_DIR}
         ${PAKU_LIB_DIR}
         ${unity_SOURCE_DIR}/src
     )
@@ -58,6 +62,7 @@ add_executable(test_integration
 )
 
 target_include_directories(test_integration PRIVATE
+    ${NATIVE_COMPAT_DIR}
     ${PAKU_LIB_DIR}
     ${unity_SOURCE_DIR}/src
 )
