@@ -10,6 +10,7 @@
 #include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
 #include "img_logo.h"
 #include "pin_config.h"
+#include "PakuIotClient.h"
 
 /* The product now has two screens, and the initialization code needs a small change in the new version. The LCD_MODULE_CMD_1 is used to define the
  * switch macro. */
@@ -58,6 +59,14 @@ PubSubClient client(espClient);
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);  // GMT, update interval 1 minute
 
+// paku-iot HTTP client (enabled via PAKU_IOT_ENABLED in secrets.h)
+PakuIotClient pakuIotClient;
+#ifndef PAKU_IOT_ENABLED
+#define PAKU_IOT_ENABLED 0
+#endif
+unsigned long lastTime_pakuIot = 0;
+unsigned long pakuIotInterval = 60000;  // 1 minute interval for HTTP transport
+
 #define PIN 2
 
 unsigned long lastTime_sensor = 0;
@@ -93,6 +102,8 @@ void connectMQTT();
 void createPayload(String topic, float value, String timestamp);
 void connect_wifi();
 void sendToMQTT();
+void sendToPakuIot();
+void initPakuIot();
 void processData();
 void scanBT(void* parameter);
 void goToSleep();
@@ -156,6 +167,9 @@ void setup() {
     Serial.println("Setup MQTT Connection...");
     timeClient.begin();
     client.setServer(mqtt_server, mqtt_port);
+
+    // Initialize paku-iot HTTP client if enabled
+    initPakuIot();
 
     Serial.println("Setup Sensor...");
     pinMode(PIN, INPUT);
@@ -244,6 +258,7 @@ void loop() {
   client.loop();
   timeClient.update();
   sendToMQTT();
+  sendToPakuIot();
 
   
   goToSleep();
@@ -390,6 +405,134 @@ void sendToMQTT() {
     payloadIndex = 0;
     lastTime_mqtt = currentTime;
   }
+}
+
+/**
+ * @brief Initializes the paku-iot HTTP client.
+ * 
+ * This function configures and initializes the PakuIotClient for sending
+ * telemetry data to paku-iot via HTTP/HTTPS. The client is only initialized
+ * if PAKU_IOT_ENABLED is set to 1 in secrets.h.
+ * 
+ * Configuration is read from secrets.h:
+ * - PAKU_IOT_HOST: Server hostname
+ * - PAKU_IOT_PORT: Server port
+ * - PAKU_IOT_API_KEY: API key for authentication
+ * - PAKU_IOT_USE_TLS: Whether to use HTTPS
+ */
+void initPakuIot() {
+#if PAKU_IOT_ENABLED
+  Serial.println("Initializing paku-iot client...");
+  
+  // Generate device ID from MAC address
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  static char deviceId[20];
+  snprintf(deviceId, sizeof(deviceId), "paku-%02X%02X%02X%02X", 
+           mac[2], mac[3], mac[4], mac[5]);
+  
+  PakuIotConfig config;
+  config.host = PAKU_IOT_HOST;
+  config.port = PAKU_IOT_PORT;
+  config.apiKey = PAKU_IOT_API_KEY;
+  config.useTls = PAKU_IOT_USE_TLS;
+  config.deviceId = deviceId;
+  config.timeoutMs = 10000;
+  config.maxRetries = 3;
+  config.retryDelayMs = 1000;
+  
+  PakuIotResult result = pakuIotClient.begin(config);
+  if (result == PakuIotResult::SUCCESS) {
+    Serial.println("paku-iot client initialized successfully");
+    Serial.print("Device ID: ");
+    Serial.println(deviceId);
+  } else {
+    Serial.print("Failed to initialize paku-iot client: ");
+    Serial.println(PakuIotClient::getErrorMessage(result));
+  }
+#else
+  Serial.println("paku-iot client disabled (set PAKU_IOT_ENABLED=1 in secrets.h to enable)");
+#endif
+}
+
+/**
+ * @brief Sends telemetry data to paku-iot via HTTP.
+ * 
+ * This function sends the current sensor readings to paku-iot using the
+ * HTTP transport. It is called periodically based on pakuIotInterval.
+ * 
+ * The function also processes any queued messages that failed to send
+ * in previous attempts.
+ * 
+ * @note This function only operates if PAKU_IOT_ENABLED is set to 1.
+ */
+void sendToPakuIot() {
+#if PAKU_IOT_ENABLED
+  unsigned long currentTime = millis();
+  
+  // Process any queued messages first
+  if (pakuIotClient.isReady()) {
+    size_t sent = pakuIotClient.processQueue();
+    if (sent > 0) {
+      Serial.print("Sent ");
+      Serial.print(sent);
+      Serial.println(" queued messages to paku-iot");
+    }
+  }
+  
+  // Send current data at interval
+  if (currentTime - lastTime_pakuIot >= pakuIotInterval) {
+    Serial.println("Sending to paku-iot...");
+    
+    // Store timestamp in a static buffer to ensure pointer validity
+    static char timestampBuf[32];
+    String timestamp = timeClient.getFormattedTime();
+    strncpy(timestampBuf, timestamp.c_str(), sizeof(timestampBuf) - 1);
+    timestampBuf[sizeof(timestampBuf) - 1] = '\0';
+    
+    // Create batch of readings
+    TelemetryReading readings[4];
+    size_t readingCount = 0;
+    
+    // Only send actual sensor values (not placeholder -1000 values)
+    if (flowRate > 0) {
+      readings[readingCount].metric = "flow/coolant";
+      readings[readingCount].value = flowRate;
+      readings[readingCount].unit = "l_per_min";
+      readings[readingCount].timestamp = timestampBuf;
+      readingCount++;
+    }
+    
+    if (requiredDeltaT > 0 && requiredDeltaT < 1000) {
+      readings[readingCount].metric = "temperature/heating/required_dt";
+      readings[readingCount].value = requiredDeltaT;
+      readings[readingCount].unit = "celsius";
+      readings[readingCount].timestamp = timestampBuf;
+      readingCount++;
+    }
+    
+    // Add heater status
+    readings[readingCount].metric = "status/heater";
+    readings[readingCount].value = (float)heaterStatus;
+    readings[readingCount].unit = nullptr;
+    readings[readingCount].timestamp = timestampBuf;
+    readingCount++;
+    
+    if (readingCount > 0) {
+      PakuIotResult result = pakuIotClient.sendBatch(readings, readingCount);
+      if (result == PakuIotResult::SUCCESS) {
+        Serial.println("paku-iot: Data sent successfully");
+      } else {
+        Serial.print("paku-iot: Failed to send - ");
+        Serial.println(PakuIotClient::getErrorMessage(result));
+        Serial.print("Queued messages: ");
+        Serial.println(pakuIotClient.getQueueSize());
+      }
+    }
+    
+    lastTime_pakuIot = currentTime;
+  }
+#endif
 }
 
 /**
