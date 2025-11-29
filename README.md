@@ -22,6 +22,15 @@ ESP32-based edge firmware for the Paku IoT system.
 - Car battery monitoring
 - Data processing and forwarding to cloud via MQTT
 
+## Development Setup
+
+This workspace supports both **container** and **local** development modes:
+
+- **Container**: Use "Reopen in Container" in VS Code for an isolated, pre-configured environment
+- **Local**: Open directly on host machine for USB device access (recommended for flashing)
+
+> **Note**: For embedded development requiring USB flashing, local development is recommended for reliable device access. While USB passthrough in containers is supported, it may not work on all platforms. See [Development Modes](docs/development-modes.md) for details.
+
 ## Quick Start
 
 ### Prerequisites
@@ -97,14 +106,13 @@ Monitor the serial output to verify connections:
 pio device monitor -b 115200
 ```
 
-## Development Setup
+### Smoke Test
 
-This workspace supports both **container** and **local** development modes:
-
-- **Container**: Use "Reopen in Container" in VS Code for an isolated, pre-configured environment
-- **Local**: Open directly on host machine for USB device access (recommended for flashing)
-
-> **Note**: For embedded development requiring USB flashing, local development is recommended for reliable device access. While USB passthrough in containers is supported, it may not work on all platforms. See [Development Modes](docs/development-modes.md) for details.
+To verify the build environment is set up correctly:
+```bash
+cd paku_core
+pio run            # Should compile without errors
+```
 
 ## Dependencies
 
@@ -128,6 +136,7 @@ The firmware uses the following libraries (managed via PlatformIO):
 - [Requirements](docs/requirements.md) - Functional and non-functional requirements
 
 ## Repository Structure
+
 
 ```
 paku-core/
