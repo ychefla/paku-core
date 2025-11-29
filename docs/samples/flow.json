@@ -1,0 +1,22 @@
+{
+  "description": "Sample flow sensor payloads from paku-core",
+  "topic_pattern": "paku/flow/{measurement}",
+  "samples": [
+    {
+      "topic": "paku/flow/coolant",
+      "payload": {
+        "value": 4.8,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Coolant flow rate in L/min"
+    },
+    {
+      "topic": "paku/flow/coolant_frequency",
+      "payload": {
+        "value": 52.8,
+        "timestamp": "14:32:15"
+      },
+      "notes": "Raw pulse frequency from flow sensor in Hz"
+    }
+  ]
+}

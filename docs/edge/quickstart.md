@@ -49,6 +49,7 @@ After flashing the firmware:
 
 - See [Architecture](../ARCHITECTURE.md) for system overview and data flow
 - See [Integration Guide](../INTEGRATION.md) for connecting to paku-iot
+- See [E2E Testing with Ruuvi](e2e-test-ruuvi.md) for hardware testing with Ruuvi tags
 
 ## paku-iot Integration
 

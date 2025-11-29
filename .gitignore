@@ -22,6 +22,11 @@ dist/
 test/build/
 _deps/
 
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+
 # --- Editor/OS noise ---
 .vscode/
 .DS_Store
