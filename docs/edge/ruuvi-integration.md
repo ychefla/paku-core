@@ -113,16 +113,18 @@ Data from a RuuviTag is considered stale after 5 minutes (300000 ms) of no updat
 
 ### MQTT Topics
 
-RuuviTag data is published to the following MQTT topics:
+RuuviTag data is published using the architecture-compliant topic structure:
 
 | Topic | Data Type | Unit | Description |
 |-------|-----------|------|-------------|
-| `paku/temperature/ruuvi/{location}` | float | °C | Temperature |
-| `paku/humidity/ruuvi/{location}` | float | % | Humidity |
-| `paku/pressure/ruuvi/{location}` | float | hPa | Barometric pressure |
-| `paku/voltage/ruuvi/{location}` | float | V | Battery voltage |
+| `paku/devices/{device_id}/telemetry/temperature/{location}` | float | °C | Temperature |
+| `paku/devices/{device_id}/telemetry/humidity/{location}` | float | % | Humidity |
+| `paku/devices/{device_id}/telemetry/pressure/{location}` | float | hPa | Barometric pressure |
+| `paku/devices/{device_id}/telemetry/voltage/{location}` | float | V | Battery voltage |
 
-Where `{location}` is the registered location name (e.g., "cabin", "kitchen").
+Where:
+- `{device_id}` is derived from the ESP32 MAC address (e.g., "paku-AABBCCDD")
+- `{location}` is the registered location name (e.g., "cabin", "kitchen")
 
 ### Payload Format
 
@@ -145,27 +147,29 @@ When `PAKU_IOT_ENABLED` is set, RuuviTag data is also sent via HTTP to paku-iot 
 
 ## Placeholder Data
 
-For sensors not yet implemented, placeholder values are generated:
+Placeholder data generation is **disabled by default**. When enabled for testing:
 
 - **Value**: `-1000` (SENSOR_NOT_AVAILABLE)
 - **Purpose**: Maintains topic structure for future sensor integration
 - **Locations**: cabin, dryer, kitchen, lounge
 
-Placeholder topics:
+To enable placeholder data, set `generatePlaceholderData = true` in main.cpp.
+
+Placeholder topics (when enabled):
 
 ```
-paku/temperature/moko/{location}  
-paku/humidity/moko/{location}
-paku/temperature/heating/floor
-paku/temperature/heating/heater_in
-paku/temperature/heating/heater_out
-paku/power/heat
-paku/power/cool
-paku/voltage/car
-paku/voltage/leisure
-paku/status/heater
-paku/status/heater_timer
-paku/status/pump
+paku/devices/{device_id}/telemetry/temperature/{location}
+paku/devices/{device_id}/telemetry/humidity/{location}
+paku/devices/{device_id}/telemetry/temperature/floor
+paku/devices/{device_id}/telemetry/temperature/heater_in
+paku/devices/{device_id}/telemetry/temperature/heater_out
+paku/devices/{device_id}/telemetry/power/heat
+paku/devices/{device_id}/telemetry/power/cool
+paku/devices/{device_id}/telemetry/voltage/car
+paku/devices/{device_id}/telemetry/voltage/leisure
+paku/devices/{device_id}/telemetry/status/heater
+paku/devices/{device_id}/telemetry/status/heater_timer
+paku/devices/{device_id}/telemetry/status/pump
 ```
 
 ## Historical Data Download

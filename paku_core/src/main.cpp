@@ -72,7 +72,8 @@ bool scanBT_enabled = true;
 static char deviceId[20] = "";
 
 // Enable placeholder sensor data generation for testing
-bool generatePlaceholderData = true;
+// Set to false by default - only enable for local testing
+bool generatePlaceholderData = false;
 
 // WiFi settings (using arrays from secrets.h)
 const char* mqtt_server = MQTT_SERVER;
@@ -385,13 +386,13 @@ void processData() {
     // 1. RuuviTag sensor data (temperature, humidity, pressure from BLE sensors)
     createRuuviPayloads(timestamp.c_str());
     
-    // 2. Placeholder data for sensors not yet implemented
+    // 2. Placeholder data for sensors not yet implemented (disabled by default)
     createPlaceholderPayloads(timestamp.c_str());
     
-    // 3. Flow sensor data (actual hardware sensor)
-    createPayload("paku/temperature/heating/required_dt", requiredDeltaT, timestamp);
-    createPayload("paku/flow/coolant_frequency", frequency, timestamp);
-    createPayload("paku/flow/coolant", flowRate, timestamp);
+    // 3. Flow sensor data (actual hardware sensor) using architecture-compliant topics
+    createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/required_dt", requiredDeltaT, timestamp);
+    createPayload(String("paku/devices/") + deviceId + "/telemetry/flow/coolant_frequency", frequency, timestamp);
+    createPayload(String("paku/devices/") + deviceId + "/telemetry/flow/coolant", flowRate, timestamp);
  }
 }
 
@@ -729,7 +730,8 @@ void initRuuviTags() {
  * @brief Creates MQTT payloads from RuuviTag data
  * 
  * Iterates through all registered tags with fresh data and creates
- * temperature, humidity, and pressure payloads.
+ * temperature, humidity, and pressure payloads using the architecture-compliant
+ * topic structure: paku/devices/{device_id}/telemetry/{type}/{location}
  * 
  * @param timestamp Current timestamp string
  */
@@ -741,23 +743,23 @@ void createRuuviPayloads(const char* timestamp) {
     const RuuviTag* tag = freshTags[i];
     if (!tag->hasData || !tag->lastData.valid) continue;
     
-    // Create temperature payload
-    String tempTopic = String("paku/temperature/ruuvi/") + tag->location;
+    // Create temperature payload using architecture-compliant topic
+    String tempTopic = String("paku/devices/") + deviceId + "/telemetry/temperature/" + tag->location;
     createPayload(tempTopic, tag->lastData.temperature, timestamp);
     
     // Create humidity payload
-    String humidTopic = String("paku/humidity/ruuvi/") + tag->location;
+    String humidTopic = String("paku/devices/") + deviceId + "/telemetry/humidity/" + tag->location;
     createPayload(humidTopic, tag->lastData.humidity, timestamp);
     
     // Create pressure payload (convert Pa to hPa)
     if (tag->lastData.pressure > 0) {
-      String pressTopic = String("paku/pressure/ruuvi/") + tag->location;
+      String pressTopic = String("paku/devices/") + deviceId + "/telemetry/pressure/" + tag->location;
       createPayload(pressTopic, tag->lastData.pressure / 100.0f, timestamp);
     }
     
     // Create battery voltage payload
     if (tag->lastData.batteryVoltage > 0) {
-      String battTopic = String("paku/voltage/ruuvi/") + tag->location;
+      String battTopic = String("paku/devices/") + deviceId + "/telemetry/voltage/" + tag->location;
       createPayload(battTopic, tag->lastData.batteryVoltage, timestamp);
     }
     
@@ -774,7 +776,8 @@ void createRuuviPayloads(const char* timestamp) {
 /**
  * @brief Creates placeholder payloads for sensors not yet implemented
  * 
- * Generates placeholder data for future sensor integration.
+ * Generates placeholder data for future sensor integration using 
+ * architecture-compliant topic structure.
  * This ensures the data pipeline is tested even without hardware.
  * 
  * @param timestamp Current timestamp string
@@ -787,7 +790,6 @@ void createPlaceholderPayloads(const char* timestamp) {
   
   for (int i = 0; i < 4; i++) {
     // Check if we have a Ruuvi tag for this location
-    String macCheck = String("paku/temperature/ruuvi/") + placeholderLocations[i];
     bool hasRuuviData = false;
     
     const RuuviTag* freshTags[MAX_RUUVI_TAGS];
@@ -802,31 +804,31 @@ void createPlaceholderPayloads(const char* timestamp) {
     // Only create placeholders if no real Ruuvi data exists for this location
     if (!hasRuuviData) {
       // Generate placeholder values (SENSOR_NOT_AVAILABLE indicates no hardware)
-      String humidTopic = String("paku/humidity/moko/") + placeholderLocations[i];
+      String humidTopic = String("paku/devices/") + deviceId + "/telemetry/humidity/" + placeholderLocations[i];
       createPayload(humidTopic, SENSOR_NOT_AVAILABLE, timestamp);
       
-      String tempTopic = String("paku/temperature/moko/") + placeholderLocations[i];
+      String tempTopic = String("paku/devices/") + deviceId + "/telemetry/temperature/" + placeholderLocations[i];
       createPayload(tempTopic, SENSOR_NOT_AVAILABLE, timestamp);
     }
   }
   
   // Additional placeholder sensors for heating system
-  createPayload("paku/temperature/heating/floor", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload("paku/temperature/heating/heater_in", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload("paku/temperature/heating/heater_out", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/floor", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/heater_in", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/heater_out", SENSOR_NOT_AVAILABLE, timestamp);
   
   // Power readings placeholders
-  createPayload("paku/power/heat", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload("paku/power/cool", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/power/heat", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/power/cool", SENSOR_NOT_AVAILABLE, timestamp);
   
   // Battery voltage placeholders
-  createPayload("paku/voltage/car", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload("paku/voltage/leisure", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/voltage/car", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/voltage/leisure", SENSOR_NOT_AVAILABLE, timestamp);
   
   // Status placeholders
-  createPayload("paku/status/heater", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload("paku/status/heater_timer", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload("paku/status/pump", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/status/heater", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/status/heater_timer", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/status/pump", SENSOR_NOT_AVAILABLE, timestamp);
 }
 
 // Function to scan for Bluetooth devices and parse RuuviTag data
