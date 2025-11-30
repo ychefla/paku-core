@@ -327,13 +327,38 @@ void updateDisplay() {
     tft.fillScreen(TFT_BLACK);
     tft.setCursor(0, 0);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(3);
-    tft.println("Paku Core");
     tft.setTextSize(2);
+    tft.println("Paku Core");
+    tft.setTextSize(1);
     tft.println("Time: " + timeClient.getFormattedTime());
-    tft.println("Flow Rate: " + String(flowRate) + " L/min");
-    tft.println("Required Delta T: " + String(requiredDeltaT) + " C");
-    tft.println("Heater Status: " + String(heaterStatus));
+    tft.println("Flow: " + String(flowRate, 1) + " L/min | dT: " + String(requiredDeltaT, 1) + "C");
+    tft.println("");
+    
+    // Display RuuviTag data
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.println("--- Ruuvi Tags ---");
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    
+    const RuuviTag* freshTags[MAX_RUUVI_TAGS];
+    uint8_t freshCount = getFreshTags(freshTags, MAX_RUUVI_TAGS, millis());
+    
+    if (freshCount == 0) {
+      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+      tft.println("No data available");
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    } else {
+      for (uint8_t i = 0; i < freshCount && i < 4; i++) {  // Show max 4 tags to fit screen
+        const RuuviTag* tag = freshTags[i];
+        if (tag->hasData && tag->lastData.valid) {
+          tft.print(tag->location);
+          tft.print(": ");
+          tft.print(String(tag->lastData.temperature, 1));
+          tft.print("C ");
+          tft.print(String(tag->lastData.humidity, 0));
+          tft.println("%");
+        }
+      }
+    }
   }
 }
 
