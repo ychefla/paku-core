@@ -14,6 +14,7 @@
 #include "ruuvi.h"
 #include "ruuvi_scanner.h"
 #include "sensor_placeholders.h"
+#include <string>
 
 /* The product now has two screens, and the initialization code needs a small change in the new version. The LCD_MODULE_CMD_1 is used to define the
  * switch macro. */
@@ -855,7 +856,7 @@ void scanBT(void* parameter) {
       
       // Check if device has manufacturer data
       if (device.haveManufacturerData()) {
-        String mfData = device.getManufacturerData();
+        std::string mfData = device.getManufacturerData();
         
         // Check minimum length for Ruuvi data
         if (mfData.length() >= 2) {
@@ -869,10 +870,10 @@ void scanBT(void* parameter) {
             
             // Get MAC address bytes
             uint8_t macBytes[6];
-            const uint8_t* nativeAddr = device.getAddress().getNative();
+            esp_bd_addr_t* nativeAddr = device.getAddress().getNative();
             // BLE addresses are in reverse order
             for (int j = 0; j < 6; j++) {
-              macBytes[j] = nativeAddr[5-j];
+              macBytes[j] = (*nativeAddr)[5-j];
             }
             
             // Extract Ruuvi payload (skip 2-byte manufacturer ID)
