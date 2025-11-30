@@ -102,7 +102,7 @@
 
 ## 5) Configuration Keys (reference)
 - `WIFI_SSIDS[]`, `WIFI_PASSWORDS[]` — ordered preference.
-- `MQTT_HOST`, `MQTT_PORT`, `MQTT_TLS`, `MQTT_USER`, `MQTT_PASS` (in `secrets.h`).
+- `MQTT_SERVER`, `MQTT_PORT`, `MQTT_TLS`, `MQTT_USER`, `MQTT_PASS` (in `secrets.h`).
 - `TELEMETRY_INTERVAL_SEC`, `LOG_LEVEL`, `TOPIC_PREFIX` (in `config.h`).
 
 ---

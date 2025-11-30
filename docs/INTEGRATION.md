@@ -261,12 +261,9 @@ Configure multiple WiFi networks for fallback:
 
 ```cpp
 // In secrets.h
-#define WIFI_SSID_HOME                "primary-network"
-#define WIFI_PASSWORD_HOME            "password1"
-#define WIFI_SSID_IPHONE              "backup-hotspot"
-#define WIFI_PASSWORD_IPHONE          "password2"
-#define WIFI_SSID_PAKU                "on-site-network"
-#define WIFI_PASSWORD_PAKU            "password3"
+static const char* WIFI_SSIDS[] = { "primary-network", "backup-hotspot", "on-site-network" };
+static const char* WIFI_PASSWORDS[] = { "password1", "password2", "password3" };
+static const size_t WIFI_COUNT = sizeof(WIFI_SSIDS) / sizeof(WIFI_SSIDS[0]);
 ```
 
 The device tries networks in order until connected.

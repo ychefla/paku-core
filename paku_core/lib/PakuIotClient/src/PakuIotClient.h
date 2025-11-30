@@ -188,9 +188,6 @@ private:
 
     /**
      * @brief Convert result to HTTP-like status
-
-    /**
-     * @brief Convert result to HTTP-like status
      * 
      * @param httpCode HTTP response code
      * @return PakuIotResult Corresponding result code

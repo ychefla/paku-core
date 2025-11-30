@@ -60,12 +60,9 @@ Edit `paku_core/include/secrets.h` with your WiFi and MQTT credentials:
 #pragma once
 
 // Wi-Fi Networks (in order of priority)
-#define WIFI_SSID_HOME                "your-home-wifi-ssid"
-#define WIFI_PASSWORD_HOME            "your-home-wifi-password"
-#define WIFI_SSID_IPHONE              "your-iphone-hotspot-ssid"
-#define WIFI_PASSWORD_IPHONE          "your-iphone-hotspot-password"
-#define WIFI_SSID_PAKU                "your-paku-wifi-ssid"
-#define WIFI_PASSWORD_PAKU            "your-paku-wifi-password"
+static const char* WIFI_SSIDS[] = { "your-home-wifi-ssid", "your-iphone-hotspot-ssid", "your-paku-wifi-ssid" };
+static const char* WIFI_PASSWORDS[] = { "your-home-wifi-password", "your-iphone-hotspot-password", "your-paku-wifi-password" };
+static const size_t WIFI_COUNT = sizeof(WIFI_SSIDS) / sizeof(WIFI_SSIDS[0]);
 
 // MQTT Broker
 #define MQTT_SERVER                   "your-mqtt-server-hostname"
