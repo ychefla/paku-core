@@ -1,12 +1,18 @@
 /**
  * @file data_transmitter.cpp
  * @brief Data transmission handler implementation
+ * 
+ * @note Thread Safety: This module uses static buffers for topic strings
+ *       to avoid dynamic memory allocation on ESP32. These functions should
+ *       only be called from a single thread context (typically the main loop).
+ *       The BLE scanner task does NOT call these functions directly.
  */
 #include "data_transmitter.h"
 #include <cstring>
 #include <cstdio>
 
 // Static buffers for topic strings (avoids dynamic allocation)
+// Note: Safe for single-threaded use from main loop only
 static char topicBuffer[128];
 static char tempTopicBuffer[64];
 static char humidTopicBuffer[64];

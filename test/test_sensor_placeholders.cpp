@@ -34,7 +34,7 @@ void test_generatePlaceholderTemperature_disabled(void) {
 void test_generatePlaceholderTemperature_enabled(void) {
     float temp = generatePlaceholderTemperature("cabin", true);
     
-    // Should generate a realistic indoor temperature (15-25°C range)
+    // Should generate a realistic indoor temperature (10-30°C range for testing tolerance)
     TEST_ASSERT_FALSE(isPlaceholderValue(temp));
     TEST_ASSERT_TRUE(temp >= 10.0f && temp <= 30.0f);
 }

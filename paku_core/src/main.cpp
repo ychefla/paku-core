@@ -51,6 +51,12 @@ lcd_cmd_t lcd_st7789v[] = {
 // BT settings
 bool scanBT_enabled = true;
 
+// BLE scan interval in milliseconds between scan cycles
+#define BLE_SCAN_INTERVAL_MS 10000
+
+// Maximum number of telemetry readings per HTTP batch
+#define MAX_TELEMETRY_READINGS 20
+
 // Ruuvi tag configuration - placeholder MAC addresses for known tags
 // These should be configured in secrets.h for production deployments
 #ifndef RUUVI_TAG_COUNT
@@ -496,19 +502,24 @@ void sendToPakuIot() {
     strncpy(timestampBuf, timestamp.c_str(), sizeof(timestampBuf) - 1);
     timestampBuf[sizeof(timestampBuf) - 1] = '\0';
     
-    // Create batch of readings - increased size to accommodate RuuviTag data
-    TelemetryReading readings[20];
+    // Create batch of readings - size matches MAX_TELEMETRY_READINGS constant
+    TelemetryReading readings[MAX_TELEMETRY_READINGS];
     size_t readingCount = 0;
     
     // Add RuuviTag readings
+    // Note: Static buffers are safe here as sendToPakuIot is called from main loop
+    // and the BLE scan task does not call this function
     const RuuviTag* freshTags[MAX_RUUVI_TAGS];
     uint8_t freshCount = getFreshTags(freshTags, MAX_RUUVI_TAGS, millis());
     
-    for (uint8_t i = 0; i < freshCount && readingCount < 16; i++) {
+    // Limit Ruuvi readings to leave room for other metrics
+    const size_t maxRuuviReadings = (MAX_TELEMETRY_READINGS - 4) / 2;  // 2 readings per tag, reserve 4 for flow/status
+    for (uint8_t i = 0; i < freshCount && i < maxRuuviReadings; i++) {
       const RuuviTag* tag = freshTags[i];
       if (!tag->hasData || !tag->lastData.valid) continue;
       
       // Static buffers for metric names (must persist during sendBatch call)
+      // Safe because this function is only called from main loop
       static char tempMetrics[MAX_RUUVI_TAGS][64];
       static char humidMetrics[MAX_RUUVI_TAGS][64];
       
@@ -884,8 +895,8 @@ void scanBT(void* parameter) {
     // Clear the scan results
     pBLEScan->clearResults();
 
-    // Delay before the next scan
-    vTaskDelay(10000 / portTICK_PERIOD_MS);  // Delay for 10 seconds between scans
+    // Delay before the next scan using configured interval
+    vTaskDelay(BLE_SCAN_INTERVAL_MS / portTICK_PERIOD_MS);
   }
 
   // Delete the task if scanBT_enabled is set to false

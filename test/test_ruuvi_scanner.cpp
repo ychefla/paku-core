@@ -3,10 +3,6 @@
  * @brief Unit tests for Ruuvi scanner module
  */
 #include <unity.h>
-
-#ifndef UNIT_TEST
-#define UNIT_TEST
-#endif
 #include "ruuvi_scanner.h"
 
 void setUp(void) {
