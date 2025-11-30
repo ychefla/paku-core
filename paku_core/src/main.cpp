@@ -48,9 +48,7 @@ lcd_cmd_t lcd_st7789v[] = {
 // BT settings
 bool scanBT_enabled = true;
 
-// WiFi settings
-const char* wifi_ssid[] = {WIFI_SSID_HOME, WIFI_SSID_IPHONE, WIFI_SSID_PAKU};
-const char* wifi_password[] = {WIFI_PASSWORD_HOME, WIFI_PASSWORD_IPHONE, WIFI_PASSWORD_PAKU};
+// WiFi settings (using arrays from secrets.h)
 const char* mqtt_server = MQTT_SERVER;
 const int mqtt_port = MQTT_PORT;
 
@@ -564,12 +562,12 @@ void connect_wifi() {
   tft.println("Connecting to WiFi...");
 
   while (WiFi.status() != WL_CONNECTED) {
-    for (int i = 0; i < sizeof(wifi_ssid)/sizeof(wifi_ssid[0]); i++) {
+    for (int i = 0; i < WIFI_COUNT; i++) {
       Serial.print("Connecting to ");
-      Serial.println(wifi_ssid[i]);
-      tft.println("Connecting to " + String(wifi_ssid[i]));
+      Serial.println(WIFI_SSIDS[i]);
+      tft.println("Connecting to " + String(WIFI_SSIDS[i]));
 
-      WiFi.begin(wifi_ssid[i], wifi_password[i]);
+      WiFi.begin(WIFI_SSIDS[i], WIFI_PASSWORDS[i]);
 
       int attempts = 0;
       while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -593,10 +591,10 @@ void connect_wifi() {
       } else {
         Serial.println("");
         Serial.println("Failed to connect to ");
-        Serial.println(wifi_ssid[i]);
+        Serial.println(WIFI_SSIDS[i]);
 
         tft.println("");
-        tft.println("Failed to connect to " + String(wifi_ssid[i]));
+        tft.println("Failed to connect to " + String(WIFI_SSIDS[i]));
       }
     }
   }
