@@ -76,6 +76,10 @@ static char deviceId[20] = "";
 bool generatePlaceholderData = false;
 
 // WiFi settings (using arrays from secrets.h)
+String wifi_status = "";
+
+
+// MQTT settings
 const char* mqtt_server = MQTT_SERVER;
 const int mqtt_port = MQTT_PORT;
 
@@ -192,7 +196,7 @@ void setup() {
 
     Serial.println("Setup Wifi Connection...");
     WiFi.mode(WIFI_STA);
-    connect_wifi();
+    //connect_wifi();
 
     // Initialize device ID from MAC address
     initDeviceId();
@@ -295,9 +299,7 @@ void loop() {
   client.loop();
   timeClient.update();
   sendToMQTT();
-  sendToPakuIot();
-
-  
+  sendToPakuIot();  
   goToSleep();
 
 }
@@ -328,15 +330,23 @@ void updateDisplay() {
     tft.setCursor(0, 0);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(2);
-    tft.println("Paku Core");
+    tft.println("Paku-Core");
     tft.setTextSize(1);
-    tft.println("Time: " + timeClient.getFormattedTime());
-    tft.println("Flow: " + String(flowRate, 1) + " L/min | dT: " + String(requiredDeltaT, 1) + "C");
+    tft.println(wifi_status);
+    if (!client.connected()){
+      tft.println("MQTT disconnected");
+    }else{
+      tft.println("MQTT connected");
+    }
+    
+    //tft.println("Time: " + timeClient.getFormattedTime());
+    //tft.println("Flow: " + String(flowRate, 1) + " L/min | dT: " + String(requiredDeltaT, 1) + "C");
     tft.println("");
     
     // Display RuuviTag data
+    tft.setTextSize(2);
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.println("--- Ruuvi Tags ---");
+    tft.println("Ruuvi Tags");
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     
     const RuuviTag* freshTags[MAX_RUUVI_TAGS];
@@ -627,28 +637,25 @@ void sendToPakuIot() {
  *          and contain valid SSIDs and passwords.
  */
 void connect_wifi() {
+  
   delay(10);
   Serial.println();
-  tft.fillScreen(TFT_BLACK);
-  tft.setCursor(0, 0);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextSize(2);
-  tft.println("Connecting to WiFi...");
 
   while (WiFi.status() != WL_CONNECTED) {
     for (int i = 0; i < WIFI_COUNT; i++) {
       Serial.print("Connecting to ");
-      Serial.println(WIFI_SSIDS[i]);
-      tft.println("Connecting to " + String(WIFI_SSIDS[i]));
-
+      Serial.print(WIFI_SSIDS[i]);
+      wifi_status = "Wifi connecting to ";
+      wifi_status += WIFI_SSIDS[i];
       WiFi.begin(WIFI_SSIDS[i], WIFI_PASSWORDS[i]);
-
       int attempts = 0;
-      while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+
+      while (WiFi.status() != WL_CONNECTED && attempts < 10) {
         delay(500);
-        Serial.print(".");
-        tft.print(".");
+        //Serial.print(".");
+        wifi_status += ".";
         attempts++;
+        updateDisplay();
       }
 
       if (WiFi.status() == WL_CONNECTED) {
@@ -656,19 +663,17 @@ void connect_wifi() {
         Serial.println("WiFi connected");
         Serial.println("IP address: ");
         Serial.println(WiFi.localIP());
-
-        tft.println("");
-        tft.println("WiFi connected");
-        tft.println("IP address: ");
-        tft.println(WiFi.localIP().toString());
+        wifi_status = "WiFi connected to ";
+        wifi_status += WIFI_SSIDS[i];
+        wifi_status += " (";
+        wifi_status += WiFi.localIP();
+        wifi_status += ")";
+        updateDisplay();
         return;
       } else {
         Serial.println("");
-        Serial.println("Failed to connect to ");
+        Serial.print("Failed to connect to ");
         Serial.println(WIFI_SSIDS[i]);
-
-        tft.println("");
-        tft.println("Failed to connect to " + String(WIFI_SSIDS[i]));
       }
     }
   }
@@ -686,23 +691,23 @@ void connect_wifi() {
 void connectMQTT() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.println("Attempting MQTT connection...");
+    //tft.fillScreen(TFT_BLACK);
+    //tft.setCursor(0, 0);
+    //tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    //tft.setTextSize(2);
+    //tft.println("Attempting MQTT connection...");
 
     if (client.connect("ESP32Client")) {  // Use a unique client ID for ESP32
       Serial.println("MQTT connected and subscribed to 'paku/control'");
-      tft.println("MQTT connected and subscribed to 'paku/control'");
+      //tft.println("MQTT connected and subscribed to 'paku/control'");
       client.subscribe("paku/control");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
-      tft.print("failed, rc=");
-      tft.print(client.state());
-      tft.println(" try again in 5 seconds");
+      //tft.print("failed, rc=");
+      //tft.print(client.state());
+      //tft.println(" try again in 5 seconds");
       delay(5000);
     }
   }
