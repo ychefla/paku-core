@@ -854,6 +854,7 @@ void createRuuviPayloads(const char* timestamp) {
     doc["timestamp"] = String(timestamp);
     doc["device_id"] = String("ruuvi_") + tag->location;
     doc["location"] = tag->location;
+    doc["mac"] = tag->macString;
     
     JsonObject metrics = doc["metrics"].to<JsonObject>();
     metrics["temperature_c"] = tag->lastData.temperature;
@@ -871,7 +872,9 @@ void createRuuviPayloads(const char* timestamp) {
     String payload;
     serializeJson(doc, payload);
     
-    String topic = String("paku/sensors/") + tag->location + "/data";
+    // Construct device_id as ruuvi_<location>
+    String deviceId = String("ruuvi_") + tag->location;
+    String topic = String("paku/sensors/") + deviceId + "/data";
     
     if (payloadIndex < 30) {
       payloads[payloadIndex].topic = topic;
