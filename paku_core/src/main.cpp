@@ -424,10 +424,25 @@ void processData() {
     // 2. Placeholder data for sensors not yet implemented (disabled by default)
     createPlaceholderPayloads(timestamp.c_str());
     
-    // 3. Flow sensor data (actual hardware sensor) using architecture-compliant topics
-    createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/required_dt", requiredDeltaT, timestamp);
-    createPayload(String("paku/devices/") + deviceId + "/telemetry/flow/coolant_frequency", frequency, timestamp);
-    createPayload(String("paku/devices/") + deviceId + "/telemetry/flow/coolant", flowRate, timestamp);
+    // 3. Flow sensor data - consolidated payload with all metrics
+    JsonDocument flowDoc;
+    flowDoc["timestamp"] = timestamp;
+    flowDoc["device_id"] = "coolant";
+    flowDoc["location"] = "coolant_line";
+    
+    JsonObject flowMetrics = flowDoc["metrics"].to<JsonObject>();
+    flowMetrics["flow_rate_lpm"] = flowRate;
+    flowMetrics["frequency_hz"] = frequency;
+    flowMetrics["required_dt_c"] = requiredDeltaT;
+    
+    String flowPayload;
+    serializeJson(flowDoc, flowPayload);
+    
+    if (payloadIndex < 30) {
+      payloads[payloadIndex].topic = "paku/flow/coolant/data";
+      payloads[payloadIndex].data = flowPayload;
+      payloadIndex++;
+    }
  }
 }
 
@@ -773,24 +788,34 @@ void createRuuviPayloads(const char* timestamp) {
     const RuuviTag* tag = freshTags[i];
     if (!tag->hasData || !tag->lastData.valid) continue;
     
-    // Create temperature payload using architecture-compliant topic
-    String tempTopic = String("paku/devices/") + deviceId + "/telemetry/temperature/" + tag->location;
-    createPayload(tempTopic, tag->lastData.temperature, timestamp);
+    // Build consolidated payload with all metrics for this device
+    JsonDocument doc;
+    doc["timestamp"] = String(timestamp);
+    doc["device_id"] = String("ruuvi_") + tag->location;
+    doc["location"] = tag->location;
     
-    // Create humidity payload
-    String humidTopic = String("paku/devices/") + deviceId + "/telemetry/humidity/" + tag->location;
-    createPayload(humidTopic, tag->lastData.humidity, timestamp);
+    JsonObject metrics = doc["metrics"].to<JsonObject>();
+    metrics["temperature_c"] = tag->lastData.temperature;
+    metrics["humidity_percent"] = tag->lastData.humidity;
     
-    // Create pressure payload (convert Pa to hPa)
     if (tag->lastData.pressure > 0) {
-      String pressTopic = String("paku/devices/") + deviceId + "/telemetry/pressure/" + tag->location;
-      createPayload(pressTopic, tag->lastData.pressure / 100.0f, timestamp);
+      metrics["pressure_hpa"] = tag->lastData.pressure / 100.0f;
     }
     
-    // Create battery voltage payload
     if (tag->lastData.batteryVoltage > 0) {
-      String battTopic = String("paku/devices/") + deviceId + "/telemetry/voltage/" + tag->location;
-      createPayload(battTopic, tag->lastData.batteryVoltage, timestamp);
+      metrics["battery_mv"] = tag->lastData.batteryVoltage;
+    }
+    
+    // Serialize and add to payload queue
+    String payload;
+    serializeJson(doc, payload);
+    
+    String topic = String("paku/sensors/ruuvi_") + tag->location + "/data";
+    
+    if (payloadIndex < 30) {
+      payloads[payloadIndex].topic = topic;
+      payloads[payloadIndex].data = payload;
+      payloadIndex++;
     }
     
     Serial.print("RuuviTag [");
