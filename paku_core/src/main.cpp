@@ -148,6 +148,67 @@ void IRAM_ATTR countRisingEdges() {
 }
 
 /**
+ * @brief Get ISO 8601 formatted timestamp string
+ * 
+ * Creates a timestamp in format: YYYY-MM-DDTHH:MM:SSZ
+ * Uses NTP time to get accurate UTC time
+ * 
+ * @return String containing ISO 8601 formatted timestamp
+ */
+String getISO8601Timestamp() {
+  unsigned long epochTime = timeClient.getEpochTime();
+  
+  // Calculate date components from epoch
+  int year = 1970;
+  int month = 1;
+  int day = 1;
+  
+  // Simplified date calculation (good enough for this use case)
+  unsigned long days = epochTime / 86400;
+  unsigned long seconds = epochTime % 86400;
+  
+  int hours = seconds / 3600;
+  seconds %= 3600;
+  int minutes = seconds / 60;
+  int secs = seconds % 60;
+  
+  // Calculate year (accounting for leap years)
+  while (true) {
+    int daysInYear = ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) ? 366 : 365;
+    if (days >= daysInYear) {
+      days -= daysInYear;
+      year++;
+    } else {
+      break;
+    }
+  }
+  
+  // Calculate month and day
+  int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
+    daysInMonth[1] = 29; // Leap year
+  }
+  
+  for (int m = 0; m < 12; m++) {
+    if (days >= daysInMonth[m]) {
+      days -= daysInMonth[m];
+      month++;
+    } else {
+      break;
+    }
+  }
+  day += days;
+  
+  // Format as ISO 8601: YYYY-MM-DDTHH:MM:SSZ
+  char isoTimestamp[32];
+  snprintf(isoTimestamp, sizeof(isoTimestamp), 
+           "%04d-%02d-%02dT%02d:%02d:%02dZ",
+           year, month, day, hours, minutes, secs);
+  
+  return String(isoTimestamp);
+}
+
+/**
  * @brief Initializes the system setup.
  * 
  * This function performs the following setup tasks:
@@ -391,7 +452,7 @@ void updateDisplay() {
  * - Creates payloads for humidity, temperature, flow, heating power, battery voltage, and heater status.
  * 
  * @note The function assumes the presence of global variables and functions such as `millis()`, 
- * `Serial.print()`, `detachInterrupt()`, `attachInterrupt()`, `random()`, `timeClient.getFormattedTime()`, 
+ * `Serial.print()`, `detachInterrupt()`, `attachInterrupt()`, `random()`, `getISO8601Timestamp()`, 
  * and `createPayload()`.
  */
 void processData() {
@@ -410,7 +471,7 @@ void processData() {
     float frequency = count / ((currentTime - lastTime_sensor) / 1000.0); 
     flowRate = (frequency / calibrationFactor) * 60.0;
     requiredDeltaT = heaterPower / (3.5 * flowRate);
-    String timestamp = timeClient.getFormattedTime();
+    String timestamp = getISO8601Timestamp();
 
     count = 0;
     lastTime_sensor = currentTime;
@@ -550,7 +611,7 @@ void sendToPakuIot() {
     
     // Store timestamp in a static buffer to ensure pointer validity
     static char timestampBuf[32];
-    String timestamp = timeClient.getFormattedTime();
+    String timestamp = getISO8601Timestamp();
     strncpy(timestampBuf, timestamp.c_str(), sizeof(timestampBuf) - 1);
     timestampBuf[sizeof(timestampBuf) - 1] = '\0';
     
