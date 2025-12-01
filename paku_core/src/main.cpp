@@ -871,7 +871,7 @@ void createRuuviPayloads(const char* timestamp) {
     String payload;
     serializeJson(doc, payload);
     
-    String topic = String("paku/sensors/ruuvi_") + tag->location + "/data";
+    String topic = String("paku/sensors/") + tag->location + "/data";
     
     if (payloadIndex < 30) {
       payloads[payloadIndex].topic = topic;
