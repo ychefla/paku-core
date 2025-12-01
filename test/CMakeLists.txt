@@ -25,6 +25,9 @@ set(PAKU_LIB_SOURCES
     ${PAKU_LIB_DIR}/intervals.cpp
     ${PAKU_LIB_DIR}/flow.cpp
     ${PAKU_LIB_DIR}/ruuvi.cpp
+    ${PAKU_LIB_DIR}/ruuvi_scanner.cpp
+    ${PAKU_LIB_DIR}/sensor_placeholders.cpp
+    ${PAKU_LIB_DIR}/data_transmitter.cpp
 )
 
 # Unit test source files
@@ -32,6 +35,9 @@ set(UNIT_TEST_SOURCES
     test_payload.cpp
     test_intervals.cpp
     test_flow.cpp
+    test_ruuvi_scanner.cpp
+    test_data_transmitter.cpp
+    test_sensor_placeholders.cpp
 )
 
 # Create a test executable for each unit test file
@@ -48,6 +54,8 @@ foreach(test_source ${UNIT_TEST_SOURCES})
         ${PAKU_LIB_DIR}
         ${unity_SOURCE_DIR}/src
     )
+    
+    target_compile_definitions(${test_name} PRIVATE UNIT_TEST)
     
     target_link_libraries(${test_name} PRIVATE unity)
     
@@ -66,6 +74,8 @@ target_include_directories(test_integration PRIVATE
     ${PAKU_LIB_DIR}
     ${unity_SOURCE_DIR}/src
 )
+
+target_compile_definitions(test_integration PRIVATE UNIT_TEST)
 
 target_link_libraries(test_integration PRIVATE unity)
 

@@ -11,6 +11,10 @@
 #include "img_logo.h"
 #include "pin_config.h"
 #include "PakuIotClient.h"
+#include "ruuvi.h"
+#include "ruuvi_scanner.h"
+#include "sensor_placeholders.h"
+#include <string>
 
 /* The product now has two screens, and the initialization code needs a small change in the new version. The LCD_MODULE_CMD_1 is used to define the
  * switch macro. */
@@ -47,6 +51,29 @@ lcd_cmd_t lcd_st7789v[] = {
 
 // BT settings
 bool scanBT_enabled = true;
+
+// BLE scan interval in milliseconds between scan cycles
+#define BLE_SCAN_INTERVAL_MS 10000
+
+// Maximum number of telemetry readings per HTTP batch
+#define MAX_TELEMETRY_READINGS 20
+
+// Ruuvi tag configuration - placeholder MAC addresses for known tags
+// These should be configured in secrets.h for production deployments
+#ifndef RUUVI_TAG_COUNT
+#define RUUVI_TAG_COUNT 0
+#endif
+// Example: In secrets.h, define known Ruuvi tags like:
+// #define RUUVI_TAG_COUNT 4
+// static const char* RUUVI_TAG_MACS[] = {"AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02", "AA:BB:CC:DD:EE:03", "AA:BB:CC:DD:EE:04"};
+// static const char* RUUVI_TAG_LOCATIONS[] = {"cabin", "kitchen", "lounge", "dryer"};
+
+// Device ID buffer (derived from MAC address)
+static char deviceId[20] = "";
+
+// Enable placeholder sensor data generation for testing
+// Set to false by default - only enable for local testing
+bool generatePlaceholderData = false;
 
 // WiFi settings (using arrays from secrets.h)
 const char* mqtt_server = MQTT_SERVER;
@@ -103,6 +130,11 @@ void sendToMQTT();
 void sendToPakuIot();
 void initPakuIot();
 void processData();
+void processRuuviData();
+void initRuuviTags();
+void createRuuviPayloads(const char* timestamp);
+void createPlaceholderPayloads(const char* timestamp);
+void initDeviceId();
 void scanBT(void* parameter);
 void goToSleep();
 void updateDisplay();
@@ -162,12 +194,19 @@ void setup() {
     WiFi.mode(WIFI_STA);
     connect_wifi();
 
+    // Initialize device ID from MAC address
+    initDeviceId();
+
     Serial.println("Setup MQTT Connection...");
     timeClient.begin();
     client.setServer(mqtt_server, mqtt_port);
 
     // Initialize paku-iot HTTP client if enabled
     initPakuIot();
+
+    // Initialize RuuviTag scanner
+    Serial.println("Setup RuuviTag Scanner...");
+    initRuuviTags();
 
     Serial.println("Setup Sensor...");
     pinMode(PIN, INPUT);
@@ -288,13 +327,38 @@ void updateDisplay() {
     tft.fillScreen(TFT_BLACK);
     tft.setCursor(0, 0);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(3);
-    tft.println("Paku Core");
     tft.setTextSize(2);
+    tft.println("Paku Core");
+    tft.setTextSize(1);
     tft.println("Time: " + timeClient.getFormattedTime());
-    tft.println("Flow Rate: " + String(flowRate) + " L/min");
-    tft.println("Required Delta T: " + String(requiredDeltaT) + " C");
-    tft.println("Heater Status: " + String(heaterStatus));
+    tft.println("Flow: " + String(flowRate, 1) + " L/min | dT: " + String(requiredDeltaT, 1) + "C");
+    tft.println("");
+    
+    // Display RuuviTag data
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.println("--- Ruuvi Tags ---");
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    
+    const RuuviTag* freshTags[MAX_RUUVI_TAGS];
+    uint8_t freshCount = getFreshTags(freshTags, MAX_RUUVI_TAGS, millis());
+    
+    if (freshCount == 0) {
+      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+      tft.println("No data available");
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    } else {
+      for (uint8_t i = 0; i < freshCount && i < 4; i++) {  // Show max 4 tags to fit screen
+        const RuuviTag* tag = freshTags[i];
+        if (tag->hasData && tag->lastData.valid) {
+          tft.print(tag->location);
+          tft.print(": ");
+          tft.print(String(tag->lastData.temperature, 1));
+          tft.print("C ");
+          tft.print(String(tag->lastData.humidity, 0));
+          tft.println("%");
+        }
+      }
+    }
   }
 }
 
@@ -342,41 +406,18 @@ void processData() {
     lastTime_sensor = currentTime;
     attachInterrupt(digitalPinToInterrupt(PIN), countRisingEdges, RISING);
  
-
-    // Create payload for all data
-
-    // Humidity
-    createPayload("paku/humidity/moko/cabin", -1000, timestamp);
-    createPayload("paku/humidity/moko/dryer", -1000, timestamp);
-    createPayload("paku/humidity/moko/kitchen", -1000, timestamp);
-    createPayload("paku/humidity/moko/lounge", -1000, timestamp);
-
-    // Temperatures
-    createPayload("paku/temperature/moko/cabin", -1000, timestamp);
-    createPayload("paku/temperature/moko/dryer", -1000, timestamp);
-    createPayload("paku/temperature/moko/kitchen", -1000, timestamp);
-    createPayload("paku/temperature/moko/lounge", -1000, timestamp);
-    createPayload("paku/temperature/heating/floor", -1000, timestamp);
-    createPayload("paku/temperature/heating/heater_in", -1000, timestamp);
-    createPayload("paku/temperature/heating/heater_out", -1000, timestamp);
-    createPayload("paku/temperature/heating/required_dt", requiredDeltaT, timestamp);
+    // Create payloads for all data
     
-    // Flow
-    createPayload("paku/flow/coolant_frequency", frequency, timestamp);
-    createPayload("paku/flow/coolant", flowRate, timestamp);
+    // 1. RuuviTag sensor data (temperature, humidity, pressure from BLE sensors)
+    createRuuviPayloads(timestamp.c_str());
     
-    // Heating power
-    createPayload("paku/power/heat", -1000, timestamp);
-    createPayload("paku/power/cool", -1000, timestamp);
+    // 2. Placeholder data for sensors not yet implemented (disabled by default)
+    createPlaceholderPayloads(timestamp.c_str());
     
-    // Battery voltage
-    createPayload("paku/voltage/car", -1000, timestamp);
-    createPayload("paku/voltage/leisure", -1000, timestamp);
-    
-    // Heater status
-    createPayload("paku/status/heater", -1000, timestamp);
-    createPayload("paku/status/heater_timer", -1000, timestamp);
-    createPayload("paku/status/pump", -1000, timestamp);
+    // 3. Flow sensor data (actual hardware sensor) using architecture-compliant topics
+    createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/required_dt", requiredDeltaT, timestamp);
+    createPayload(String("paku/devices/") + deviceId + "/telemetry/flow/coolant_frequency", frequency, timestamp);
+    createPayload(String("paku/devices/") + deviceId + "/telemetry/flow/coolant", flowRate, timestamp);
  }
 }
 
@@ -488,9 +529,42 @@ void sendToPakuIot() {
     strncpy(timestampBuf, timestamp.c_str(), sizeof(timestampBuf) - 1);
     timestampBuf[sizeof(timestampBuf) - 1] = '\0';
     
-    // Create batch of readings
-    TelemetryReading readings[4];
+    // Create batch of readings - size matches MAX_TELEMETRY_READINGS constant
+    TelemetryReading readings[MAX_TELEMETRY_READINGS];
     size_t readingCount = 0;
+    
+    // Add RuuviTag readings
+    // Note: Static buffers are safe here as sendToPakuIot is called from main loop
+    // and the BLE scan task does not call this function
+    const RuuviTag* freshTags[MAX_RUUVI_TAGS];
+    uint8_t freshCount = getFreshTags(freshTags, MAX_RUUVI_TAGS, millis());
+    
+    // Limit Ruuvi readings to leave room for other metrics
+    const size_t maxRuuviReadings = (MAX_TELEMETRY_READINGS - 4) / 2;  // 2 readings per tag, reserve 4 for flow/status
+    for (uint8_t i = 0; i < freshCount && i < maxRuuviReadings; i++) {
+      const RuuviTag* tag = freshTags[i];
+      if (!tag->hasData || !tag->lastData.valid) continue;
+      
+      // Static buffers for metric names (must persist during sendBatch call)
+      // Safe because this function is only called from main loop
+      static char tempMetrics[MAX_RUUVI_TAGS][64];
+      static char humidMetrics[MAX_RUUVI_TAGS][64];
+      
+      snprintf(tempMetrics[i], sizeof(tempMetrics[i]), "temperature/ruuvi/%s", tag->location);
+      snprintf(humidMetrics[i], sizeof(humidMetrics[i]), "humidity/ruuvi/%s", tag->location);
+      
+      readings[readingCount].metric = tempMetrics[i];
+      readings[readingCount].value = tag->lastData.temperature;
+      readings[readingCount].unit = "celsius";
+      readings[readingCount].timestamp = timestampBuf;
+      readingCount++;
+      
+      readings[readingCount].metric = humidMetrics[i];
+      readings[readingCount].value = tag->lastData.humidity;
+      readings[readingCount].unit = "percent";
+      readings[readingCount].timestamp = timestampBuf;
+      readingCount++;
+    }
     
     // Only send actual sensor values (not placeholder -1000 values)
     if (flowRate > 0) {
@@ -634,13 +708,161 @@ void connectMQTT() {
   }
 }
 
-// Function to scan for Bluetooth devices
+/**
+ * @brief Initializes the device ID from MAC address
+ * 
+ * Generates a unique device identifier using the last 4 bytes of the
+ * ESP32's MAC address in the format "paku-AABBCCDD".
+ */
+void initDeviceId() {
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  snprintf(deviceId, sizeof(deviceId), "paku-%02X%02X%02X%02X", 
+           mac[2], mac[3], mac[4], mac[5]);
+  Serial.print("Device ID: ");
+  Serial.println(deviceId);
+}
+
+/**
+ * @brief Initializes RuuviTag scanner and registers known tags
+ * 
+ * If RUUVI_TAG_COUNT is defined in secrets.h with known MAC addresses,
+ * those tags will be registered. Otherwise, tags will be auto-discovered
+ * during BLE scans.
+ */
+void initRuuviTags() {
+  initRuuviScanner();
+  
+#if RUUVI_TAG_COUNT > 0
+  Serial.println("Registering known RuuviTags...");
+  for (int i = 0; i < RUUVI_TAG_COUNT; i++) {
+    if (registerRuuviTag(RUUVI_TAG_MACS[i], RUUVI_TAG_LOCATIONS[i])) {
+      Serial.print("  Registered: ");
+      Serial.print(RUUVI_TAG_MACS[i]);
+      Serial.print(" -> ");
+      Serial.println(RUUVI_TAG_LOCATIONS[i]);
+    }
+  }
+#else
+  Serial.println("No pre-registered RuuviTags (auto-discovery enabled)");
+#endif
+  
+  Serial.print("RuuviTag scanner initialized. Registered tags: ");
+  Serial.println(getRegisteredTagCount());
+}
+
+/**
+ * @brief Creates MQTT payloads from RuuviTag data
+ * 
+ * Iterates through all registered tags with fresh data and creates
+ * temperature, humidity, and pressure payloads using the architecture-compliant
+ * topic structure: paku/devices/{device_id}/telemetry/{type}/{location}
+ * 
+ * @param timestamp Current timestamp string
+ */
+void createRuuviPayloads(const char* timestamp) {
+  const RuuviTag* freshTags[MAX_RUUVI_TAGS];
+  uint8_t freshCount = getFreshTags(freshTags, MAX_RUUVI_TAGS, millis());
+  
+  for (uint8_t i = 0; i < freshCount; i++) {
+    const RuuviTag* tag = freshTags[i];
+    if (!tag->hasData || !tag->lastData.valid) continue;
+    
+    // Create temperature payload using architecture-compliant topic
+    String tempTopic = String("paku/devices/") + deviceId + "/telemetry/temperature/" + tag->location;
+    createPayload(tempTopic, tag->lastData.temperature, timestamp);
+    
+    // Create humidity payload
+    String humidTopic = String("paku/devices/") + deviceId + "/telemetry/humidity/" + tag->location;
+    createPayload(humidTopic, tag->lastData.humidity, timestamp);
+    
+    // Create pressure payload (convert Pa to hPa)
+    if (tag->lastData.pressure > 0) {
+      String pressTopic = String("paku/devices/") + deviceId + "/telemetry/pressure/" + tag->location;
+      createPayload(pressTopic, tag->lastData.pressure / 100.0f, timestamp);
+    }
+    
+    // Create battery voltage payload
+    if (tag->lastData.batteryVoltage > 0) {
+      String battTopic = String("paku/devices/") + deviceId + "/telemetry/voltage/" + tag->location;
+      createPayload(battTopic, tag->lastData.batteryVoltage, timestamp);
+    }
+    
+    Serial.print("RuuviTag [");
+    Serial.print(tag->location);
+    Serial.print("]: T=");
+    Serial.print(tag->lastData.temperature);
+    Serial.print("°C, H=");
+    Serial.print(tag->lastData.humidity);
+    Serial.println("%");
+  }
+}
+
+/**
+ * @brief Creates placeholder payloads for sensors not yet implemented
+ * 
+ * Generates placeholder data for future sensor integration using 
+ * architecture-compliant topic structure.
+ * This ensures the data pipeline is tested even without hardware.
+ * 
+ * @param timestamp Current timestamp string
+ */
+void createPlaceholderPayloads(const char* timestamp) {
+  if (!generatePlaceholderData) return;
+  
+  // Generate placeholder data for locations without Ruuvi tags
+  const char* placeholderLocations[] = {"cabin", "dryer", "kitchen", "lounge"};
+  
+  for (int i = 0; i < 4; i++) {
+    // Check if we have a Ruuvi tag for this location
+    bool hasRuuviData = false;
+    
+    const RuuviTag* freshTags[MAX_RUUVI_TAGS];
+    uint8_t freshCount = getFreshTags(freshTags, MAX_RUUVI_TAGS, millis());
+    for (uint8_t j = 0; j < freshCount; j++) {
+      if (strcmp(freshTags[j]->location, placeholderLocations[i]) == 0) {
+        hasRuuviData = true;
+        break;
+      }
+    }
+    
+    // Only create placeholders if no real Ruuvi data exists for this location
+    if (!hasRuuviData) {
+      // Generate placeholder values (SENSOR_NOT_AVAILABLE indicates no hardware)
+      String humidTopic = String("paku/devices/") + deviceId + "/telemetry/humidity/" + placeholderLocations[i];
+      createPayload(humidTopic, SENSOR_NOT_AVAILABLE, timestamp);
+      
+      String tempTopic = String("paku/devices/") + deviceId + "/telemetry/temperature/" + placeholderLocations[i];
+      createPayload(tempTopic, SENSOR_NOT_AVAILABLE, timestamp);
+    }
+  }
+  
+  // Additional placeholder sensors for heating system
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/floor", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/heater_in", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/heater_out", SENSOR_NOT_AVAILABLE, timestamp);
+  
+  // Power readings placeholders
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/power/heat", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/power/cool", SENSOR_NOT_AVAILABLE, timestamp);
+  
+  // Battery voltage placeholders
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/voltage/car", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/voltage/leisure", SENSOR_NOT_AVAILABLE, timestamp);
+  
+  // Status placeholders
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/status/heater", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/status/heater_timer", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String("paku/devices/") + deviceId + "/telemetry/status/pump", SENSOR_NOT_AVAILABLE, timestamp);
+}
+
+// Function to scan for Bluetooth devices and parse RuuviTag data
 void scanBT(void* parameter) {
+  // Initialize BLE once
+  BLEDevice::init("");
+  
   while (scanBT_enabled) {
     Serial.println("Starting Bluetooth scan...");
-
-    // Initialize BLE
-    BLEDevice::init("");
 
     // Create a BLE scan object
     BLEScan* pBLEScan = BLEDevice::getScan();
@@ -655,20 +877,54 @@ void scanBT(void* parameter) {
     Serial.print("Devices found: ");
     Serial.println(foundDevices.getCount());
 
-    // Iterate through the found devices and print their details
+    // Iterate through the found devices and check for RuuviTags
     for (int i = 0; i < foundDevices.getCount(); i++) {
       BLEAdvertisedDevice device = foundDevices.getDevice(i);
-      Serial.print("Device ");
-      Serial.print(i + 1);
-      Serial.print(": ");
-      Serial.println(device.toString().c_str());
+      
+      // Check if device has manufacturer data
+      if (device.haveManufacturerData()) {
+        std::string mfData = device.getManufacturerData();
+        
+        // Check minimum length for Ruuvi data
+        if (mfData.length() >= 2) {
+          // Get manufacturer ID (little-endian)
+          uint16_t manufacturerId = (uint8_t)mfData[0] | ((uint8_t)mfData[1] << 8);
+          
+          // Check if this is Ruuvi data
+          if (isRuuviManufacturer(manufacturerId)) {
+            Serial.print("RuuviTag found: ");
+            Serial.println(device.getAddress().toString().c_str());
+            
+            // Get MAC address bytes
+            uint8_t macBytes[6];
+            esp_bd_addr_t* nativeAddr = device.getAddress().getNative();
+            // BLE addresses are in reverse order
+            for (int j = 0; j < 6; j++) {
+              macBytes[j] = (*nativeAddr)[5-j];
+            }
+            
+            // Extract Ruuvi payload (skip 2-byte manufacturer ID)
+            if (mfData.length() > 2) {
+              const uint8_t* ruuviPayload = (const uint8_t*)mfData.c_str() + 2;
+              size_t ruuviLength = mfData.length() - 2;
+              
+              // Update tag data
+              if (updateRuuviTagData(macBytes, ruuviPayload, ruuviLength, millis())) {
+                Serial.println("  -> RuuviTag data updated");
+              } else {
+                Serial.println("  -> Failed to parse RuuviTag data");
+              }
+            }
+          }
+        }
+      }
     }
 
     // Clear the scan results
     pBLEScan->clearResults();
 
-    // Delay before the next scan
-    vTaskDelay(1000 / portTICK_PERIOD_MS);  // Delay for 1 second
+    // Delay before the next scan using configured interval
+    vTaskDelay(BLE_SCAN_INTERVAL_MS / portTICK_PERIOD_MS);
   }
 
   // Delete the task if scanBT_enabled is set to false
