@@ -992,8 +992,9 @@ void scanBT(void* parameter) {
             // Get MAC address bytes
             uint8_t macBytes[6];
             esp_bd_addr_t* nativeAddr = device.getAddress().getNative();
+            // BLE addresses are in reverse order
             for (int j = 0; j < 6; j++) {
-              macBytes[j] = (*nativeAddr)[j];
+              macBytes[j] = (*nativeAddr)[5-j];
             }
             
             // Extract Ruuvi payload (skip 2-byte manufacturer ID)
