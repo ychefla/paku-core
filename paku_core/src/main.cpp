@@ -43,6 +43,8 @@
 #include "ruuvi_scanner.h"
 #include "moko.h"
 #include "moko_scanner.h"
+#include "frezzer.h"
+#include "frezzer_controller.h"
 #ifndef ESP8266
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -111,6 +113,12 @@ lcd_cmd_t lcd_st7789v[] = {
 bool scanBT_enabled = true;
 // BLE scan interval in milliseconds between scan cycles
 #define BLE_SCAN_INTERVAL_MS 10000
+
+// Frezzer compressor fridge configuration
+// Define FREZZER_COUNT > 0 and FREZZER_MACS/FREZZER_LOCATIONS in secrets.h
+#ifndef FREZZER_COUNT
+#define FREZZER_COUNT 0
+#endif
 #endif // HAS_BLE
 
 // Analog sensor settings (ESP8266 and ESP32)
@@ -357,6 +365,9 @@ void initRuuviTags();
 void createRuuviPayloads(const char* timestamp);
 void initMoKoSensors();
 void createMoKoPayloads(const char* timestamp);
+void initFrezzerDevices();
+void createFrezzerPayloads(const char* timestamp);
+void handleFrezzerMqttCommand(const char* topic, const char* payload);
 void scanBT(void* parameter);
 void saveRuuviWhitelist();
 void loadRuuviWhitelist();
@@ -785,6 +796,10 @@ void setup() {
     // Initialize MoKo sensor scanner (ESP32 only)
     Serial.println("Setup MoKo Sensor Scanner...");
     initMoKoSensors();
+
+    // Initialize Frezzer controller
+    Serial.println("Setup Frezzer Controller...");
+    initFrezzerDevices();
 #endif // HAS_BLE
 
 #if HAS_WIRED_SENSORS
@@ -1027,6 +1042,9 @@ void processData() {
     
     // 2. MoKo sensor data (temperature, humidity, pressure, accelerometer from BLE sensors)
     createMoKoPayloads(timestamp.c_str());
+
+    // 3. Frezzer fridge data (temperature, status from BLE compressor fridges)
+    createFrezzerPayloads(timestamp.c_str());
 #endif // HAS_BLE
     
 #if HAS_WIRED_SENSORS
@@ -2014,6 +2032,18 @@ void scanBT(void* parameter) {
       
       // Get device name if available
       std::string deviceName = device.haveName() ? device.getName() : "";
+      
+      // Check if this is a Frezzer device by name (Alpicool/Frezzer BLE)
+      if (!deviceName.empty() && isFrezzerDevice(deviceName.c_str())) {
+        int rssi = device.getRSSI();
+        uint8_t macBytes[6];
+        esp_bd_addr_t* nativeAddr = device.getAddress().getNative();
+        for (int j = 0; j < 6; j++) macBytes[j] = (*nativeAddr)[j];
+        if (updateFrezzerFromScan(macBytes, deviceName.c_str(), rssi, millis())) {
+          Serial.print("Frezzer device updated: ");
+          Serial.println(device.getAddress().toString().c_str());
+        }
+      }
       
       // Check if device has manufacturer data
       if (device.haveManufacturerData()) {
@@ -3110,6 +3140,160 @@ void handleSystemState() {
 // ============================================================================
 // End Phase 2 State Machine
 // ============================================================================
+
+// =============================================================================
+// Frezzer PRO BLE Fridge Integration
+// =============================================================================
+
+#if HAS_BLE
+/**
+ * @brief Initializes Frezzer controller and registers known devices
+ *
+ * If FREZZER_COUNT is defined in secrets.h with known MAC addresses,
+ * those devices will be registered. Otherwise, devices will be auto-discovered
+ * during BLE scans.
+ */
+void initFrezzerDevices() {
+  initFrezzerController();
+
+#if FREZZER_COUNT > 0
+  Serial.println("Registering known Frezzer devices...");
+  for (int i = 0; i < FREZZER_COUNT; i++) {
+    if (registerFrezzerDevice(FREZZER_MACS[i], FREZZER_LOCATIONS[i])) {
+      Serial.print("  Registered: ");
+      Serial.print(FREZZER_MACS[i]);
+      Serial.print(" -> ");
+      Serial.println(FREZZER_LOCATIONS[i]);
+    }
+  }
+#else
+  Serial.println("No pre-registered Frezzer devices (auto-discovery enabled)");
+#endif
+
+  Serial.print("Frezzer controller initialized. Registered devices: ");
+  Serial.println(getFrezzerDeviceCount());
+}
+
+/**
+ * @brief Creates MQTT payloads from Frezzer device data
+ *
+ * @param timestamp Current timestamp string
+ */
+void createFrezzerPayloads(const char* timestamp) {
+  const FrezzerDevice* freshDevices[MAX_FREZZER_DEVICES];
+  uint8_t freshCount = getFreshFrezzerDevices(freshDevices, MAX_FREZZER_DEVICES, millis());
+
+  for (uint8_t i = 0; i < freshCount; i++) {
+    const FrezzerDevice* device = freshDevices[i];
+    if (!device->hasData || !device->lastData.valid) continue;
+
+    JsonDocument doc;
+    doc["timestamp"] = String(timestamp);
+    doc["device_id"] = String("frezzer_") + device->location;
+    doc["location"] = device->location;
+    doc["mac"] = device->macString;
+    if (strlen(device->deviceName) > 0) doc["device_name"] = device->deviceName;
+
+    JsonObject metrics = doc["metrics"].to<JsonObject>();
+    metrics["current_temp_c"] = device->lastData.currentTemp;
+    metrics["target_temp_c"] = device->lastData.targetTemp;
+    metrics["battery_voltage"] = device->lastData.batteryVoltage;
+    metrics["mode"] = frezzerModeToString(device->lastData.mode);
+    metrics["compressor"] = frezzerCompressorStateToString(device->lastData.compressor);
+    metrics["power_level"] = device->lastData.powerLevel;
+    metrics["lid_open"] = device->lastData.lidOpen;
+    metrics["low_voltage_protection"] = device->lastData.lowVoltageProtection;
+    metrics["error"] = frezzerErrorToString(device->lastData.error);
+    metrics["connected"] = device->connected;
+
+    String payload;
+    serializeJson(doc, payload);
+    String topic = String("paku/fridge/") + device->location + "/data";
+
+    if (payloadIndex < MAX_MQTT_PAYLOADS) {
+      payloads[payloadIndex].topic = topic;
+      payloads[payloadIndex].data = payload;
+      payloadIndex++;
+    }
+
+    Serial.print("Frezzer [");
+    Serial.print(device->location);
+    Serial.print("]: T=");
+    Serial.print(device->lastData.currentTemp);
+    Serial.print("\u00b0C, Target=");
+    Serial.print(device->lastData.targetTemp);
+    Serial.print("\u00b0C, Mode=");
+    Serial.println(frezzerModeToString(device->lastData.mode));
+  }
+}
+
+/**
+ * @brief Handles MQTT commands for Frezzer devices
+ *
+ * @param topic MQTT topic (paku/fridge/{location}/cmd)
+ * @param payload JSON command payload
+ */
+void handleFrezzerMqttCommand(const char* topic, const char* payload) {
+  String topicStr = String(topic);
+  if (!topicStr.startsWith("paku/fridge/") || !topicStr.endsWith("/cmd")) return;
+
+  int startIdx = 12;
+  int endIdx = topicStr.lastIndexOf("/cmd");
+  if (endIdx <= startIdx) return;
+  String location = topicStr.substring(startIdx, endIdx);
+
+  const FrezzerDevice* device = nullptr;
+  for (uint8_t i = 0; i < getFrezzerDeviceCount(); i++) {
+    const FrezzerDevice* d = getFrezzerDevice(i);
+    if (d != nullptr && String(d->location) == location) { device = d; break; }
+  }
+  if (device == nullptr) {
+    Serial.print("Frezzer command: device not found for location ");
+    Serial.println(location);
+    return;
+  }
+
+  JsonDocument cmdDoc;
+  DeserializationError error = deserializeJson(cmdDoc, payload);
+  if (error) {
+    Serial.print("Frezzer command: JSON parse error - ");
+    Serial.println(error.c_str());
+    return;
+  }
+
+  const char* command = cmdDoc["command"];
+  if (command == nullptr) { Serial.println("Frezzer command: missing 'command' field"); return; }
+
+  FrezzerDevice* mutableDevice = const_cast<FrezzerDevice*>(device);
+  FrezzerResult result = FrezzerResult::UNKNOWN_ERROR;
+
+  if (strcmp(command, "set_temp") == 0) {
+    float temp = cmdDoc["value"].as<float>();
+    result = setFrezzerTargetTemp(mutableDevice, temp);
+    Serial.print("Frezzer set_temp "); Serial.print(temp);
+  } else if (strcmp(command, "set_mode") == 0) {
+    const char* modeStr = cmdDoc["value"];
+    FrezzerMode mode = FrezzerMode::UNKNOWN;
+    if (strcmp(modeStr, "off") == 0)       mode = FrezzerMode::OFF;
+    else if (strcmp(modeStr, "fridge") == 0)  mode = FrezzerMode::FRIDGE;
+    else if (strcmp(modeStr, "freezer") == 0) mode = FrezzerMode::FREEZER;
+    else if (strcmp(modeStr, "eco") == 0)     mode = FrezzerMode::ECO;
+    else if (strcmp(modeStr, "max_cool") == 0) mode = FrezzerMode::MAX_COOL;
+    result = setFrezzerMode(mutableDevice, mode);
+    Serial.print("Frezzer set_mode "); Serial.print(modeStr);
+  } else if (strcmp(command, "power") == 0) {
+    const char* powerStr = cmdDoc["value"];
+    if (strcmp(powerStr, "on") == 0)       result = turnFrezzerOn(mutableDevice);
+    else if (strcmp(powerStr, "off") == 0) result = turnFrezzerOff(mutableDevice);
+    Serial.print("Frezzer power "); Serial.print(powerStr);
+  } else {
+    Serial.print("Frezzer command: unknown command "); Serial.println(command); return;
+  }
+
+  Serial.print(" -> ");
+  Serial.println(frezzerResultToString(result));
+}
+#endif // HAS_BLE
 
 // TFT Pin check (only for devices with display)
 #if HAS_DISPLAY
