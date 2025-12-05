@@ -21,7 +21,6 @@
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
-    #define PIN_POWER_ON 15
 
 // =============================================================================
 // Device Configuration: ESP32 CH340C 30PIN (Generic)
@@ -31,7 +30,6 @@
     #define HAS_DISPLAY 0
     #define HAS_TOUCH 0
     #define HAS_PSRAM 0
-    // No PIN_POWER_ON needed for this board
 
 // =============================================================================
 // Default / Error
@@ -43,5 +41,4 @@
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
-    #define PIN_POWER_ON 15
 #endif
