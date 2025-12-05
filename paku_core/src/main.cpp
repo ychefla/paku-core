@@ -7,14 +7,18 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "Arduino.h"
-#include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
-#include "img_logo.h"
+#include "device_config.h"  // Device selection and feature detection
 #include "pin_config.h"
 #include "PakuIotClient.h"
 #include "ruuvi.h"
 #include "ruuvi_scanner.h"
 #include "sensor_placeholders.h"
 #include <string>
+
+// Display-related includes and definitions (only when display is available)
+#if HAS_DISPLAY
+#include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
+#include "img_logo.h"
 
 /* The product now has two screens, and the initialization code needs a small change in the new version. The LCD_MODULE_CMD_1 is used to define the
  * switch macro. */
@@ -48,6 +52,7 @@ lcd_cmd_t lcd_st7789v[] = {
     {0xE1, {0XF0, 0X08, 0X0C, 0X0B, 0X09, 0X24, 0X2B, 0X22, 0X43, 0X38, 0X15, 0X16, 0X2F, 0X37}, 14},
 };
 #endif
+#endif // HAS_DISPLAY
 
 // BT settings
 bool scanBT_enabled = true;
@@ -223,7 +228,10 @@ String getISO8601Timestamp() {
 void setup() {
     Serial.begin(115200);
     Serial.println("Starting setup...");
+    Serial.print("Device: ");
+    Serial.println(DEVICE_NAME);
     
+#if HAS_DISPLAY
     pinMode(PIN_POWER_ON, OUTPUT);
     digitalWrite(PIN_POWER_ON, HIGH);
     tft.begin();
@@ -254,6 +262,7 @@ void setup() {
     ledcAttach(PIN_LCD_BL, 200, 8);
     ledcWrite(PIN_LCD_BL, 255);
 #endif
+#endif // HAS_DISPLAY
 
     Serial.println("Setup Wifi Connection...");
     WiFi.mode(WIFI_STA);
@@ -370,12 +379,14 @@ void goToSleep() {
   static unsigned long awakeStartTime = millis();
   if (millis() - awakeStartTime >= 30000) {
     Serial.println("Going to sleep for 15 seconds...");
+#if HAS_DISPLAY
     tft.fillScreen(TFT_BLACK);
     tft.setCursor(0, 0);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(2);
     tft.println("Going to sleep for 15 seconds...");
     delay(2000);
+#endif
     // Configure the ESP32 to wake up after 15 seconds
     esp_sleep_enable_timer_wakeup(15 * 1000000);
     esp_deep_sleep_start();
@@ -385,6 +396,7 @@ void goToSleep() {
 }
 
 void updateDisplay() {
+#if HAS_DISPLAY
   unsigned long currentTime = millis();
   if (currentTime - lastTime_sensor >= TFT_UPDATE_WAIT) {
     tft.fillScreen(TFT_BLACK);
@@ -431,6 +443,7 @@ void updateDisplay() {
       }
     }
   }
+#endif // HAS_DISPLAY
 }
 
 /**
@@ -1075,7 +1088,8 @@ void updateIntervals() {
   }
 }
 
-// TFT Pin check
+// TFT Pin check (only for devices with display)
+#if HAS_DISPLAY
 #if PIN_LCD_WR  != TFT_WR || \
     PIN_LCD_RD  != TFT_RD || \
     PIN_LCD_CS    != TFT_CS   || \
@@ -1095,6 +1109,7 @@ void updateIntervals() {
     320   != TFT_HEIGHT
 #error  "Error! Please make sure <User_Setups/Setup206_LilyGo_T_Display_S3.h> is selected in <TFT_eSPI/User_Setup_Select.h>"
 #endif
+#endif // HAS_DISPLAY
 
 // NOTE: ESP-IDF 5.0+ and Arduino ESP32 3.0+ are now supported.
 // The LEDC API differences are handled at lines 143-150.
