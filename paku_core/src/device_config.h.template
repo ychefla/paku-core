@@ -1,17 +1,30 @@
 /**
- * @file device_config.h
+ * @file device_config.h.template
  * @brief Device-specific configuration and feature detection
  * 
- * This file reads the device selection from secrets.h and defines
- * hardware capability macros used for conditional compilation.
+ * SETUP: Copy this file to device_config.h (same folder) and uncomment
+ * the device define that matches your hardware.
  * 
- * To select a device, edit secrets.h and uncomment ONE device define:
+ * Do not commit device_config.h to version control!
+ * 
+ * To select a device, uncomment ONE device define below:
  *   #define DEVICE_LILYGO_T_DISPLAY_S3   // LilyGo with display (default)
  *   #define DEVICE_ESP32_CH340C_30PIN    // Generic ESP32 (no display)
  */
 #pragma once
 
-#include "secrets.h"
+// =============================================================================
+// TARGET DEVICE SELECTION
+// =============================================================================
+// Uncomment ONE line below to select your target hardware.
+// Default: LilyGo T-Display S3 (with display)
+//
+// Available devices:
+//   DEVICE_LILYGO_T_DISPLAY_S3  - LilyGo T-Display S3 with ST7789V TFT display
+//   DEVICE_ESP32_CH340C_30PIN   - Generic ESP32 30-pin board (no display)
+//
+#define DEVICE_LILYGO_T_DISPLAY_S3
+// #define DEVICE_ESP32_CH340C_30PIN
 
 // =============================================================================
 // Device Configuration: LilyGo T-Display S3
@@ -36,7 +49,7 @@
 // =============================================================================
 #else
     // Default to LilyGo T-Display S3 for backward compatibility
-    #warning "No device defined in secrets.h, defaulting to DEVICE_LILYGO_T_DISPLAY_S3"
+    #warning "No device defined in device_config.h, defaulting to DEVICE_LILYGO_T_DISPLAY_S3"
     #define DEVICE_NAME "LilyGo T-Display S3"
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
