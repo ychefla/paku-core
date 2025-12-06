@@ -60,7 +60,12 @@
     #define HAS_TOUCH 0
     #define HAS_PSRAM 0
     #define HAS_LED 1           // Has onboard LED for status indication
-    #define PIN_LED_BUILTIN 2   // Most ESP32 DevKit boards have LED on GPIO2
+    // NOTE: GPIO2 is used by the flow sensor interrupt, so we must use a different pin for LED
+    // Common ESP32 board LED pins: GPIO2 (D2), GPIO4 (D4), GPIO5 (D5)
+    // IMPORTANT: Change this to match an LED on your specific board!
+    // If your board only has LED on GPIO2, it will conflict with flow sensor.
+    // You may need to add an external LED to another GPIO (e.g., GPIO4 or GPIO5)
+    #define PIN_LED_BUILTIN 2   // LED on GPIO2 (D2) - conflicts with flow sensor!
     #define LED_ON LOW          // LED is active LOW (inverted logic) on some ESP32 boards
 
 // =============================================================================
