@@ -101,7 +101,9 @@ PakuIotClient pakuIotClient;
 unsigned long lastTime_pakuIot = 0;
 unsigned long pakuIotInterval = 60000;  // 1 minute interval for HTTP transport
 
-#define PIN 2
+// Flow sensor pin - moved from GPIO2 to GPIO4 to avoid conflict with LED
+// Note: GPIO2 is used for the onboard LED on many ESP32 dev boards
+#define PIN_FLOW_SENSOR 4
 
 unsigned long lastTime_sensor = 0;
 unsigned long lastTime_mqtt = 0;
@@ -418,9 +420,9 @@ void setup() {
     Serial.println("Setup RuuviTag Scanner...");
     initRuuviTags();
 
-    Serial.println("Setup Sensor...");
-    pinMode(PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(PIN), countRisingEdges, RISING);
+    Serial.println("Setup Flow Sensor on GPIO4...");
+    pinMode(PIN_FLOW_SENSOR, INPUT);
+    attachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR), countRisingEdges, RISING);
     
     // Initialize intervals based on heater status
     updateIntervals();
@@ -630,7 +632,7 @@ void processData() {
     Serial.print(".");
  
     // process flow data
-    detachInterrupt(digitalPinToInterrupt(PIN));
+    detachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR));
     
     if (testMode) {
       count = random(198, 462);
@@ -644,7 +646,7 @@ void processData() {
 
     count = 0;
     lastTime_sensor = currentTime;
-    attachInterrupt(digitalPinToInterrupt(PIN), countRisingEdges, RISING);
+    attachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR), countRisingEdges, RISING);
  
     // Create payloads for all data
     
