@@ -40,8 +40,15 @@
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
-    #define HAS_LED 0           // No onboard LED available (display shows status)
-    // LilyGo T-Display S3 uses display for status indication instead of LEDs
+    #define HAS_LED 1           // Has onboard LED for status indication
+    // LilyGo T-Display S3 LED configuration:
+    // - Some versions have RGB LED on GPIO43 or GPIO44
+    // - If your board has LED on a different pin, change PIN_LED_BUILTIN below
+    // - GPIO38 is the LCD backlight pin - DO NOT use for LED
+    #define PIN_LED_BUILTIN 43  // Default RGB LED pin (check your board version)
+    #define LED_ON HIGH         // LED is active HIGH
+    #define HAS_RGB_LED 1       // Addressable RGB LED (WS2812 style)
+    // Note: For RGB LED control, use a NeoPixel or FastLED library
 
 // =============================================================================
 // Device Configuration: ESP32 CH340C 30PIN (ESP32, not S3)
@@ -67,7 +74,10 @@
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
-    #define HAS_LED 0
+    #define HAS_LED 1
+    #define PIN_LED_BUILTIN 43  // Default RGB LED pin (check your board version)
+    #define LED_ON HIGH
+    #define HAS_RGB_LED 1
 #endif
 
 // =============================================================================
@@ -75,6 +85,8 @@
 // =============================================================================
 // Suggested LED patterns for status indication:
 //
+// For simple LEDs (ESP32 CH340C):
+// --------------------------------
 // BOOT/STARTUP:
 //   - 3 quick blinks: Device starting up
 //
@@ -99,4 +111,18 @@
 // SLEEP/LOW POWER:
 //   - LED OFF: Device in deep sleep
 //   - Very dim or single flash before sleep: Entering sleep mode
+//
+// For RGB LEDs (LilyGo T-Display S3):
+// ------------------------------------
+// Use colors to indicate different states:
+//   - BLUE: WiFi connecting
+//   - GREEN: WiFi connected, system OK
+//   - CYAN: MQTT connecting
+//   - WHITE pulse: Heartbeat (normal operation)
+//   - YELLOW: Warning (e.g., sensor issue)
+//   - RED: Error condition
+//   - PURPLE: OTA update in progress
+//   - OFF: Deep sleep
+//
+// Note: RGB LED control requires NeoPixel or FastLED library
 //
