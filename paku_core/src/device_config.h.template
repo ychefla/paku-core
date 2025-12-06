@@ -40,6 +40,8 @@
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
+    #define HAS_LED 0           // No onboard LED available (display shows status)
+    // LilyGo T-Display S3 uses display for status indication instead of LEDs
 
 // =============================================================================
 // Device Configuration: ESP32 CH340C 30PIN (ESP32, not S3)
@@ -50,6 +52,9 @@
     #define HAS_DISPLAY 0
     #define HAS_TOUCH 0
     #define HAS_PSRAM 0
+    #define HAS_LED 1           // Has onboard LED for status indication
+    #define PIN_LED_BUILTIN 2   // Most ESP32 DevKit boards have LED on GPIO2
+    #define LED_ON HIGH         // LED is active HIGH on most ESP32 boards
 
 // =============================================================================
 // Default / Error
@@ -62,4 +67,36 @@
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
+    #define HAS_LED 0
 #endif
+
+// =============================================================================
+// LED Status Indicator Patterns (for HAS_LED devices)
+// =============================================================================
+// Suggested LED patterns for status indication:
+//
+// BOOT/STARTUP:
+//   - 3 quick blinks: Device starting up
+//
+// WIFI STATUS:
+//   - Fast blink (100ms): Connecting to WiFi
+//   - Solid ON (1s) then OFF: WiFi connected successfully
+//   - 2 slow blinks: WiFi connection failed, retrying
+//
+// MQTT STATUS:
+//   - Slow blink (500ms): Connecting to MQTT broker
+//   - Solid ON (500ms) then OFF: MQTT connected successfully
+//   - 3 rapid blinks: MQTT connection failed
+//
+// NORMAL OPERATION:
+//   - Brief flash every 5s: Heartbeat (system running normally)
+//   - Double blink: Data sent successfully
+//
+// ERROR CONDITIONS:
+//   - Continuous fast blink: Critical error
+//   - SOS pattern (... --- ...): Fatal error, needs reset
+//
+// SLEEP/LOW POWER:
+//   - LED OFF: Device in deep sleep
+//   - Very dim or single flash before sleep: Entering sleep mode
+//
