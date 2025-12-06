@@ -174,8 +174,6 @@ static const unsigned long HEARTBEAT_INTERVAL = 5000; // 5 seconds
 void ledInit() {
   pinMode(PIN_LED_BUILTIN, OUTPUT);
   digitalWrite(PIN_LED_BUILTIN, !LED_ON); // Start with LED off
-  Serial.print("LED initialized on GPIO");
-  Serial.println(PIN_LED_BUILTIN);
 }
 
 /**
@@ -222,7 +220,6 @@ void ledStartup() {
  * Note: Uses longer flash for better visibility
  */
 void ledWifiConnecting() {
-  Serial.println("LED: WiFi connecting blink");
   ledOn();
   delay(100);
   ledOff();
@@ -244,7 +241,6 @@ void ledWifiConnected() {
  * Note: Uses longer flash for better visibility
  */
 void ledMqttConnecting() {
-  Serial.println("LED: MQTT connecting blink");
   ledOn();
   delay(150);
   ledOff();
@@ -265,7 +261,6 @@ void ledMqttConnected() {
 void ledHeartbeat() {
   unsigned long currentTime = millis();
   if (currentTime - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
-    Serial.println("LED heartbeat");
     ledBlink(1, 200, 0);  // 200ms flash for better visibility
     lastHeartbeatTime = currentTime;
   }
@@ -493,16 +488,6 @@ void loop() {
   static unsigned long loopCount = 0;
   loopCount++;
   
-#if HAS_LED
-  // Debug: Log loop iteration to verify loop is running
-  if (loopCount % 5 == 0) {
-    Serial.print("Loop #");
-    Serial.print(loopCount);
-    Serial.print(", millis=");
-    Serial.println(millis());
-  }
-#endif
-
   // Update heater status here
   // heaterStatus = ...;  // Retrieve the actual heater status
   // Update intervals based on heater status

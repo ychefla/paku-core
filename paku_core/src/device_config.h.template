@@ -63,7 +63,7 @@
     // GPIO2 is used for the onboard LED (D2) on most ESP32 dev boards
     // Flow sensor has been moved to GPIO4 to avoid conflict
     #define PIN_LED_BUILTIN 2   // LED on GPIO2 (D2)
-    #define LED_ON LOW          // LED is active LOW (inverted logic) on some ESP32 boards
+    #define LED_ON HIGH         // LED is active HIGH
 
 // =============================================================================
 // Default / Error
