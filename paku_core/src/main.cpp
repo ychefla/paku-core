@@ -148,6 +148,131 @@ void scanBT(void* parameter);
 void goToSleep();
 void updateDisplay();
 
+// LED status indicator functions
+#if HAS_LED
+void ledInit();
+void ledOn();
+void ledOff();
+void ledBlink(int count, int onTime, int offTime);
+void ledStartup();
+void ledWifiConnecting();
+void ledWifiConnected();
+void ledMqttConnecting();
+void ledMqttConnected();
+void ledHeartbeat();
+void ledError();
+
+// LED state tracking
+static unsigned long lastHeartbeatTime = 0;
+static const unsigned long HEARTBEAT_INTERVAL = 5000; // 5 seconds
+
+/**
+ * @brief Initialize the LED pin for status indication
+ */
+void ledInit() {
+  pinMode(PIN_LED_BUILTIN, OUTPUT);
+  digitalWrite(PIN_LED_BUILTIN, !LED_ON); // Start with LED off
+  Serial.print("LED initialized on GPIO");
+  Serial.println(PIN_LED_BUILTIN);
+}
+
+/**
+ * @brief Turn the LED on
+ */
+void ledOn() {
+  digitalWrite(PIN_LED_BUILTIN, LED_ON);
+}
+
+/**
+ * @brief Turn the LED off
+ */
+void ledOff() {
+  digitalWrite(PIN_LED_BUILTIN, !LED_ON);
+}
+
+/**
+ * @brief Blink the LED a specified number of times
+ * @param count Number of blinks
+ * @param onTime Duration LED is on in milliseconds
+ * @param offTime Duration LED is off in milliseconds
+ */
+void ledBlink(int count, int onTime, int offTime) {
+  for (int i = 0; i < count; i++) {
+    ledOn();
+    delay(onTime);
+    ledOff();
+    if (i < count - 1) {
+      delay(offTime);
+    }
+  }
+}
+
+/**
+ * @brief LED pattern for device startup (3 quick blinks)
+ */
+void ledStartup() {
+  ledBlink(3, 100, 100);
+}
+
+/**
+ * @brief LED pattern while connecting to WiFi (single fast blink)
+ * Call this repeatedly during WiFi connection attempts
+ * Note: Uses short delays to avoid blocking WiFi handshake
+ */
+void ledWifiConnecting() {
+  ledOn();
+  delay(30);
+  ledOff();
+}
+
+/**
+ * @brief LED pattern when WiFi connected (solid ON briefly)
+ */
+void ledWifiConnected() {
+  ledOn();
+  delay(500);
+  ledOff();
+}
+
+/**
+ * @brief LED pattern while connecting to MQTT (slow blink)
+ * Call this during MQTT connection attempts
+ * Note: Uses short delays to avoid blocking MQTT handshake
+ */
+void ledMqttConnecting() {
+  ledOn();
+  delay(50);
+  ledOff();
+}
+
+/**
+ * @brief LED pattern when MQTT connected (double blink)
+ */
+void ledMqttConnected() {
+  ledBlink(2, 100, 100);
+}
+
+/**
+ * @brief LED heartbeat pattern (brief flash)
+ * Call this periodically to indicate normal operation
+ */
+void ledHeartbeat() {
+  unsigned long currentTime = millis();
+  if (currentTime - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
+    ledBlink(1, 50, 0);
+    lastHeartbeatTime = currentTime;
+  }
+}
+
+/**
+ * @brief LED error pattern (5 rapid blinks)
+ * Call this to indicate an error condition
+ */
+void ledError() {
+  ledBlink(5, 100, 100);
+}
+#endif // HAS_LED
+
 void IRAM_ATTR countRisingEdges() {
   count++;
 }
@@ -231,6 +356,12 @@ void setup() {
     Serial.print("Device: ");
     Serial.println(DEVICE_NAME);
     
+#if HAS_LED
+    // Initialize LED for status indication
+    ledInit();
+    ledStartup();  // 3 quick blinks to indicate startup
+#endif
+
 #if HAS_DISPLAY
     pinMode(PIN_POWER_ON, OUTPUT);
     digitalWrite(PIN_POWER_ON, HIGH);
@@ -364,6 +495,11 @@ void loop() {
   if (!client.connected()) {
       connectMQTT();
   }
+
+#if HAS_LED
+  // LED heartbeat - brief flash every 5 seconds during normal operation
+  ledHeartbeat();
+#endif
 
   updateDisplay(); 
   client.loop();
@@ -744,6 +880,9 @@ void connect_wifi() {
         //Serial.print(".");
         wifi_status += ".";
         attempts++;
+#if HAS_LED
+        ledWifiConnecting();  // Fast blink while connecting
+#endif
         updateDisplay();
       }
 
@@ -757,12 +896,18 @@ void connect_wifi() {
         wifi_status += " (";
         wifi_status += WiFi.localIP();
         wifi_status += ")";
+#if HAS_LED
+        ledWifiConnected();  // Solid ON briefly to indicate success
+#endif
         updateDisplay();
         return;
       } else {
         Serial.println("");
         Serial.print("Failed to connect to ");
         Serial.println(WIFI_SSIDS[i]);
+#if HAS_LED
+        ledError();  // Error blink for failed connection
+#endif
       }
     }
   }
@@ -780,6 +925,9 @@ void connect_wifi() {
 void connectMQTT() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
+#if HAS_LED
+    ledMqttConnecting();  // Slow blink while connecting
+#endif
     //tft.fillScreen(TFT_BLACK);
     //tft.setCursor(0, 0);
     //tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -788,12 +936,18 @@ void connectMQTT() {
 
     if (client.connect("ESP32Client")) {  // Use a unique client ID for ESP32
       Serial.println("MQTT connected and subscribed to 'paku/control'");
+#if HAS_LED
+      ledMqttConnected();  // Double blink to indicate success
+#endif
       //tft.println("MQTT connected and subscribed to 'paku/control'");
       client.subscribe("paku/control");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
+#if HAS_LED
+      ledError();  // Error blink for failed connection
+#endif
       //tft.print("failed, rc=");
       //tft.print(client.state());
       //tft.println(" try again in 5 seconds");
