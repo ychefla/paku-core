@@ -259,7 +259,8 @@ void ledMqttConnected() {
 void ledHeartbeat() {
   unsigned long currentTime = millis();
   if (currentTime - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
-    ledBlink(1, 50, 0);
+    Serial.println("LED heartbeat");
+    ledBlink(1, 200, 0);  // 200ms flash for better visibility
     lastHeartbeatTime = currentTime;
   }
 }
