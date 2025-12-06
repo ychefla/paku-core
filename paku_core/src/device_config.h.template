@@ -61,7 +61,7 @@
     #define HAS_PSRAM 0
     #define HAS_LED 1           // Has onboard LED for status indication
     #define PIN_LED_BUILTIN 2   // Most ESP32 DevKit boards have LED on GPIO2
-    #define LED_ON HIGH         // LED is active HIGH on most ESP32 boards
+    #define LED_ON LOW          // LED is active LOW (inverted logic) on some ESP32 boards
 
 // =============================================================================
 // Default / Error
