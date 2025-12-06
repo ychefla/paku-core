@@ -217,12 +217,14 @@ void ledStartup() {
 /**
  * @brief LED pattern while connecting to WiFi (single fast blink)
  * Call this repeatedly during WiFi connection attempts
- * Note: Uses short delays to avoid blocking WiFi handshake
+ * Note: Uses longer flash for better visibility
  */
 void ledWifiConnecting() {
+  Serial.println("LED: WiFi connecting blink");
   ledOn();
-  delay(30);
+  delay(100);
   ledOff();
+  delay(100);
 }
 
 /**
@@ -237,12 +239,14 @@ void ledWifiConnected() {
 /**
  * @brief LED pattern while connecting to MQTT (slow blink)
  * Call this during MQTT connection attempts
- * Note: Uses short delays to avoid blocking MQTT handshake
+ * Note: Uses longer flash for better visibility
  */
 void ledMqttConnecting() {
+  Serial.println("LED: MQTT connecting blink");
   ledOn();
-  delay(50);
+  delay(150);
   ledOff();
+  delay(150);
 }
 
 /**
@@ -484,6 +488,19 @@ void setup() {
  * - Sends data to the MQTT broker.
  */
 void loop() {
+  static unsigned long loopCount = 0;
+  loopCount++;
+  
+#if HAS_LED
+  // Debug: Log loop iteration to verify loop is running
+  if (loopCount % 5 == 0) {
+    Serial.print("Loop #");
+    Serial.print(loopCount);
+    Serial.print(", millis=");
+    Serial.println(millis());
+  }
+#endif
+
   // Update heater status here
   // heaterStatus = ...;  // Retrieve the actual heater status
   // Update intervals based on heater status
@@ -491,10 +508,12 @@ void loop() {
   processData();
 
   if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected, calling connect_wifi...");
     connect_wifi();
   }
   if (!client.connected()) {
-      connectMQTT();
+    Serial.println("MQTT not connected, calling connectMQTT...");
+    connectMQTT();
   }
 
 #if HAS_LED
