@@ -7,9 +7,14 @@
  * 
  * Do not commit device_config.h to version control!
  * 
+ * IMPORTANT: After selecting your device here, you must also select the 
+ * matching PlatformIO environment in platformio.ini:
+ *   - DEVICE_LILYGO_T_DISPLAY_S3  -> default_envs = lilygo-t-display-s3
+ *   - DEVICE_ESP32_CH340C_30PIN   -> default_envs = esp32-ch340c-30pin
+ * 
  * To select a device, uncomment ONE device define below:
- *   #define DEVICE_LILYGO_T_DISPLAY_S3   // LilyGo with display (default)
- *   #define DEVICE_ESP32_CH340C_30PIN    // Generic ESP32 (no display)
+ *   #define DEVICE_LILYGO_T_DISPLAY_S3   // ESP32-S3, LilyGo with display (default)
+ *   #define DEVICE_ESP32_CH340C_30PIN    // ESP32 (not S3), generic headless board
  */
 #pragma once
 
@@ -17,29 +22,31 @@
 // TARGET DEVICE SELECTION
 // =============================================================================
 // Uncomment ONE line below to select your target hardware.
-// Default: LilyGo T-Display S3 (with display)
+// Default: LilyGo T-Display S3 (ESP32-S3 with display)
 //
 // Available devices:
-//   DEVICE_LILYGO_T_DISPLAY_S3  - LilyGo T-Display S3 with ST7789V TFT display
-//   DEVICE_ESP32_CH340C_30PIN   - Generic ESP32 30-pin board (no display)
+//   DEVICE_LILYGO_T_DISPLAY_S3  - ESP32-S3, LilyGo T-Display S3 with ST7789V TFT display
+//   DEVICE_ESP32_CH340C_30PIN   - ESP32 (not S3), Generic 30-pin board, no display
 //
 #define DEVICE_LILYGO_T_DISPLAY_S3
 // #define DEVICE_ESP32_CH340C_30PIN
 
 // =============================================================================
-// Device Configuration: LilyGo T-Display S3
+// Device Configuration: LilyGo T-Display S3 (ESP32-S3)
 // =============================================================================
 #if defined(DEVICE_LILYGO_T_DISPLAY_S3)
     #define DEVICE_NAME "LilyGo T-Display S3"
+    #define MCU_ESP32_S3 1      // MCU type indicator for future MCU-specific code
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
 
 // =============================================================================
-// Device Configuration: ESP32 CH340C 30PIN (Generic)
+// Device Configuration: ESP32 CH340C 30PIN (ESP32, not S3)
 // =============================================================================
 #elif defined(DEVICE_ESP32_CH340C_30PIN)
     #define DEVICE_NAME "ESP32 CH340C 30PIN"
+    #define MCU_ESP32 1         // MCU type indicator for future MCU-specific code
     #define HAS_DISPLAY 0
     #define HAS_TOUCH 0
     #define HAS_PSRAM 0
@@ -51,6 +58,7 @@
     // Default to LilyGo T-Display S3 for backward compatibility
     #warning "No device defined in device_config.h, defaulting to DEVICE_LILYGO_T_DISPLAY_S3"
     #define DEVICE_NAME "LilyGo T-Display S3"
+    #define MCU_ESP32_S3 1      // MCU type indicator for future MCU-specific code
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
