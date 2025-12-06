@@ -7,14 +7,18 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "Arduino.h"
-#include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
-#include "img_logo.h"
+#include "device_config.h"  // Device selection and feature detection
 #include "pin_config.h"
 #include "PakuIotClient.h"
 #include "ruuvi.h"
 #include "ruuvi_scanner.h"
 #include "sensor_placeholders.h"
 #include <string>
+
+// Display-related includes and definitions (only when display is available)
+#if HAS_DISPLAY
+#include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
+#include "img_logo.h"
 
 /* The product now has two screens, and the initialization code needs a small change in the new version. The LCD_MODULE_CMD_1 is used to define the
  * switch macro. */
@@ -48,6 +52,7 @@ lcd_cmd_t lcd_st7789v[] = {
     {0xE1, {0XF0, 0X08, 0X0C, 0X0B, 0X09, 0X24, 0X2B, 0X22, 0X43, 0X38, 0X15, 0X16, 0X2F, 0X37}, 14},
 };
 #endif
+#endif // HAS_DISPLAY
 
 // BT settings
 bool scanBT_enabled = true;
@@ -96,7 +101,9 @@ PakuIotClient pakuIotClient;
 unsigned long lastTime_pakuIot = 0;
 unsigned long pakuIotInterval = 60000;  // 1 minute interval for HTTP transport
 
-#define PIN 2
+// Flow sensor pin - moved from GPIO2 to GPIO4 to avoid conflict with LED
+// Note: GPIO2 is used for the onboard LED on many ESP32 dev boards
+#define PIN_FLOW_SENSOR 4
 
 unsigned long lastTime_sensor = 0;
 unsigned long lastTime_mqtt = 0;
@@ -142,6 +149,131 @@ void initDeviceId();
 void scanBT(void* parameter);
 void goToSleep();
 void updateDisplay();
+
+// LED status indicator functions
+#if HAS_LED
+void ledInit();
+void ledOn();
+void ledOff();
+void ledBlink(int count, int onTime, int offTime);
+void ledStartup();
+void ledWifiConnecting();
+void ledWifiConnected();
+void ledMqttConnecting();
+void ledMqttConnected();
+void ledHeartbeat();
+void ledError();
+
+// LED state tracking
+static unsigned long lastHeartbeatTime = 0;
+static const unsigned long HEARTBEAT_INTERVAL = 5000; // 5 seconds
+
+/**
+ * @brief Initialize the LED pin for status indication
+ */
+void ledInit() {
+  pinMode(PIN_LED_BUILTIN, OUTPUT);
+  digitalWrite(PIN_LED_BUILTIN, !LED_ON); // Start with LED off
+}
+
+/**
+ * @brief Turn the LED on
+ */
+void ledOn() {
+  digitalWrite(PIN_LED_BUILTIN, LED_ON);
+}
+
+/**
+ * @brief Turn the LED off
+ */
+void ledOff() {
+  digitalWrite(PIN_LED_BUILTIN, !LED_ON);
+}
+
+/**
+ * @brief Blink the LED a specified number of times
+ * @param count Number of blinks
+ * @param onTime Duration LED is on in milliseconds
+ * @param offTime Duration LED is off in milliseconds
+ */
+void ledBlink(int count, int onTime, int offTime) {
+  for (int i = 0; i < count; i++) {
+    ledOn();
+    delay(onTime);
+    ledOff();
+    if (i < count - 1) {
+      delay(offTime);
+    }
+  }
+}
+
+/**
+ * @brief LED pattern for device startup (3 quick blinks)
+ */
+void ledStartup() {
+  ledBlink(3, 100, 100);
+}
+
+/**
+ * @brief LED pattern while connecting to WiFi (single fast blink)
+ * Call this repeatedly during WiFi connection attempts
+ * Note: Uses longer flash for better visibility
+ */
+void ledWifiConnecting() {
+  ledOn();
+  delay(100);
+  ledOff();
+  delay(100);
+}
+
+/**
+ * @brief LED pattern when WiFi connected (solid ON briefly)
+ */
+void ledWifiConnected() {
+  ledOn();
+  delay(500);
+  ledOff();
+}
+
+/**
+ * @brief LED pattern while connecting to MQTT (slow blink)
+ * Call this during MQTT connection attempts
+ * Note: Uses longer flash for better visibility
+ */
+void ledMqttConnecting() {
+  ledOn();
+  delay(150);
+  ledOff();
+  delay(150);
+}
+
+/**
+ * @brief LED pattern when MQTT connected (double blink)
+ */
+void ledMqttConnected() {
+  ledBlink(2, 100, 100);
+}
+
+/**
+ * @brief LED heartbeat pattern (brief flash)
+ * Call this periodically to indicate normal operation
+ */
+void ledHeartbeat() {
+  unsigned long currentTime = millis();
+  if (currentTime - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
+    ledBlink(1, 200, 0);  // 200ms flash for better visibility
+    lastHeartbeatTime = currentTime;
+  }
+}
+
+/**
+ * @brief LED error pattern (5 rapid blinks)
+ * Call this to indicate an error condition
+ */
+void ledError() {
+  ledBlink(5, 100, 100);
+}
+#endif // HAS_LED
 
 void IRAM_ATTR countRisingEdges() {
   count++;
@@ -223,7 +355,16 @@ String getISO8601Timestamp() {
 void setup() {
     Serial.begin(115200);
     Serial.println("Starting setup...");
+    Serial.print("Device: ");
+    Serial.println(DEVICE_NAME);
     
+#if HAS_LED
+    // Initialize LED for status indication
+    ledInit();
+    ledStartup();  // 3 quick blinks to indicate startup
+#endif
+
+#if HAS_DISPLAY
     pinMode(PIN_POWER_ON, OUTPUT);
     digitalWrite(PIN_POWER_ON, HIGH);
     tft.begin();
@@ -254,6 +395,7 @@ void setup() {
     ledcAttach(PIN_LCD_BL, 200, 8);
     ledcWrite(PIN_LCD_BL, 255);
 #endif
+#endif // HAS_DISPLAY
 
     Serial.println("Setup Wifi Connection...");
     WiFi.mode(WIFI_STA);
@@ -273,9 +415,9 @@ void setup() {
     Serial.println("Setup RuuviTag Scanner...");
     initRuuviTags();
 
-    Serial.println("Setup Sensor...");
-    pinMode(PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(PIN), countRisingEdges, RISING);
+    Serial.println("Setup Flow Sensor on GPIO4...");
+    pinMode(PIN_FLOW_SENSOR, INPUT);
+    attachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR), countRisingEdges, RISING);
     
     // Initialize intervals based on heater status
     updateIntervals();
@@ -343,6 +485,9 @@ void setup() {
  * - Sends data to the MQTT broker.
  */
 void loop() {
+  static unsigned long loopCount = 0;
+  loopCount++;
+  
   // Update heater status here
   // heaterStatus = ...;  // Retrieve the actual heater status
   // Update intervals based on heater status
@@ -350,11 +495,18 @@ void loop() {
   processData();
 
   if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected, calling connect_wifi...");
     connect_wifi();
   }
   if (!client.connected()) {
-      connectMQTT();
+    Serial.println("MQTT not connected, calling connectMQTT...");
+    connectMQTT();
   }
+
+#if HAS_LED
+  // LED heartbeat - brief flash every 5 seconds during normal operation
+  ledHeartbeat();
+#endif
 
   updateDisplay(); 
   client.loop();
@@ -370,12 +522,14 @@ void goToSleep() {
   static unsigned long awakeStartTime = millis();
   if (millis() - awakeStartTime >= 30000) {
     Serial.println("Going to sleep for 15 seconds...");
+#if HAS_DISPLAY
     tft.fillScreen(TFT_BLACK);
     tft.setCursor(0, 0);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(2);
     tft.println("Going to sleep for 15 seconds...");
     delay(2000);
+#endif
     // Configure the ESP32 to wake up after 15 seconds
     esp_sleep_enable_timer_wakeup(15 * 1000000);
     esp_deep_sleep_start();
@@ -385,6 +539,7 @@ void goToSleep() {
 }
 
 void updateDisplay() {
+#if HAS_DISPLAY
   unsigned long currentTime = millis();
   if (currentTime - lastTime_sensor >= TFT_UPDATE_WAIT) {
     tft.fillScreen(TFT_BLACK);
@@ -431,6 +586,7 @@ void updateDisplay() {
       }
     }
   }
+#endif // HAS_DISPLAY
 }
 
 /**
@@ -461,7 +617,7 @@ void processData() {
     Serial.print(".");
  
     // process flow data
-    detachInterrupt(digitalPinToInterrupt(PIN));
+    detachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR));
     
     if (testMode) {
       count = random(198, 462);
@@ -475,7 +631,7 @@ void processData() {
 
     count = 0;
     lastTime_sensor = currentTime;
-    attachInterrupt(digitalPinToInterrupt(PIN), countRisingEdges, RISING);
+    attachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR), countRisingEdges, RISING);
  
     // Create payloads for all data
     
@@ -731,6 +887,9 @@ void connect_wifi() {
         //Serial.print(".");
         wifi_status += ".";
         attempts++;
+#if HAS_LED
+        ledWifiConnecting();  // Fast blink while connecting
+#endif
         updateDisplay();
       }
 
@@ -744,12 +903,18 @@ void connect_wifi() {
         wifi_status += " (";
         wifi_status += WiFi.localIP();
         wifi_status += ")";
+#if HAS_LED
+        ledWifiConnected();  // Solid ON briefly to indicate success
+#endif
         updateDisplay();
         return;
       } else {
         Serial.println("");
         Serial.print("Failed to connect to ");
         Serial.println(WIFI_SSIDS[i]);
+#if HAS_LED
+        ledError();  // Error blink for failed connection
+#endif
       }
     }
   }
@@ -767,6 +932,9 @@ void connect_wifi() {
 void connectMQTT() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
+#if HAS_LED
+    ledMqttConnecting();  // Slow blink while connecting
+#endif
     //tft.fillScreen(TFT_BLACK);
     //tft.setCursor(0, 0);
     //tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -775,12 +943,18 @@ void connectMQTT() {
 
     if (client.connect("ESP32Client")) {  // Use a unique client ID for ESP32
       Serial.println("MQTT connected and subscribed to 'paku/control'");
+#if HAS_LED
+      ledMqttConnected();  // Double blink to indicate success
+#endif
       //tft.println("MQTT connected and subscribed to 'paku/control'");
       client.subscribe("paku/control");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
+#if HAS_LED
+      ledError();  // Error blink for failed connection
+#endif
       //tft.print("failed, rc=");
       //tft.print(client.state());
       //tft.println(" try again in 5 seconds");
@@ -1075,7 +1249,8 @@ void updateIntervals() {
   }
 }
 
-// TFT Pin check
+// TFT Pin check (only for devices with display)
+#if HAS_DISPLAY
 #if PIN_LCD_WR  != TFT_WR || \
     PIN_LCD_RD  != TFT_RD || \
     PIN_LCD_CS    != TFT_CS   || \
@@ -1095,6 +1270,7 @@ void updateIntervals() {
     320   != TFT_HEIGHT
 #error  "Error! Please make sure <User_Setups/Setup206_LilyGo_T_Display_S3.h> is selected in <TFT_eSPI/User_Setup_Select.h>"
 #endif
+#endif // HAS_DISPLAY
 
 // NOTE: ESP-IDF 5.0+ and Arduino ESP32 3.0+ are now supported.
 // The LEDC API differences are handled at lines 143-150.

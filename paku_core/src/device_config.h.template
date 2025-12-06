@@ -1,0 +1,130 @@
+/**
+ * @file device_config.h.template
+ * @brief Device-specific configuration and feature detection
+ * 
+ * SETUP: Copy this file to device_config.h (same folder) and uncomment
+ * the device define that matches your hardware.
+ * 
+ * Do not commit device_config.h to version control!
+ * 
+ * IMPORTANT: After selecting your device here, you must also select the 
+ * matching PlatformIO environment in platformio.ini:
+ *   - DEVICE_LILYGO_T_DISPLAY_S3  -> default_envs = lilygo-t-display-s3
+ *   - DEVICE_ESP32_CH340C_30PIN   -> default_envs = esp32-ch340c-30pin
+ * 
+ * To select a device, uncomment ONE device define below:
+ *   #define DEVICE_LILYGO_T_DISPLAY_S3   // ESP32-S3, LilyGo with display (default)
+ *   #define DEVICE_ESP32_CH340C_30PIN    // ESP32 (not S3), generic headless board
+ */
+#pragma once
+
+// =============================================================================
+// TARGET DEVICE SELECTION
+// =============================================================================
+// Uncomment ONE line below to select your target hardware.
+// Default: LilyGo T-Display S3 (ESP32-S3 with display)
+//
+// Available devices:
+//   DEVICE_LILYGO_T_DISPLAY_S3  - ESP32-S3, LilyGo T-Display S3 with ST7789V TFT display
+//   DEVICE_ESP32_CH340C_30PIN   - ESP32 (not S3), Generic 30-pin board, no display
+//
+#define DEVICE_LILYGO_T_DISPLAY_S3
+// #define DEVICE_ESP32_CH340C_30PIN
+
+// =============================================================================
+// Device Configuration: LilyGo T-Display S3 (ESP32-S3)
+// =============================================================================
+#if defined(DEVICE_LILYGO_T_DISPLAY_S3)
+    #define DEVICE_NAME "LilyGo T-Display S3"
+    #define MCU_ESP32_S3 1      // MCU type indicator for future MCU-specific code
+    #define HAS_DISPLAY 1
+    #define HAS_TOUCH 1
+    #define HAS_PSRAM 1
+    #define HAS_LED 1           // Has onboard LED for status indication
+    // LilyGo T-Display S3 LED configuration:
+    // - Some versions have RGB LED on GPIO43 or GPIO44
+    // - If your board has LED on a different pin, change PIN_LED_BUILTIN below
+    // - GPIO38 is the LCD backlight pin - DO NOT use for LED
+    #define PIN_LED_BUILTIN 43  // Default RGB LED pin (check your board version)
+    #define LED_ON HIGH         // LED is active HIGH
+    #define HAS_RGB_LED 1       // Addressable RGB LED (WS2812 style)
+    // Note: For RGB LED control, use a NeoPixel or FastLED library
+
+// =============================================================================
+// Device Configuration: ESP32 CH340C 30PIN (ESP32, not S3)
+// =============================================================================
+#elif defined(DEVICE_ESP32_CH340C_30PIN)
+    #define DEVICE_NAME "ESP32 CH340C 30PIN"
+    #define MCU_ESP32 1         // MCU type indicator for future MCU-specific code
+    #define HAS_DISPLAY 0
+    #define HAS_TOUCH 0
+    #define HAS_PSRAM 0
+    #define HAS_LED 1           // Has onboard LED for status indication
+    // GPIO2 is used for the onboard LED (D2) on most ESP32 dev boards
+    // Flow sensor has been moved to GPIO4 to avoid conflict
+    #define PIN_LED_BUILTIN 2   // LED on GPIO2 (D2)
+    #define LED_ON HIGH         // LED is active HIGH
+
+// =============================================================================
+// Default / Error
+// =============================================================================
+#else
+    // Default to LilyGo T-Display S3 for backward compatibility
+    #warning "No device defined in device_config.h, defaulting to DEVICE_LILYGO_T_DISPLAY_S3"
+    #define DEVICE_NAME "LilyGo T-Display S3"
+    #define MCU_ESP32_S3 1      // MCU type indicator for future MCU-specific code
+    #define HAS_DISPLAY 1
+    #define HAS_TOUCH 1
+    #define HAS_PSRAM 1
+    #define HAS_LED 1
+    #define PIN_LED_BUILTIN 43  // Default RGB LED pin (check your board version)
+    #define LED_ON HIGH
+    #define HAS_RGB_LED 1
+#endif
+
+// =============================================================================
+// LED Status Indicator Patterns (for HAS_LED devices)
+// =============================================================================
+// Suggested LED patterns for status indication:
+//
+// For simple LEDs (ESP32 CH340C):
+// --------------------------------
+// BOOT/STARTUP:
+//   - 3 quick blinks: Device starting up
+//
+// WIFI STATUS:
+//   - Fast blink (100ms): Connecting to WiFi
+//   - Solid ON (1s) then OFF: WiFi connected successfully
+//   - 2 slow blinks: WiFi connection failed, retrying
+//
+// MQTT STATUS:
+//   - Slow blink (500ms): Connecting to MQTT broker
+//   - Solid ON (500ms) then OFF: MQTT connected successfully
+//   - 3 rapid blinks: MQTT connection failed
+//
+// NORMAL OPERATION:
+//   - Brief flash every 5s: Heartbeat (system running normally)
+//   - Double blink: Data sent successfully
+//
+// ERROR CONDITIONS:
+//   - Continuous fast blink: Critical error
+//   - SOS pattern (... --- ...): Fatal error, needs reset
+//
+// SLEEP/LOW POWER:
+//   - LED OFF: Device in deep sleep
+//   - Very dim or single flash before sleep: Entering sleep mode
+//
+// For RGB LEDs (LilyGo T-Display S3):
+// ------------------------------------
+// Use colors to indicate different states:
+//   - BLUE: WiFi connecting
+//   - GREEN: WiFi connected, system OK
+//   - CYAN: MQTT connecting
+//   - WHITE pulse: Heartbeat (normal operation)
+//   - YELLOW: Warning (e.g., sensor issue)
+//   - RED: Error condition
+//   - PURPLE: OTA update in progress
+//   - OFF: Deep sleep
+//
+// Note: RGB LED control requires NeoPixel or FastLED library
+//
