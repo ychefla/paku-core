@@ -63,7 +63,15 @@ git clone https://github.com/ychefla/paku-core.git
 cd paku-core
 ```
 
-### Step 2: Configure Secrets
+### Step 2: Configure Device and Secrets
+
+**Important**: Create your device configuration file from the template:
+
+```bash
+cp paku_core/src/device_config.h.template paku_core/src/device_config.h
+```
+
+The template defaults to ESP8266 with wired sensors. For other devices, edit the file and uncomment the appropriate device definition.
 
 Create your secrets file from the template:
 
