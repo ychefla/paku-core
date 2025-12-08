@@ -12,7 +12,11 @@
 
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
+#ifdef ESP8266
+#include <ESP8266HTTPClient.h>
+#else
 #include <HTTPClient.h>
+#endif
 #include <ArduinoJson.h>
 
 /**
