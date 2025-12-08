@@ -1131,6 +1131,7 @@ void createRuuviPayloads(const char* timestamp) {
     Serial.println("%");
   }
 }
+#endif // HAS_BLE
 
 #if HAS_WIRED_SENSORS
 // Device ID suffix for wired sensors
@@ -1194,6 +1195,7 @@ void createWiredSensorPayloads(const char* timestamp) {
 }
 #endif // HAS_WIRED_SENSORS
 
+#if HAS_BLE
 /**
  * @brief Creates placeholder payloads for sensors not yet implemented
  * 
