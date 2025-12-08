@@ -582,9 +582,13 @@ void goToSleep() {
     tft.println("Going to sleep for 15 seconds...");
     delay(2000);
 #endif
-    // Configure the ESP32 to wake up after 15 seconds
+    // Configure deep sleep to wake up after 15 seconds
+#ifdef ESP8266
+    ESP.deepSleep(15 * 1000000);  // ESP8266 deep sleep (microseconds)
+#else
     esp_sleep_enable_timer_wakeup(15 * 1000000);
     esp_deep_sleep_start();
+#endif
   } else {
     delay(1000);
   }
@@ -962,7 +966,7 @@ void connect_wifi() {
         wifi_status = "WiFi connected to ";
         wifi_status += WIFI_SSIDS[i];
         wifi_status += " (";
-        wifi_status += WiFi.localIP();
+        wifi_status += WiFi.localIP().toString();
         wifi_status += ")";
 #if HAS_LED
         ledWifiConnected();  // Solid ON briefly to indicate success

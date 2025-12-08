@@ -4,6 +4,11 @@
  */
 
 #include "PakuIotClient.h"
+#ifdef ESP8266
+#include <ESP8266WiFi.h>
+#else
+#include <WiFi.h>
+#endif
 
 PakuIotClient::PakuIotClient()
     : _initialized(false)
