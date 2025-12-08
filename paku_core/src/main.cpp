@@ -14,6 +14,7 @@
 #include "pin_config.h"
 #include "PakuIotClient.h"
 #include "sensor_placeholders.h"
+#include "OtaClient.h"
 #include <string>
 
 // BLE support (ESP32 only)
@@ -130,6 +131,13 @@ PakuIotClient pakuIotClient;
 unsigned long lastTime_pakuIot = 0;
 unsigned long pakuIotInterval = 60000;  // 1 minute interval for HTTP transport
 
+// OTA update client
+OtaClient otaClient;
+bool otaUpdatePending = false;
+String pendingOtaUrl = "";
+String pendingOtaChecksum = "";
+String pendingOtaVersion = "";
+
 // Flow sensor pin - moved from GPIO2 to GPIO4 to avoid conflict with LED
 // Note: GPIO2 is used for the onboard LED on many ESP32 dev boards
 #define PIN_FLOW_SENSOR 4
@@ -185,6 +193,10 @@ void createPlaceholderPayloads(const char* timestamp);
 void initDeviceId();
 void goToSleep();
 void updateDisplay();
+void initOta();
+void processOtaUpdate();
+void handleMqttMessage(char* topic, byte* payload, unsigned int length);
+void otaProgressCallback(const OtaProgress& progress);
 
 // LED status indicator functions
 #if HAS_LED
@@ -443,10 +455,16 @@ void setup() {
     Serial.println("Setup MQTT Connection...");
     timeClient.begin();
     client.setServer(mqtt_server, mqtt_port);
+    client.setCallback(handleMqttMessage);  // Set MQTT message callback
 
     // Initialize paku-iot HTTP client if enabled
     initPakuIot();
 
+    // Initialize OTA update client
+    Serial.println("Setup OTA Update Client...");
+    initOta();
+
+    // Initialize RuuviTag scanner
 #if HAS_BLE
     // Initialize RuuviTag scanner (ESP32 only)
     Serial.println("Setup RuuviTag Scanner...");
@@ -564,7 +582,13 @@ void loop() {
   client.loop();
   timeClient.update();
   sendToMQTT();
-  sendToPakuIot();  
+  sendToPakuIot();
+  
+  // Process pending OTA updates (only when triggered via MQTT)
+  if (otaUpdatePending) {
+    processOtaUpdate();
+  }
+  
   goToSleep();
 
 }
@@ -1007,12 +1031,18 @@ void connectMQTT() {
     //tft.println("Attempting MQTT connection...");
 
     if (client.connect("ESP32Client")) {  // Use a unique client ID for ESP32
-      Serial.println("MQTT connected and subscribed to 'paku/control'");
+      Serial.println("MQTT connected and subscribed to control topics");
 #if HAS_LED
       ledMqttConnected();  // Double blink to indicate success
 #endif
       //tft.println("MQTT connected and subscribed to 'paku/control'");
       client.subscribe("paku/control");
+      
+      // Subscribe to device-specific OTA command topic
+      String otaTopic = String("paku/devices/") + deviceId + "/cmd/ota";
+      client.subscribe(otaTopic.c_str());
+      Serial.print("Subscribed to OTA topic: ");
+      Serial.println(otaTopic);
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -1402,6 +1432,197 @@ void updateIntervals() {
 #error  "Error! Please make sure <User_Setups/Setup206_LilyGo_T_Display_S3.h> is selected in <TFT_eSPI/User_Setup_Select.h>"
 #endif
 #endif // HAS_DISPLAY
+
+/**
+ * @brief Initialize the OTA update client
+ * 
+ * Initializes the OTA client and validates the current firmware.
+ * Call this during setup().
+ */
+void initOta() {
+  OtaResult result = otaClient.begin();
+  if (result != OtaResult::SUCCESS) {
+    Serial.print("OTA: Failed to initialize: ");
+    Serial.println(otaClient.getLastError());
+    return;
+  }
+
+  // Get current firmware info
+  char version[32];
+  char partition[32];
+  if (otaClient.getCurrentFirmwareInfo(version, sizeof(version), partition, sizeof(partition))) {
+    Serial.print("OTA: Running firmware version: ");
+    Serial.print(version);
+    Serial.print(" on partition: ");
+    Serial.println(partition);
+  }
+
+  // Mark current firmware as valid (prevents rollback after successful boot)
+  // This should be called after verifying the device is working correctly
+  result = otaClient.validateCurrentFirmware();
+  if (result == OtaResult::SUCCESS) {
+    Serial.println("OTA: Current firmware validated");
+  }
+
+  Serial.println("OTA: Client initialized successfully");
+}
+
+/**
+ * @brief Process pending OTA updates
+ * 
+ * Call this in the main loop to process OTA updates when triggered via MQTT.
+ */
+void processOtaUpdate() {
+  if (!otaUpdatePending) {
+    return;
+  }
+
+  Serial.println("OTA: Processing pending update...");
+  
+  // Configure OTA update
+  OtaConfig config;
+  config.firmwareUrl = pendingOtaUrl.c_str();
+  config.expectedChecksum = pendingOtaChecksum.c_str();
+  config.targetVersion = pendingOtaVersion.c_str();
+  config.verifySignature = false;  // Signature verification not implemented yet
+  config.allowDowngrade = false;
+  config.timeoutMs = 300000;  // 5 minutes
+  config.bufferSize = 4096;
+  config.resumeSupported = false;
+
+  // Start the update (blocking operation)
+  OtaResult result = otaClient.startUpdate(config, otaProgressCallback);
+
+  // Report result via MQTT
+  String resultTopic = String("paku/devices/") + deviceId + "/ota/result";
+  JsonDocument resultDoc;
+  resultDoc["timestamp"] = getISO8601Timestamp();
+  resultDoc["version"] = pendingOtaVersion;
+  resultDoc["success"] = (result == OtaResult::SUCCESS);
+  resultDoc["result_code"] = (int)result;
+  resultDoc["message"] = OtaClient::resultToString(result);
+  
+  String resultPayload;
+  serializeJson(resultDoc, resultPayload);
+  client.publish(resultTopic.c_str(), resultPayload.c_str());
+
+  // Clear pending flag
+  otaUpdatePending = false;
+  pendingOtaUrl = "";
+  pendingOtaChecksum = "";
+  pendingOtaVersion = "";
+
+  if (result == OtaResult::SUCCESS) {
+    Serial.println("OTA: Update successful! Rebooting in 3 seconds...");
+    // Short delay to allow MQTT message to be sent, then reboot
+    unsigned long rebootTime = millis();
+    while (millis() - rebootTime < 3000) {
+      client.loop();  // Allow MQTT to process messages
+      delay(100);
+    }
+    ESP.restart();
+  } else {
+    Serial.print("OTA: Update failed: ");
+    Serial.println(otaClient.getLastError());
+  }
+}
+
+/**
+ * @brief MQTT message callback handler
+ * 
+ * Handles incoming MQTT messages, including OTA update commands.
+ * 
+ * @param topic MQTT topic
+ * @param payload Message payload
+ * @param length Payload length
+ */
+void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
+  Serial.print("MQTT message received on topic: ");
+  Serial.println(topic);
+
+  // Convert payload to string
+  String message;
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  Serial.print("Message: ");
+  Serial.println(message);
+
+  // Check if this is an OTA command
+  String otaTopic = String("paku/devices/") + deviceId + "/cmd/ota";
+  if (String(topic) == otaTopic) {
+    // Parse OTA command JSON
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("OTA: Failed to parse JSON: ");
+      Serial.println(error.c_str());
+      return;
+    }
+
+    // Extract OTA parameters
+    const char* url = doc["url"];
+    const char* checksum = doc["checksum"];
+    const char* version = doc["version"];
+
+    if (!url || strlen(url) == 0) {
+      Serial.println("OTA: Invalid command - missing URL");
+      return;
+    }
+
+    // Store OTA parameters for processing
+    pendingOtaUrl = String(url);
+    pendingOtaChecksum = checksum ? String(checksum) : "";
+    pendingOtaVersion = version ? String(version) : "unknown";
+    otaUpdatePending = true;
+
+    Serial.print("OTA: Update scheduled - URL: ");
+    Serial.println(pendingOtaUrl);
+    Serial.print("OTA: Target version: ");
+    Serial.println(pendingOtaVersion);
+
+    // Send acknowledgment
+    String ackTopic = String("paku/devices/") + deviceId + "/ota/status";
+    JsonDocument ackDoc;
+    ackDoc["timestamp"] = getISO8601Timestamp();
+    ackDoc["status"] = "accepted";
+    ackDoc["version"] = pendingOtaVersion;
+    
+    String ackPayload;
+    serializeJson(ackDoc, ackPayload);
+    client.publish(ackTopic.c_str(), ackPayload.c_str());
+  }
+}
+
+/**
+ * @brief OTA progress callback
+ * 
+ * Called periodically during OTA update to report progress.
+ * Publishes progress updates via MQTT.
+ * 
+ * @param progress Current OTA progress information
+ */
+void otaProgressCallback(const OtaProgress& progress) {
+  Serial.print("OTA Progress: ");
+  Serial.print(progress.progressPercent);
+  Serial.print("% - ");
+  Serial.println(OtaClient::stateToString(progress.state));
+
+  // Publish progress to MQTT
+  String progressTopic = String("paku/devices/") + deviceId + "/ota/progress";
+  JsonDocument progressDoc;
+  progressDoc["timestamp"] = getISO8601Timestamp();
+  progressDoc["state"] = OtaClient::stateToString(progress.state);
+  progressDoc["percent"] = progress.progressPercent;
+  progressDoc["downloaded"] = progress.downloadedBytes;
+  progressDoc["total"] = progress.totalBytes;
+  progressDoc["elapsed_ms"] = progress.elapsedMs;
+  
+  String progressPayload;
+  serializeJson(progressDoc, progressPayload);
+  client.publish(progressTopic.c_str(), progressPayload.c_str());
+}
 
 // NOTE: ESP-IDF 5.0+ and Arduino ESP32 3.0+ are now supported.
 // The LEDC API differences are handled at lines 143-150.

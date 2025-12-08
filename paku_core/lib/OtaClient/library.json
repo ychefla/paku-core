@@ -1,0 +1,13 @@
+{
+  "name": "OtaClient",
+  "version": "1.0.0",
+  "description": "Secure OTA firmware update client for ESP32 with checksum verification and rollback support",
+  "keywords": "ota, firmware, update, esp32, secure",
+  "authors": [
+    {
+      "name": "Paku Project"
+    }
+  ],
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
