@@ -91,6 +91,7 @@
     #define HAS_LED 1           // Has onboard LED for status indication
     #define HAS_BLE 0           // ESP8266 does not support BLE
     #define HAS_WIRED_SENSORS 1 // Has wired I2C sensors (BME280, etc.)
+    #define HAS_ANALOG_TEMP 1   // Has analog temperature sensor on A0
     // GPIO2 (D4 on NodeMCU) is the onboard LED
     // Note: ESP8266 LED is typically active LOW
     #define PIN_LED_BUILTIN 2   // LED on GPIO2 (D4 on NodeMCU)
@@ -98,6 +99,8 @@
     // I2C pins for wired sensors (NodeMCU standard pins)
     #define PIN_I2C_SDA 4       // GPIO4 (D2 on NodeMCU)
     #define PIN_I2C_SCL 5       // GPIO5 (D1 on NodeMCU)
+    // Analog temperature sensor pin
+    #define PIN_ANALOG_TEMP A0  // A0 is the only analog input on ESP8266 (reads 0-1V)
 
 // =============================================================================
 // Default / Error
