@@ -1200,9 +1200,18 @@ void createWiredSensorPayloads(const char* timestamp) {
   doc["sensor_type"] = wiredSensors.getSensorType();
   
   JsonObject metrics = doc["metrics"].to<JsonObject>();
-  metrics["temperature_c"] = data.temperature;
-  metrics["humidity_percent"] = data.humidity;
-  metrics["pressure_hpa"] = data.pressure;
+  
+  // Add I2C sensor data if available
+  if (wiredSensors.isAvailable()) {
+    metrics["temperature_c"] = data.temperature;
+    metrics["humidity_percent"] = data.humidity;
+    metrics["pressure_hpa"] = data.pressure;
+  }
+  
+  // Add analog temperature if available
+  if (data.hasAnalogTemp) {
+    metrics["analog_temp_c"] = data.analogTemp;
+  }
   
   String payload;
   serializeJson(doc, payload);
@@ -1215,13 +1224,22 @@ void createWiredSensorPayloads(const char* timestamp) {
     payloadIndex++;
   }
   
-  Serial.print("Wired Sensor: T=");
-  Serial.print(data.temperature);
-  Serial.print("°C, H=");
-  Serial.print(data.humidity);
-  Serial.print("%, P=");
-  Serial.print(data.pressure);
-  Serial.println(" hPa");
+  Serial.print("Wired Sensor: ");
+  if (wiredSensors.isAvailable()) {
+    Serial.print("T=");
+    Serial.print(data.temperature);
+    Serial.print("°C, H=");
+    Serial.print(data.humidity);
+    Serial.print("%, P=");
+    Serial.print(data.pressure);
+    Serial.print(" hPa");
+  }
+  if (data.hasAnalogTemp) {
+    Serial.print(" | Analog T=");
+    Serial.print(data.analogTemp);
+    Serial.print("°C");
+  }
+  Serial.println();
 }
 #endif // HAS_WIRED_SENSORS
 

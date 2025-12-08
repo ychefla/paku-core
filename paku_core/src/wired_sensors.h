@@ -26,10 +26,12 @@
  * Contains readings from a BME280 or similar sensor
  */
 struct WiredSensorData {
-    float temperature;  // Temperature in Celsius
+    float temperature;  // Temperature in Celsius (from BME280)
     float humidity;     // Relative humidity in %
     float pressure;     // Atmospheric pressure in hPa
+    float analogTemp;   // Temperature from analog sensor (if available)
     bool valid;         // True if readings are valid
+    bool hasAnalogTemp; // True if analog temperature is available
     unsigned long timestamp; // millis() when reading was taken
 };
 
@@ -78,10 +80,18 @@ public:
      * @return Sensor type (e.g., "BME280", "BMP280", or "None")
      */
     const char* getSensorType() const { return _sensorType; }
+    
+    /**
+     * @brief Check if analog temperature sensor is available
+     * 
+     * @return true if analog sensor is enabled
+     */
+    bool hasAnalogSensor() const { return _hasAnalogTemp; }
 
 private:
     Adafruit_BME280 _bme;
     bool _initialized;
+    bool _hasAnalogTemp;
     const char* _sensorType;
     
     /**
@@ -90,6 +100,17 @@ private:
      * @return true if BME280 was found and initialized
      */
     bool initBME280();
+    
+    /**
+     * @brief Read analog temperature sensor
+     * 
+     * Reads voltage from A0 and converts to temperature.
+     * Default calibration assumes NTC thermistor with voltage divider.
+     * Adjust ANALOG_TEMP_* constants for your specific sensor.
+     * 
+     * @return Temperature in Celsius, or NaN if invalid
+     */
+    float readAnalogTemperature();
 };
 
 #endif // HAS_WIRED_SENSORS
