@@ -302,7 +302,11 @@ PakuIotResult PakuIotClient::sendRequest(const String& jsonPayload) {
         // For production use, implement proper certificate pinning
         // by calling secureClient.setCACert() with the server's CA certificate.
         // This is acceptable for development/testing only.
-        secureClient.setInsecure();
+#ifdef ESP8266
+        secureClient.setInsecure();  // ESP8266 WiFiClientSecure
+#else
+        secureClient.setInsecure();  // ESP32 WiFiClientSecure
+#endif
         
         if (!http.begin(secureClient, url)) {
             return PakuIotResult::ERROR_CONNECTION;
