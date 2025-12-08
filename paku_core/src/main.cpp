@@ -179,7 +179,9 @@ void scanBT(void* parameter);
 #if HAS_WIRED_SENSORS
 void createWiredSensorPayloads(const char* timestamp);
 #endif // HAS_WIRED_SENSORS
+#if HAS_BLE
 void createPlaceholderPayloads(const char* timestamp);
+#endif // HAS_BLE
 void initDeviceId();
 void goToSleep();
 void updateDisplay();
@@ -695,10 +697,12 @@ void processData() {
     createWiredSensorPayloads(timestamp.c_str());
 #endif // HAS_WIRED_SENSORS
     
+#if HAS_BLE
     // 3. Placeholder data for sensors not yet implemented (disabled by default)
     createPlaceholderPayloads(timestamp.c_str());
+#endif // HAS_BLE
     
-    // 3. Flow sensor data - consolidated payload with all metrics
+    // 4. Flow sensor data - consolidated payload with all metrics
     JsonDocument flowDoc;
     flowDoc["timestamp"] = timestamp;
     flowDoc["device_id"] = "coolant";
