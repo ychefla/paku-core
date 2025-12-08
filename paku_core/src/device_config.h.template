@@ -9,12 +9,14 @@
  * 
  * IMPORTANT: After selecting your device here, you must also select the 
  * matching PlatformIO environment in platformio.ini:
- *   - DEVICE_LILYGO_T_DISPLAY_S3  -> default_envs = lilygo-t-display-s3
- *   - DEVICE_ESP32_CH340C_30PIN   -> default_envs = esp32-ch340c-30pin
+ *   - DEVICE_LILYGO_T_DISPLAY_S3    -> default_envs = lilygo-t-display-s3
+ *   - DEVICE_ESP32_CH340C_30PIN     -> default_envs = esp32-ch340c-30pin
+ *   - DEVICE_ESP8266_WIRED_SENSORS  -> default_envs = esp8266-wired-sensors
  * 
  * To select a device, uncomment ONE device define below:
  *   #define DEVICE_LILYGO_T_DISPLAY_S3   // ESP32-S3, LilyGo with display (default)
  *   #define DEVICE_ESP32_CH340C_30PIN    // ESP32 (not S3), generic headless board
+ *   #define DEVICE_ESP8266_WIRED_SENSORS // ESP8266, wired I2C sensors (no BLE)
  */
 #pragma once
 
@@ -25,11 +27,13 @@
 // Default: LilyGo T-Display S3 (ESP32-S3 with display)
 //
 // Available devices:
-//   DEVICE_LILYGO_T_DISPLAY_S3  - ESP32-S3, LilyGo T-Display S3 with ST7789V TFT display
-//   DEVICE_ESP32_CH340C_30PIN   - ESP32 (not S3), Generic 30-pin board, no display
+//   DEVICE_LILYGO_T_DISPLAY_S3    - ESP32-S3, LilyGo T-Display S3 with ST7789V TFT display
+//   DEVICE_ESP32_CH340C_30PIN     - ESP32 (not S3), Generic 30-pin board, no display
+//   DEVICE_ESP8266_WIRED_SENSORS  - ESP8266, NodeMCU or generic board with wired I2C sensors
 //
-#define DEVICE_LILYGO_T_DISPLAY_S3
+// #define DEVICE_LILYGO_T_DISPLAY_S3
 // #define DEVICE_ESP32_CH340C_30PIN
+#define DEVICE_ESP8266_WIRED_SENSORS
 
 // =============================================================================
 // Device Configuration: LilyGo T-Display S3 (ESP32-S3)
@@ -41,6 +45,8 @@
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
     #define HAS_LED 1           // Has onboard LED for status indication
+    #define HAS_BLE 1           // Supports BLE for Ruuvi tags and other BLE sensors
+    #define HAS_WIRED_SENSORS 0 // No wired sensors by default (can be added)
     // LilyGo T-Display S3 LED configuration:
     // - Some versions have RGB LED on GPIO43 or GPIO44
     // - If your board has LED on a different pin, change PIN_LED_BUILTIN below
@@ -49,6 +55,9 @@
     #define LED_ON HIGH         // LED is active HIGH
     #define HAS_RGB_LED 1       // Addressable RGB LED (WS2812 style)
     // Note: For RGB LED control, use a NeoPixel or FastLED library
+    // I2C pins for optional wired sensors (standard ESP32 pins)
+    #define PIN_I2C_SDA 21      // GPIO21 (standard ESP32 I2C SDA)
+    #define PIN_I2C_SCL 22      // GPIO22 (standard ESP32 I2C SCL)
 
 // =============================================================================
 // Device Configuration: ESP32 CH340C 30PIN (ESP32, not S3)
@@ -60,10 +69,35 @@
     #define HAS_TOUCH 0
     #define HAS_PSRAM 0
     #define HAS_LED 1           // Has onboard LED for status indication
+    #define HAS_BLE 1           // Supports BLE for Ruuvi tags and other BLE sensors
+    #define HAS_WIRED_SENSORS 0 // No wired sensors by default (can be added)
     // GPIO2 is used for the onboard LED (D2) on most ESP32 dev boards
     // Flow sensor has been moved to GPIO4 to avoid conflict
     #define PIN_LED_BUILTIN 2   // LED on GPIO2 (D2)
     #define LED_ON HIGH         // LED is active HIGH
+    // I2C pins for optional wired sensors (standard ESP32 pins)
+    #define PIN_I2C_SDA 21      // GPIO21 (standard ESP32 I2C SDA)
+    #define PIN_I2C_SCL 22      // GPIO22 (standard ESP32 I2C SCL)
+
+// =============================================================================
+// Device Configuration: ESP8266 Wired Sensors (ESP8266, no display)
+// =============================================================================
+#elif defined(DEVICE_ESP8266_WIRED_SENSORS)
+    #define DEVICE_NAME "ESP8266 Wired Sensors"
+    #define MCU_ESP8266 1       // MCU type indicator for ESP8266-specific code
+    #define HAS_DISPLAY 0
+    #define HAS_TOUCH 0
+    #define HAS_PSRAM 0
+    #define HAS_LED 1           // Has onboard LED for status indication
+    #define HAS_BLE 0           // ESP8266 does not support BLE
+    #define HAS_WIRED_SENSORS 1 // Has wired I2C sensors (BME280, etc.)
+    // GPIO2 (D4 on NodeMCU) is the onboard LED
+    // Note: ESP8266 LED is typically active LOW
+    #define PIN_LED_BUILTIN 2   // LED on GPIO2 (D4 on NodeMCU)
+    #define LED_ON LOW          // LED is active LOW on ESP8266
+    // I2C pins for wired sensors (NodeMCU standard pins)
+    #define PIN_I2C_SDA 4       // GPIO4 (D2 on NodeMCU)
+    #define PIN_I2C_SCL 5       // GPIO5 (D1 on NodeMCU)
 
 // =============================================================================
 // Default / Error
@@ -77,9 +111,26 @@
     #define HAS_TOUCH 1
     #define HAS_PSRAM 1
     #define HAS_LED 1
+    #define HAS_BLE 1
+    #define HAS_WIRED_SENSORS 0
     #define PIN_LED_BUILTIN 43  // Default RGB LED pin (check your board version)
     #define LED_ON HIGH
     #define HAS_RGB_LED 1
+    // I2C pins for optional wired sensors (standard ESP32 pins)
+    #define PIN_I2C_SDA 21      // GPIO21 (standard ESP32 I2C SDA)
+    #define PIN_I2C_SCL 22      // GPIO22 (standard ESP32 I2C SCL)
+#endif
+
+// =============================================================================
+// Feature Defaults
+// =============================================================================
+// Set default values for optional features if not defined
+#ifndef HAS_BLE
+#define HAS_BLE 0
+#endif
+
+#ifndef HAS_WIRED_SENSORS
+#define HAS_WIRED_SENSORS 0
 #endif
 
 // =============================================================================
