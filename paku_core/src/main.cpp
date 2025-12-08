@@ -1,19 +1,36 @@
+#ifdef ESP8266
+#include <ESP8266WiFi.h>
+#else
 #include <WiFi.h>
+#endif
+
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-#include "BLEDevice.h"
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+
 #include "Arduino.h"
 #include "device_config.h"  // Device selection and feature detection
 #include "pin_config.h"
 #include "PakuIotClient.h"
-#include "ruuvi.h"
-#include "ruuvi_scanner.h"
 #include "sensor_placeholders.h"
 #include <string>
+
+// BLE support (ESP32 only)
+#if HAS_BLE
+#include "BLEDevice.h"
+#include "ruuvi.h"
+#include "ruuvi_scanner.h"
+#ifndef ESP8266
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
+#endif
+
+// Wired sensor support (ESP8266 and ESP32)
+#if HAS_WIRED_SENSORS
+#include "wired_sensors.h"
+#endif
 
 // Display-related includes and definitions (only when display is available)
 #if HAS_DISPLAY
@@ -54,11 +71,20 @@ lcd_cmd_t lcd_st7789v[] = {
 #endif
 #endif // HAS_DISPLAY
 
-// BT settings
+// BLE settings (ESP32 only)
+#if HAS_BLE
 bool scanBT_enabled = true;
-
 // BLE scan interval in milliseconds between scan cycles
 #define BLE_SCAN_INTERVAL_MS 10000
+#endif
+
+// Wired sensor settings (ESP8266 and ESP32)
+#if HAS_WIRED_SENSORS
+WiredSensors wiredSensors;
+bool wiredSensorsEnabled = true;
+unsigned long lastWiredSensorRead = 0;
+#define WIRED_SENSOR_INTERVAL_MS 60000  // Read every 60 seconds
+#endif
 
 // Maximum number of telemetry readings per HTTP batch
 #define MAX_TELEMETRY_READINGS 20
@@ -142,11 +168,16 @@ void sendToPakuIot();
 void initPakuIot();
 void processData();
 void processRuuviData();
+#if HAS_BLE
 void initRuuviTags();
 void createRuuviPayloads(const char* timestamp);
+void scanBT(void* parameter);
+#endif
+#if HAS_WIRED_SENSORS
+void createWiredSensorPayloads(const char* timestamp);
+#endif
 void createPlaceholderPayloads(const char* timestamp);
 void initDeviceId();
-void scanBT(void* parameter);
 void goToSleep();
 void updateDisplay();
 
@@ -411,9 +442,23 @@ void setup() {
     // Initialize paku-iot HTTP client if enabled
     initPakuIot();
 
-    // Initialize RuuviTag scanner
+#if HAS_BLE
+    // Initialize RuuviTag scanner (ESP32 only)
     Serial.println("Setup RuuviTag Scanner...");
     initRuuviTags();
+#endif
+
+#if HAS_WIRED_SENSORS
+    // Initialize wired sensors (ESP8266 and ESP32)
+    Serial.println("Setup Wired Sensors (I2C)...");
+    if (wiredSensors.begin(PIN_I2C_SDA, PIN_I2C_SCL)) {
+        Serial.print("Wired sensor type: ");
+        Serial.println(wiredSensors.getSensorType());
+    } else {
+        Serial.println("Warning: No wired sensors detected");
+        wiredSensorsEnabled = false;
+    }
+#endif
 
     Serial.println("Setup Flow Sensor on GPIO4...");
     pinMode(PIN_FLOW_SENSOR, INPUT);
@@ -422,7 +467,8 @@ void setup() {
     // Initialize intervals based on heater status
     updateIntervals();
     
-    // Create a task for scanning Bluetooth devices
+#if HAS_BLE
+    // Create a task for scanning Bluetooth devices (ESP32 only)
     xTaskCreate(
       scanBT,          // Function to be called
       "scanBT",        // Name of the task
@@ -431,6 +477,7 @@ void setup() {
       1,               // Task priority
       NULL             // Task handle
     );
+#endif
 
     Serial.println("Setup complete.");
 
@@ -635,10 +682,17 @@ void processData() {
  
     // Create payloads for all data
     
+#if HAS_BLE
     // 1. RuuviTag sensor data (temperature, humidity, pressure from BLE sensors)
     createRuuviPayloads(timestamp.c_str());
+#endif
     
-    // 2. Placeholder data for sensors not yet implemented (disabled by default)
+#if HAS_WIRED_SENSORS
+    // 2. Wired sensor data (BME280, etc. - ESP8266 and ESP32)
+    createWiredSensorPayloads(timestamp.c_str());
+#endif
+    
+    // 3. Placeholder data for sensors not yet implemented (disabled by default)
     createPlaceholderPayloads(timestamp.c_str());
     
     // 3. Flow sensor data - consolidated payload with all metrics
@@ -978,6 +1032,7 @@ void initDeviceId() {
   Serial.println(deviceId);
 }
 
+#if HAS_BLE
 /**
  * @brief Initializes RuuviTag scanner and registers known tags
  * 
@@ -1065,6 +1120,65 @@ void createRuuviPayloads(const char* timestamp) {
     Serial.println("%");
   }
 }
+
+#if HAS_WIRED_SENSORS
+/**
+ * @brief Creates MQTT payloads from wired sensor data (BME280, etc.)
+ * 
+ * Reads temperature, humidity, and pressure from wired I2C sensors
+ * and creates payloads using architecture-compliant topic structure.
+ * 
+ * @param timestamp Current timestamp string
+ */
+void createWiredSensorPayloads(const char* timestamp) {
+  if (!wiredSensorsEnabled) return;
+  
+  unsigned long currentTime = millis();
+  if (currentTime - lastWiredSensorRead < WIRED_SENSOR_INTERVAL_MS) {
+    return;  // Not time to read yet
+  }
+  
+  lastWiredSensorRead = currentTime;
+  
+  WiredSensorData data = wiredSensors.readSensors();
+  
+  if (!data.valid) {
+    Serial.println("Warning: Wired sensor reading invalid");
+    return;
+  }
+  
+  // Create consolidated payload with all metrics
+  JsonDocument doc;
+  doc["timestamp"] = String(timestamp);
+  doc["device_id"] = String(deviceId) + "_wired";
+  doc["location"] = "wired_sensor";
+  doc["sensor_type"] = wiredSensors.getSensorType();
+  
+  JsonObject metrics = doc["metrics"].to<JsonObject>();
+  metrics["temperature_c"] = data.temperature;
+  metrics["humidity_percent"] = data.humidity;
+  metrics["pressure_hpa"] = data.pressure;
+  
+  String payload;
+  serializeJson(doc, payload);
+  
+  String topic = String("paku/sensors/") + deviceId + "_wired/data";
+  
+  if (payloadIndex < 30) {
+    payloads[payloadIndex].topic = topic;
+    payloads[payloadIndex].data = payload;
+    payloadIndex++;
+  }
+  
+  Serial.print("Wired Sensor: T=");
+  Serial.print(data.temperature);
+  Serial.print("°C, H=");
+  Serial.print(data.humidity);
+  Serial.print("%, P=");
+  Serial.print(data.pressure);
+  Serial.println(" hPa");
+}
+#endif // HAS_WIRED_SENSORS
 
 /**
  * @brief Creates placeholder payloads for sensors not yet implemented
@@ -1197,6 +1311,7 @@ void scanBT(void* parameter) {
   // Delete the task if scanBT_enabled is set to false
   vTaskDelete(NULL);
 }
+#endif // HAS_BLE
 
 /**
  * @brief Creates a payload with the given topic, value, and timestamp, and stores it in the payloads array.
