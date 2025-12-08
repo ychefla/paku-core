@@ -17,11 +17,19 @@
 
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
+
+// Platform-specific HTTP client
+#ifdef ESP32
 #include <HTTPClient.h>
 #include <Update.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <mbedtls/md.h>
+#elif defined(ESP8266)
+#include <ESP8266HTTPClient.h>
+#include <Updater.h>
+#include <Hash.h>
+#endif
 
 /**
  * @brief OTA update states
@@ -246,13 +254,21 @@ private:
     uint8_t* _downloadBuffer;
     size_t _bufferSize;
 
-    // Partition information
+#ifdef ESP32
+    // Partition information (ESP32 only)
     const esp_partition_t* _updatePartition;
     const esp_partition_t* _runningPartition;
+#endif
 
-    // Checksum verification
+#ifdef ESP32
+    // Checksum verification (ESP32 with mbedtls)
     mbedtls_md_context_t _sha256Context;
     bool _checksumInitialized;
+#elif defined(ESP8266)
+    // Checksum verification (ESP8266 with Hash library)
+    bool _checksumInitialized;
+    uint8_t _sha256Hash[32];
+#endif
 
     /**
      * @brief Set current state and notify callback
