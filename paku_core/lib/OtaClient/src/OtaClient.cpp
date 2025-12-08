@@ -149,17 +149,8 @@ OtaResult OtaClient::startUpdate(const OtaConfig& config, OtaProgressCallback pr
     return OtaResult::SUCCESS;
 }
 
-OtaResult OtaClient::startUpdateAsync(const OtaConfig& config, OtaProgressCallback progressCallback) {
-    // For simplicity, async mode uses the blocking implementation
-    // A full async implementation would require state machine in processUpdate()
-    return startUpdate(config, progressCallback);
-}
-
-OtaResult OtaClient::processUpdate() {
-    // Placeholder for async update processing
-    // Currently updates are blocking
-    return _lastResult;
-}
+// Note: Async update methods removed - OTA updates are blocking operations.
+// Future implementations may use FreeRTOS tasks for true async updates.
 
 OtaResult OtaClient::validateCurrentFirmware() {
     const esp_partition_t* partition = esp_ota_get_running_partition();
@@ -375,7 +366,11 @@ OtaResult OtaClient::downloadFirmware() {
     
     // Configure HTTP client
     if (isHttps) {
-        _secureClient.setInsecure(); // Accept any certificate (can be improved with CA cert)
+        // SECURITY NOTE: Using setInsecure() accepts any certificate, which is vulnerable
+        // to man-in-the-middle attacks. For production, configure with proper CA certificate:
+        //   _secureClient.setCACert(ca_cert_pem);
+        // This is acceptable for development/testing with self-signed certificates.
+        _secureClient.setInsecure();
         _http.begin(_secureClient, _config.firmwareUrl);
     } else {
         _http.begin(_client, _config.firmwareUrl);
@@ -480,7 +475,7 @@ OtaResult OtaClient::downloadFirmware() {
                 lastUpdate = millis();
             }
         } else {
-            delay(10); // Small delay to avoid busy waiting
+            yield(); // Allow other tasks to run
         }
     }
 

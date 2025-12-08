@@ -141,27 +141,9 @@ public:
      */
     OtaResult startUpdate(const OtaConfig& config, OtaProgressCallback progressCallback = nullptr);
 
-    /**
-     * @brief Start a firmware update (non-blocking)
-     * 
-     * Initiates the update process in a non-blocking manner.
-     * Call processUpdate() periodically to continue the update.
-     * 
-     * @param config Update configuration
-     * @param progressCallback Optional callback for progress updates
-     * @return OtaResult SUCCESS if started, error otherwise
-     */
-    OtaResult startUpdateAsync(const OtaConfig& config, OtaProgressCallback progressCallback = nullptr);
-
-    /**
-     * @brief Process async update (call in loop)
-     * 
-     * Continues processing an async update. Call this repeatedly
-     * in the main loop when an async update is in progress.
-     * 
-     * @return OtaResult Current status (SUCCESS if complete, ERROR_* on failure)
-     */
-    OtaResult processUpdate();
+    // Note: Async/non-blocking update methods are not implemented in this version.
+    // OTA updates are blocking operations that typically complete in 1-5 minutes.
+    // Future versions may implement true async updates using FreeRTOS tasks.
 
     /**
      * @brief Validate the currently running firmware

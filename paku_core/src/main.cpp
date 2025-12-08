@@ -530,7 +530,12 @@ void loop() {
   timeClient.update();
   sendToMQTT();
   sendToPakuIot();
-  processOtaUpdate();  // Process pending OTA updates
+  
+  // Process pending OTA updates (only when triggered via MQTT)
+  if (otaUpdatePending) {
+    processOtaUpdate();
+  }
+  
   goToSleep();
 
 }
@@ -1376,8 +1381,13 @@ void processOtaUpdate() {
   pendingOtaVersion = "";
 
   if (result == OtaResult::SUCCESS) {
-    Serial.println("OTA: Update successful! Rebooting in 5 seconds...");
-    delay(5000);
+    Serial.println("OTA: Update successful! Rebooting in 3 seconds...");
+    // Short delay to allow MQTT message to be sent, then reboot
+    unsigned long rebootTime = millis();
+    while (millis() - rebootTime < 3000) {
+      client.loop();  // Allow MQTT to process messages
+      delay(100);
+    }
     ESP.restart();
   } else {
     Serial.print("OTA: Update failed: ");
