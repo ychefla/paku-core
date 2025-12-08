@@ -71,6 +71,9 @@ WiredSensorData WiredSensors::readSensors() {
     // Force BME280 to take a reading
     _bme.takeForcedMeasurement();
     
+    // Wait for measurement to complete (BME280 typically takes ~8ms in forced mode)
+    delay(10);
+    
     // Read sensor values
     data.temperature = _bme.readTemperature();
     data.pressure = _bme.readPressure() / 100.0F; // Convert Pa to hPa

@@ -89,6 +89,9 @@ unsigned long lastWiredSensorRead = 0;
 // Maximum number of telemetry readings per HTTP batch
 #define MAX_TELEMETRY_READINGS 20
 
+// Maximum number of MQTT payloads that can be queued
+#define MAX_MQTT_PAYLOADS 30
+
 // Ruuvi tag configuration - placeholder MAC addresses for known tags
 // These should be configured in secrets.h for production deployments
 #ifndef RUUVI_TAG_COUNT
@@ -154,7 +157,7 @@ struct Payload {
   String data;
 };
 
-Payload payloads[30];
+Payload payloads[MAX_MQTT_PAYLOADS];
 int payloadIndex = 0;
 
 // ISR function declaration moved up
@@ -709,7 +712,7 @@ void processData() {
     String flowPayload;
     serializeJson(flowDoc, flowPayload);
     
-    if (payloadIndex < 30) {
+    if (payloadIndex < MAX_MQTT_PAYLOADS) {
       payloads[payloadIndex].topic = "paku/flow/coolant/data";
       payloads[payloadIndex].data = flowPayload;
       payloadIndex++;
@@ -1105,7 +1108,7 @@ void createRuuviPayloads(const char* timestamp) {
     String deviceId = String("ruuvi_") + tag->location;
     String topic = String("paku/sensors/") + deviceId + "/data";
     
-    if (payloadIndex < 30) {
+    if (payloadIndex < MAX_MQTT_PAYLOADS) {
       payloads[payloadIndex].topic = topic;
       payloads[payloadIndex].data = payload;
       payloadIndex++;
@@ -1122,6 +1125,9 @@ void createRuuviPayloads(const char* timestamp) {
 }
 
 #if HAS_WIRED_SENSORS
+// Device ID suffix for wired sensors
+#define WIRED_SENSOR_SUFFIX "_wired"
+
 /**
  * @brief Creates MQTT payloads from wired sensor data (BME280, etc.)
  * 
@@ -1150,7 +1156,7 @@ void createWiredSensorPayloads(const char* timestamp) {
   // Create consolidated payload with all metrics
   JsonDocument doc;
   doc["timestamp"] = String(timestamp);
-  doc["device_id"] = String(deviceId) + "_wired";
+  doc["device_id"] = String(deviceId) + WIRED_SENSOR_SUFFIX;
   doc["location"] = "wired_sensor";
   doc["sensor_type"] = wiredSensors.getSensorType();
   
@@ -1162,9 +1168,9 @@ void createWiredSensorPayloads(const char* timestamp) {
   String payload;
   serializeJson(doc, payload);
   
-  String topic = String("paku/sensors/") + deviceId + "_wired/data";
+  String topic = String("paku/sensors/") + deviceId + WIRED_SENSOR_SUFFIX + "/data";
   
-  if (payloadIndex < 30) {
+  if (payloadIndex < MAX_MQTT_PAYLOADS) {
     payloads[payloadIndex].topic = topic;
     payloads[payloadIndex].data = payload;
     payloadIndex++;
@@ -1324,10 +1330,10 @@ void scanBT(void* parameter) {
  * @param value The value to be included in the payload.
  * @param timestamp The timestamp to be included in the payload.
  * 
- * @note The function ensures that the payloadIndex does not exceed the size of the payloads array (assumed to be 30).
+ * @note The function ensures that the payloadIndex does not exceed MAX_MQTT_PAYLOADS.
  */
 void createPayload(String topic, float value, String timestamp) {
-  if (payloadIndex < 30) { // Ensure we don't exceed array size
+  if (payloadIndex < MAX_MQTT_PAYLOADS) { // Ensure we don't exceed array size
     String data = "{\"value\": " + String(value) + ", \"timestamp\": \"" + timestamp + "\"}";
     payloads[payloadIndex].topic = topic;
     payloads[payloadIndex].data = data;
