@@ -24,13 +24,13 @@
 #ifndef ESP8266
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#endif
-#endif
+#endif // ESP8266
+#endif // HAS_BLE
 
 // Wired sensor support (ESP8266 and ESP32)
 #if HAS_WIRED_SENSORS
 #include "wired_sensors.h"
-#endif
+#endif // HAS_WIRED_SENSORS
 
 // Display-related includes and definitions (only when display is available)
 #if HAS_DISPLAY
@@ -76,7 +76,7 @@ lcd_cmd_t lcd_st7789v[] = {
 bool scanBT_enabled = true;
 // BLE scan interval in milliseconds between scan cycles
 #define BLE_SCAN_INTERVAL_MS 10000
-#endif
+#endif // HAS_BLE
 
 // Wired sensor settings (ESP8266 and ESP32)
 #if HAS_WIRED_SENSORS
@@ -84,7 +84,7 @@ WiredSensors wiredSensors;
 bool wiredSensorsEnabled = true;
 unsigned long lastWiredSensorRead = 0;
 #define WIRED_SENSOR_INTERVAL_MS 60000  // Read every 60 seconds
-#endif
+#endif // HAS_WIRED_SENSORS
 
 // Maximum number of telemetry readings per HTTP batch
 #define MAX_TELEMETRY_READINGS 20
@@ -172,10 +172,10 @@ void processRuuviData();
 void initRuuviTags();
 void createRuuviPayloads(const char* timestamp);
 void scanBT(void* parameter);
-#endif
+#endif // HAS_BLE
 #if HAS_WIRED_SENSORS
 void createWiredSensorPayloads(const char* timestamp);
-#endif
+#endif // HAS_WIRED_SENSORS
 void createPlaceholderPayloads(const char* timestamp);
 void initDeviceId();
 void goToSleep();
