@@ -55,6 +55,9 @@
     #define LED_ON HIGH         // LED is active HIGH
     #define HAS_RGB_LED 1       // Addressable RGB LED (WS2812 style)
     // Note: For RGB LED control, use a NeoPixel or FastLED library
+    // I2C pins for optional wired sensors (standard ESP32 pins)
+    #define PIN_I2C_SDA 21      // GPIO21 (standard ESP32 I2C SDA)
+    #define PIN_I2C_SCL 22      // GPIO22 (standard ESP32 I2C SCL)
 
 // =============================================================================
 // Device Configuration: ESP32 CH340C 30PIN (ESP32, not S3)
@@ -72,6 +75,9 @@
     // Flow sensor has been moved to GPIO4 to avoid conflict
     #define PIN_LED_BUILTIN 2   // LED on GPIO2 (D2)
     #define LED_ON HIGH         // LED is active HIGH
+    // I2C pins for optional wired sensors (standard ESP32 pins)
+    #define PIN_I2C_SDA 21      // GPIO21 (standard ESP32 I2C SDA)
+    #define PIN_I2C_SCL 22      // GPIO22 (standard ESP32 I2C SCL)
 
 // =============================================================================
 // Device Configuration: ESP8266 Wired Sensors (ESP8266, no display)
@@ -110,6 +116,9 @@
     #define PIN_LED_BUILTIN 43  // Default RGB LED pin (check your board version)
     #define LED_ON HIGH
     #define HAS_RGB_LED 1
+    // I2C pins for optional wired sensors (standard ESP32 pins)
+    #define PIN_I2C_SDA 21      // GPIO21 (standard ESP32 I2C SDA)
+    #define PIN_I2C_SCL 22      // GPIO22 (standard ESP32 I2C SCL)
 #endif
 
 // =============================================================================

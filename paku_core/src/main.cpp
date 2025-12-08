@@ -446,7 +446,7 @@ void setup() {
     // Initialize RuuviTag scanner (ESP32 only)
     Serial.println("Setup RuuviTag Scanner...");
     initRuuviTags();
-#endif
+#endif // HAS_BLE
 
 #if HAS_WIRED_SENSORS
     // Initialize wired sensors (ESP8266 and ESP32)
@@ -458,7 +458,7 @@ void setup() {
         Serial.println("Warning: No wired sensors detected");
         wiredSensorsEnabled = false;
     }
-#endif
+#endif // HAS_WIRED_SENSORS
 
     Serial.println("Setup Flow Sensor on GPIO4...");
     pinMode(PIN_FLOW_SENSOR, INPUT);
@@ -477,7 +477,7 @@ void setup() {
       1,               // Task priority
       NULL             // Task handle
     );
-#endif
+#endif // HAS_BLE
 
     Serial.println("Setup complete.");
 
@@ -685,12 +685,12 @@ void processData() {
 #if HAS_BLE
     // 1. RuuviTag sensor data (temperature, humidity, pressure from BLE sensors)
     createRuuviPayloads(timestamp.c_str());
-#endif
+#endif // HAS_BLE
     
 #if HAS_WIRED_SENSORS
     // 2. Wired sensor data (BME280, etc. - ESP8266 and ESP32)
     createWiredSensorPayloads(timestamp.c_str());
-#endif
+#endif // HAS_WIRED_SENSORS
     
     // 3. Placeholder data for sensors not yet implemented (disabled by default)
     createPlaceholderPayloads(timestamp.c_str());
