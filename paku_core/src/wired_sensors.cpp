@@ -1,6 +1,6 @@
 /**
  * @file wired_sensors.cpp
- * @brief Implementation of wired sensor support
+ * @brief Implementation of wired sensor support (analog only)
  */
 
 #include "wired_sensors.h"
@@ -21,98 +21,34 @@
 // For a sensor that outputs 0-1V directly, set SERIES_R to 0
 
 WiredSensors::WiredSensors() 
-    : _initialized(false), _hasAnalogTemp(false), _sensorType("None") {
+    : _hasAnalogTemp(false), _sensorType("None") {
 }
 
 bool WiredSensors::begin(int sda, int scl) {
-    Serial.println("Initializing wired sensors...");
-    
-    // Initialize I2C bus
-    Wire.begin(sda, scl);
-    
-    // Try to initialize BME280
-    if (initBME280()) {
-        _initialized = true;
-        _sensorType = "BME280";
-        Serial.println("BME280 sensor initialized successfully");
-    } else {
-        Serial.println("Warning: No I2C sensors detected");
-    }
+    Serial.println("Initializing analog sensors...");
     
     // Check for analog temperature sensor
 #if defined(HAS_ANALOG_TEMP) && HAS_ANALOG_TEMP && ANALOG_TEMP_ENABLED
     _hasAnalogTemp = true;
+    _sensorType = "Analog";
     Serial.println("Analog temperature sensor enabled on A0");
-#endif
-    
-    return _initialized || _hasAnalogTemp;
-}
-
-bool WiredSensors::initBME280() {
-    // Try default I2C address 0x76
-    if (_bme.begin(0x76)) {
-        // Configure BME280 settings for weather monitoring
-        _bme.setSampling(
-            Adafruit_BME280::MODE_FORCED,     // Take reading on demand
-            Adafruit_BME280::SAMPLING_X1,     // Temperature oversampling
-            Adafruit_BME280::SAMPLING_X1,     // Pressure oversampling
-            Adafruit_BME280::SAMPLING_X1,     // Humidity oversampling
-            Adafruit_BME280::FILTER_OFF       // Filter off for responsive readings
-        );
-        return true;
-    }
-    
-    // Try alternate I2C address 0x77
-    if (_bme.begin(0x77)) {
-        _bme.setSampling(
-            Adafruit_BME280::MODE_FORCED,
-            Adafruit_BME280::SAMPLING_X1,
-            Adafruit_BME280::SAMPLING_X1,
-            Adafruit_BME280::SAMPLING_X1,
-            Adafruit_BME280::FILTER_OFF
-        );
-        return true;
-    }
-    
+    return true;
+#else
+    Serial.println("Warning: No analog sensors enabled");
     return false;
+#endif
 }
 
 WiredSensorData WiredSensors::readSensors() {
     WiredSensorData data;
     data.valid = false;
-    data.hasAnalogTemp = false;
     data.timestamp = millis();
-    
-    // Read I2C sensor (BME280)
-    if (_initialized) {
-        // Force BME280 to take a reading
-        _bme.takeForcedMeasurement();
-        
-        // Wait for measurement to complete (BME280 typically takes ~8ms in forced mode)
-        delay(10);
-        
-        // Read sensor values
-        data.temperature = _bme.readTemperature();
-        data.pressure = _bme.readPressure() / 100.0F; // Convert Pa to hPa
-        data.humidity = _bme.readHumidity();
-        
-        // Validate readings (BME280 returns reasonable values)
-        // Temperature: -40 to 85°C, Humidity: 0-100%, Pressure: 300-1100 hPa
-        if (data.temperature >= -40.0 && data.temperature <= 85.0 &&
-            data.humidity >= 0.0 && data.humidity <= 100.0 &&
-            data.pressure >= 300.0 && data.pressure <= 1100.0) {
-            data.valid = true;
-        } else {
-            Serial.println("Warning: Invalid BME280 readings detected");
-        }
-    }
     
     // Read analog temperature sensor
     if (_hasAnalogTemp) {
         data.analogTemp = readAnalogTemperature();
         if (!isnan(data.analogTemp) && data.analogTemp >= -40.0 && data.analogTemp <= 125.0) {
-            data.hasAnalogTemp = true;
-            data.valid = true; // Mark as valid if analog sensor provides good data
+            data.valid = true;
         } else {
             Serial.println("Warning: Invalid analog temperature reading");
         }

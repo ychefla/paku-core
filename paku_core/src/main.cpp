@@ -28,7 +28,7 @@
 #endif // ESP8266
 #endif // HAS_BLE
 
-// Wired sensor support (ESP8266 and ESP32)
+// Analog sensor support (ESP8266 and ESP32)
 #if HAS_WIRED_SENSORS
 #include "wired_sensors.h"
 #endif // HAS_WIRED_SENSORS
@@ -79,7 +79,7 @@ bool scanBT_enabled = true;
 #define BLE_SCAN_INTERVAL_MS 10000
 #endif // HAS_BLE
 
-// Wired sensor settings (ESP8266 and ESP32)
+// Analog sensor settings (ESP8266 and ESP32)
 #if HAS_WIRED_SENSORS
 WiredSensors wiredSensors;
 bool wiredSensorsEnabled = true;
@@ -472,13 +472,13 @@ void setup() {
 #endif // HAS_BLE
 
 #if HAS_WIRED_SENSORS
-    // Initialize wired sensors (ESP8266 and ESP32)
-    Serial.println("Setup Wired Sensors (I2C)...");
-    if (wiredSensors.begin(PIN_I2C_SDA, PIN_I2C_SCL)) {
-        Serial.print("Wired sensor type: ");
+    // Initialize analog sensors (ESP8266 and ESP32)
+    Serial.println("Setup Analog Sensors...");
+    if (wiredSensors.begin(0, 0)) {  // Parameters unused for analog sensors
+        Serial.print("Sensor type: ");
         Serial.println(wiredSensors.getSensorType());
     } else {
-        Serial.println("Warning: No wired sensors detected");
+        Serial.println("Warning: No analog sensors detected");
         wiredSensorsEnabled = false;
     }
 #endif // HAS_WIRED_SENSORS
@@ -721,7 +721,7 @@ void processData() {
 #endif // HAS_BLE
     
 #if HAS_WIRED_SENSORS
-    // 2. Wired sensor data (BME280, etc. - ESP8266 and ESP32)
+    // 2. Analog sensor data (ESP8266 and ESP32)
     createWiredSensorPayloads(timestamp.c_str());
 #endif // HAS_WIRED_SENSORS
     
@@ -1168,10 +1168,10 @@ void createRuuviPayloads(const char* timestamp) {
 #define WIRED_SENSOR_SUFFIX "_wired"
 
 /**
- * @brief Creates MQTT payloads from wired sensor data (BME280, etc.)
+ * @brief Creates MQTT payloads from analog sensor data
  * 
- * Reads temperature, humidity, and pressure from wired I2C sensors
- * and creates payloads using architecture-compliant topic structure.
+ * Reads temperature from analog sensors and creates payloads 
+ * using architecture-compliant topic structure.
  * 
  * @param timestamp Current timestamp string
  */
@@ -1188,7 +1188,7 @@ void createWiredSensorPayloads(const char* timestamp) {
   WiredSensorData data = wiredSensors.readSensors();
   
   if (!data.valid) {
-    Serial.println("Warning: Wired sensor reading invalid");
+    Serial.println("Warning: Analog sensor reading invalid");
     return;
   }
   
@@ -1201,15 +1201,8 @@ void createWiredSensorPayloads(const char* timestamp) {
   
   JsonObject metrics = doc["metrics"].to<JsonObject>();
   
-  // Add I2C sensor data if available
+  // Add analog temperature
   if (wiredSensors.isAvailable()) {
-    metrics["temperature_c"] = data.temperature;
-    metrics["humidity_percent"] = data.humidity;
-    metrics["pressure_hpa"] = data.pressure;
-  }
-  
-  // Add analog temperature if available
-  if (data.hasAnalogTemp) {
     metrics["analog_temp_c"] = data.analogTemp;
   }
   
@@ -1224,22 +1217,9 @@ void createWiredSensorPayloads(const char* timestamp) {
     payloadIndex++;
   }
   
-  Serial.print("Wired Sensor: ");
-  if (wiredSensors.isAvailable()) {
-    Serial.print("T=");
-    Serial.print(data.temperature);
-    Serial.print("°C, H=");
-    Serial.print(data.humidity);
-    Serial.print("%, P=");
-    Serial.print(data.pressure);
-    Serial.print(" hPa");
-  }
-  if (data.hasAnalogTemp) {
-    Serial.print(" | Analog T=");
-    Serial.print(data.analogTemp);
-    Serial.print("°C");
-  }
-  Serial.println();
+  Serial.print("Analog Sensor: T=");
+  Serial.print(data.analogTemp);
+  Serial.println("°C");
 }
 #endif // HAS_WIRED_SENSORS
 
