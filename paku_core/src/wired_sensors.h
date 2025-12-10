@@ -2,7 +2,7 @@
  * @file wired_sensors.h
  * @brief Wired sensor support for ESP8266 and ESP32 devices
  * 
- * Provides abstraction layer for analog temperature sensors.
+ * Provides abstraction layer for DS18B20 1-Wire digital temperature sensors.
  * 
  * This module is designed to work alongside BLE sensors on ESP32
  * or as the primary sensor interface on ESP8266 (which lacks BLE).
@@ -14,13 +14,16 @@
 
 #if HAS_WIRED_SENSORS
 
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
 /**
  * @brief Wired sensor data structure
  * 
- * Contains readings from analog temperature sensors
+ * Contains readings from DS18B20 temperature sensor
  */
 struct WiredSensorData {
-    float analogTemp;   // Temperature from analog sensor
+    float temperature;  // Temperature in Celsius from DS18B20
     bool valid;         // True if readings are valid
     unsigned long timestamp; // millis() when reading was taken
 };
@@ -28,7 +31,7 @@ struct WiredSensorData {
 /**
  * @brief Wired sensor manager class
  * 
- * Manages initialization and reading of analog temperature sensors
+ * Manages initialization and reading of DS18B20 1-Wire temperature sensors
  */
 class WiredSensors {
 public:
@@ -38,18 +41,18 @@ public:
     WiredSensors();
     
     /**
-     * @brief Initialize analog sensor
+     * @brief Initialize DS18B20 sensor
      * 
      * @param sda Unused (kept for API compatibility)
      * @param scl Unused (kept for API compatibility)
-     * @return true if analog sensor is enabled
+     * @return true if DS18B20 sensor was found
      */
     bool begin(int sda, int scl);
     
     /**
      * @brief Read data from sensors
      * 
-     * Reads temperature from analog sensor
+     * Reads temperature from DS18B20 sensor
      * 
      * @return WiredSensorData structure with sensor readings
      */
@@ -58,38 +61,23 @@ public:
     /**
      * @brief Check if sensors are available
      * 
-     * @return true if analog sensor is enabled
+     * @return true if DS18B20 sensor is detected
      */
-    bool isAvailable() const { return _hasAnalogTemp; }
+    bool isAvailable() const { return _initialized; }
     
     /**
      * @brief Get sensor type string
      * 
-     * @return Sensor type (e.g., "Analog")
+     * @return Sensor type ("DS18B20")
      */
     const char* getSensorType() const { return _sensorType; }
-    
-    /**
-     * @brief Check if analog temperature sensor is available
-     * 
-     * @return true if analog sensor is enabled
-     */
-    bool hasAnalogSensor() const { return _hasAnalogTemp; }
 
 private:
-    bool _hasAnalogTemp;
+    OneWire* _oneWire;
+    DallasTemperature* _sensors;
+    bool _initialized;
     const char* _sensorType;
-    
-    /**
-     * @brief Read analog temperature sensor
-     * 
-     * Reads voltage from A0 and converts to temperature.
-     * Default calibration assumes NTC thermistor with voltage divider.
-     * Adjust ANALOG_TEMP_* constants for your specific sensor.
-     * 
-     * @return Temperature in Celsius, or NaN if invalid
-     */
-    float readAnalogTemperature();
+    uint8_t _sensorCount;
 };
 
 #endif // HAS_WIRED_SENSORS

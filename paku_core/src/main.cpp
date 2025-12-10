@@ -84,7 +84,7 @@ bool scanBT_enabled = true;
 WiredSensors wiredSensors;
 bool wiredSensorsEnabled = true;
 unsigned long lastWiredSensorRead = 0;
-#define WIRED_SENSOR_INTERVAL_MS 60000  // Read every 60 seconds
+#define WIRED_SENSOR_INTERVAL_MS 10000  // Read every 10 seconds (was 60000)
 #endif // HAS_WIRED_SENSORS
 
 // Maximum number of telemetry readings per HTTP batch
@@ -472,13 +472,13 @@ void setup() {
 #endif // HAS_BLE
 
 #if HAS_WIRED_SENSORS
-    // Initialize analog sensors (ESP8266 and ESP32)
-    Serial.println("Setup Analog Sensors...");
-    if (wiredSensors.begin(0, 0)) {  // Parameters unused for analog sensors
+    // Initialize DS18B20 sensor (ESP8266 and ESP32)
+    Serial.println("Setup DS18B20 Temperature Sensor...");
+    if (wiredSensors.begin(0, 0)) {  // Parameters unused for DS18B20
         Serial.print("Sensor type: ");
         Serial.println(wiredSensors.getSensorType());
     } else {
-        Serial.println("Warning: No analog sensors detected");
+        Serial.println("Warning: No DS18B20 sensors detected");
         wiredSensorsEnabled = false;
     }
 #endif // HAS_WIRED_SENSORS
@@ -594,28 +594,35 @@ void loop() {
 }
 
 void goToSleep() {
-    // Check if the device has been awake for 30 seconds
-  static unsigned long awakeStartTime = millis();
-  if (millis() - awakeStartTime >= 30000) {
-    Serial.println("Going to sleep for 15 seconds...");
 #if HAS_DISPLAY
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.println("Going to sleep for 15 seconds...");
-    delay(2000);
-#endif
-    // Configure deep sleep to wake up after 15 seconds
+    // Only enable sleep for devices with display (ESP32-S3)
+    // ESP8266 doesn't wake from deep sleep without D0->RST connection
+    // Check if the device has been awake for 30 seconds
+    static unsigned long awakeStartTime = millis();
+    if (millis() - awakeStartTime >= 30000) {
+        Serial.println("Going to sleep for 15 seconds...");
+        tft.fillScreen(TFT_BLACK);
+        tft.setCursor(0, 0);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(2);
+        tft.println("Going to sleep for 15 seconds...");
+        delay(2000);
+        
+        // Configure deep sleep to wake up after 15 seconds
 #ifdef ESP8266
-    ESP.deepSleep(15 * 1000000);  // ESP8266 deep sleep (microseconds)
+        ESP.deepSleep(15 * 1000000);  // ESP8266 deep sleep (microseconds)
 #else
-    esp_sleep_enable_timer_wakeup(15 * 1000000);
-    esp_deep_sleep_start();
+        esp_sleep_enable_timer_wakeup(15 * 1000000);
+        esp_deep_sleep_start();
 #endif
-  } else {
-    delay(1000);
-  }
+    } else {
+        delay(1000);
+    }
+#else
+    // No display = no sleep (e.g., ESP8266 headless, ESP32 headless)
+    // Just keep running and reading sensors
+    delay(100);
+#endif
 }
 
 void updateDisplay() {
@@ -721,7 +728,7 @@ void processData() {
 #endif // HAS_BLE
     
 #if HAS_WIRED_SENSORS
-    // 2. Analog sensor data (ESP8266 and ESP32)
+    // 2. DS18B20 sensor data (ESP8266 and ESP32)
     createWiredSensorPayloads(timestamp.c_str());
 #endif // HAS_WIRED_SENSORS
     
@@ -1168,9 +1175,9 @@ void createRuuviPayloads(const char* timestamp) {
 #define WIRED_SENSOR_SUFFIX "_wired"
 
 /**
- * @brief Creates MQTT payloads from analog sensor data
+ * @brief Creates MQTT payloads from DS18B20 sensor data
  * 
- * Reads temperature from analog sensors and creates payloads 
+ * Reads temperature from DS18B20 digital sensor and creates payloads 
  * using architecture-compliant topic structure.
  * 
  * @param timestamp Current timestamp string
@@ -1188,7 +1195,7 @@ void createWiredSensorPayloads(const char* timestamp) {
   WiredSensorData data = wiredSensors.readSensors();
   
   if (!data.valid) {
-    Serial.println("Warning: Analog sensor reading invalid");
+    Serial.println("Warning: DS18B20 sensor reading invalid");
     return;
   }
   
@@ -1201,9 +1208,9 @@ void createWiredSensorPayloads(const char* timestamp) {
   
   JsonObject metrics = doc["metrics"].to<JsonObject>();
   
-  // Add analog temperature
+  // Add temperature from DS18B20
   if (wiredSensors.isAvailable()) {
-    metrics["analog_temp_c"] = data.analogTemp;
+    metrics["temperature_c"] = data.temperature;
   }
   
   String payload;
@@ -1217,8 +1224,8 @@ void createWiredSensorPayloads(const char* timestamp) {
     payloadIndex++;
   }
   
-  Serial.print("Analog Sensor: T=");
-  Serial.print(data.analogTemp);
+  Serial.print("DS18B20 Sensor: T=");
+  Serial.print(data.temperature, 2);
   Serial.println("°C");
 }
 #endif // HAS_WIRED_SENSORS
