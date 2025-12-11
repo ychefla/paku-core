@@ -1037,7 +1037,7 @@ void connectMQTT() {
     //tft.setTextSize(2);
     //tft.println("Attempting MQTT connection...");
 
-    if (client.connect("ESP32Client")) {  // Use a unique client ID for ESP32
+    if (client.connect(deviceId)) {  // Use unique device ID as MQTT client ID
       Serial.println("MQTT connected and subscribed to control topics");
 #if HAS_LED
       ledMqttConnected();  // Double blink to indicate success
