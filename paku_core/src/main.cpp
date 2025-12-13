@@ -18,6 +18,11 @@
 #include "OtaClient.h"
 #include <string>
 
+// Firmware version
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "1.0.0"
+#endif
+
 // BLE support (ESP32 only)
 #if HAS_BLE
 #include "BLEDevice.h"
@@ -598,6 +603,7 @@ void setup() {
  */
 void loop() {
   static unsigned long loopCount = 0;
+  static unsigned long lastStatusPublish = 0;
   loopCount++;
   
   // Update heater status here
@@ -625,6 +631,13 @@ void loop() {
   timeClient.update();
   sendToMQTT();
   sendToPakuIot();
+  
+  // Publish status update every 60 seconds
+  unsigned long now = millis();
+  if (now - lastStatusPublish >= 60000) {
+    publishDeviceStatus();
+    lastStatusPublish = now;
+  }
   
   // Process pending OTA updates (only when triggered via MQTT)
   if (otaUpdatePending) {
@@ -1100,6 +1113,10 @@ void connectMQTT() {
       client.subscribe(otaTopic.c_str());
       Serial.print("Subscribed to OTA topic: ");
       Serial.println(otaTopic);
+      
+      // Publish device status and config on successful connection
+      publishDeviceStatus();
+      publishDeviceConfig();
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -1455,6 +1472,94 @@ void updateIntervals() {
   }
 }
 
+/**
+ * @brief Publish device status to MQTT
+ * 
+ * Publishes operational status to paku/edge/{deviceId}/status topic
+ * following the documented MQTT schema.
+ */
+void publishDeviceStatus() {
+  if (!client.connected()) {
+    return;
+  }
+  
+  String statusTopic = String("paku/edge/") + deviceId + "/status";
+  JsonDocument doc;
+  
+  doc["online"] = true;
+  doc["last_seen"] = getISO8601Timestamp();
+  doc["signal_strength_dbm"] = WiFi.RSSI();
+  doc["uptime_seconds"] = millis() / 1000;
+  doc["firmware_version"] = FIRMWARE_VERSION;
+  doc["state"] = (currentState == STATE_CONTINUOUS ? "continuous" : "unknown");
+  doc["heater_status"] = heaterStatus;
+  
+  // Add active scenario info
+  if (deviceConfig.timing.wake_interval_s == 10) {
+    doc["active_scenario"] = "heater_active";
+  } else if (deviceConfig.timing.wake_interval_s == 300) {
+    doc["active_scenario"] = "power_save";
+  } else {
+    doc["active_scenario"] = "default";
+  }
+  
+  String output;
+  serializeJson(doc, output);
+  
+  // Publish with QoS 1 and retain flag
+  client.publish(statusTopic.c_str(), output.c_str(), true);
+  Serial.print("Published device status to: ");
+  Serial.println(statusTopic);
+}
+
+/**
+ * @brief Publish device configuration to MQTT
+ * 
+ * Publishes current configuration to paku/edge/{deviceId}/config topic
+ * following the documented MQTT schema.
+ */
+void publishDeviceConfig() {
+  if (!client.connected()) {
+    return;
+  }
+  
+  String configTopic = String("paku/edge/") + deviceId + "/config";
+  JsonDocument doc;
+  
+  doc["version"] = "1.0";
+  
+  // Timing configuration
+  doc["timing"]["wake_interval_s"] = deviceConfig.timing.wake_interval_s;
+  doc["timing"]["connection_duration_max_s"] = deviceConfig.timing.connection_duration_max_s;
+  doc["timing"]["wifi_connect_timeout_s"] = deviceConfig.timing.wifi_connect_timeout_s;
+  doc["timing"]["mqtt_connect_timeout_s"] = deviceConfig.timing.mqtt_connect_timeout_s;
+  
+  // Sensor configuration
+  doc["sensors"]["ble"]["enabled"] = deviceConfig.sensors.ble.enabled;
+  doc["sensors"]["ble"]["scan_duration_s"] = deviceConfig.sensors.ble.scan_duration_s;
+  doc["sensors"]["ble"]["scan_active"] = deviceConfig.sensors.ble.scan_active;
+  
+  doc["sensors"]["wired"]["enabled"] = deviceConfig.sensors.wired.enabled;
+  doc["sensors"]["wired"]["sample_count"] = deviceConfig.sensors.wired.sample_count;
+  doc["sensors"]["wired"]["sample_interval_ms"] = deviceConfig.sensors.wired.sample_interval_ms;
+  
+  doc["sensors"]["flow"]["enabled"] = deviceConfig.sensors.flow.enabled;
+  doc["sensors"]["flow"]["measurement_duration_s"] = deviceConfig.sensors.flow.measurement_duration_s;
+  
+  // Power configuration
+  doc["power"]["deep_sleep_enabled"] = deviceConfig.power.deep_sleep_enabled;
+  doc["power"]["light_sleep_during_wait"] = deviceConfig.power.light_sleep_during_wait;
+  doc["power"]["battery_monitor_enabled"] = deviceConfig.power.battery_monitor_enabled;
+  
+  String output;
+  serializeJson(doc, output);
+  
+  // Publish with QoS 1 and retain flag
+  client.publish(configTopic.c_str(), output.c_str(), true);
+  Serial.print("Published device config to: ");
+  Serial.println(configTopic);
+}
+
 // TFT Pin check (only for devices with display)
 #if HAS_DISPLAY
 #if PIN_LCD_WR  != TFT_WR || \
@@ -1619,6 +1724,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       }
       
       updateIntervals();
+      
+      // Publish updated status and config
+      publishDeviceStatus();
+      publishDeviceConfig();
     }
     return;
   }
@@ -1643,6 +1752,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         }
         
         updateIntervals();
+        
+        // Publish updated status and config
+        publishDeviceStatus();
+        publishDeviceConfig();
       }
     }
     return;
