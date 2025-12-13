@@ -12,6 +12,7 @@
 #include "Arduino.h"
 #include "device_config.h"  // Device selection and feature detection
 #include "pin_config.h"
+#include "timing_config.h"  // Timing and power management configuration
 #include "PakuIotClient.h"
 #include "sensor_placeholders.h"
 #include "OtaClient.h"
@@ -142,6 +143,17 @@ String pendingOtaVersion = "";
 // Note: GPIO2 is used for the onboard LED on many ESP32 dev boards
 #define PIN_FLOW_SENSOR 4
 
+// ============================================================================
+// Timing Configuration and State Management
+// ============================================================================
+
+// Device configuration structure (replaces individual timing variables)
+DeviceConfig deviceConfig;
+
+// Current operational state
+DeviceState currentState = STATE_INIT;
+
+// Legacy timing variables (maintained for backward compatibility during Phase 1)
 unsigned long lastTime_sensor = 0;
 unsigned long lastTime_mqtt = 0;
 unsigned long mqttFastInterval = 10000;  // 10 second interval in ms
@@ -151,6 +163,10 @@ unsigned long sensorSlowInterval = 60000;  // 1 minute interval in ms
 unsigned long mqttInterval;
 unsigned long sensorInterval;
 
+// ============================================================================
+// Sensor and Flow Variables
+// ============================================================================
+
 volatile unsigned int count = 0;
 float flowRate;
 float calibrationFactor = 6.6;
@@ -158,8 +174,14 @@ float requiredDeltaT;
 const float heaterPower = 5000;
 bool testMode = true;  // Set to true to simulate flow data
 
-// Default heater status to 1 (on)
+// Default heater status to 1 (on) for testing - use fast mode by default
+// Controlled via MQTT paku/control topic: {"heater": 1} on, {"heater": 0} off
 int heaterStatus = 1;
+
+// ============================================================================
+// MQTT Payload Buffer
+// ============================================================================
+
 struct Payload {
   String topic;
   String data;
@@ -179,6 +201,8 @@ void sendToPakuIot();
 void initPakuIot();
 void processData();
 void processRuuviData();
+void publishDeviceStatus();
+void publishDeviceConfig();
 #if HAS_BLE
 void initRuuviTags();
 void createRuuviPayloads(const char* timestamp);
@@ -487,8 +511,26 @@ void setup() {
     pinMode(PIN_FLOW_SENSOR, INPUT);
     attachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR), countRisingEdges, RISING);
     
-    // Initialize intervals based on heater status
+    // Initialize device configuration with defaults
+    Serial.println("Loading device configuration...");
+    deviceConfig.loadDefaults();
+    
+    // Apply scenario based on heater status (Phase 1: maintain existing behavior)
+    if (heaterStatus == 1) {
+        deviceConfig.applyScenario("heater_active");
+    } else {
+        deviceConfig.applyScenario("default");
+    }
+    
+    // Initialize intervals based on heater status (legacy behavior for Phase 1)
     updateIntervals();
+    
+    // Set initial state for continuous operation (no sleep in Phase 1)
+    currentState = STATE_CONTINUOUS;
+    
+    Serial.printf("Wake interval: %d seconds\n", deviceConfig.timing.wake_interval_s);
+    Serial.printf("BLE scan duration: %d seconds\n", deviceConfig.sensors.ble.scan_duration_s);
+    Serial.printf("Deep sleep: %s\n", deviceConfig.power.deep_sleep_enabled ? "enabled" : "disabled");
     
 #if HAS_BLE
     // Create a task for scanning Bluetooth devices (ESP32 only)
@@ -1043,7 +1085,15 @@ void connectMQTT() {
       ledMqttConnected();  // Double blink to indicate success
 #endif
       //tft.println("MQTT connected and subscribed to 'paku/control'");
+      
+      // Subscribe to legacy control topic (backward compatibility)
       client.subscribe("paku/control");
+      
+      // Subscribe to new edge device control topic (schema-compliant)
+      String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
+      client.subscribe(edgeControlTopic.c_str());
+      Serial.print("Subscribed to edge control topic: ");
+      Serial.println(edgeControlTopic);
       
       // Subscribe to device-specific OTA command topic
       String otaTopic = String("paku/devices/") + deviceId + "/cmd/ota";
@@ -1394,22 +1444,12 @@ void createPayload(String topic, float value, String timestamp) {
  * the intervals are set to fast intervals. Otherwise, they are set to slow intervals.
  */
 void updateIntervals() {
-  static unsigned long heaterOnStartTime = 0;
-
   if (heaterStatus == 1) {
-    if (heaterOnStartTime == 0) {
-      heaterOnStartTime = millis();
-    }
-
-    if (millis() - heaterOnStartTime >= 3600000) { // 1 hour in milliseconds
-      mqttInterval = mqttSlowInterval;
-      sensorInterval = sensorSlowInterval;
-    } else {
-      mqttInterval = mqttFastInterval;
-      sensorInterval = sensorFastInterval;
-    }
+    // Heater is on - use fast intervals for the entire duration
+    mqttInterval = mqttFastInterval;
+    sensorInterval = sensorFastInterval;
   } else {
-    heaterOnStartTime = 0;
+    // Heater is off - use slow intervals
     mqttInterval = mqttSlowInterval;
     sensorInterval = sensorSlowInterval;
   }
@@ -1535,7 +1575,12 @@ void processOtaUpdate() {
 /**
  * @brief MQTT message callback handler
  * 
- * Handles incoming MQTT messages, including OTA update commands.
+ * Handles incoming MQTT messages, including OTA update commands and heater control.
+ * 
+ * Supported topics:
+ * - paku/control: Legacy control commands (e.g., {"heater": 1})
+ * - paku/edge/{deviceId}/control: New schema-compliant control (e.g., {"scenario": "heater_active"})
+ * - paku/devices/{deviceId}/cmd/ota: OTA update commands
  * 
  * @param topic MQTT topic
  * @param payload Message payload
@@ -1552,6 +1597,56 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   }
   Serial.print("Message: ");
   Serial.println(message);
+
+  // Check for new edge device control topic (Phase 1: not yet fully implemented)
+  String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
+  if (String(topic) == edgeControlTopic) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (!error && doc.containsKey("scenario")) {
+      const char* scenario = doc["scenario"];
+      Serial.print("Switching to scenario: ");
+      Serial.println(scenario);
+      
+      deviceConfig.applyScenario(scenario);
+      
+      // Update heater status based on scenario for backward compatibility
+      if (strcmp(scenario, "heater_active") == 0) {
+        heaterStatus = 1;
+      } else {
+        heaterStatus = 0;
+      }
+      
+      updateIntervals();
+    }
+    return;
+  }
+
+  // Check if this is a legacy control command
+  if (String(topic) == "paku/control") {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (!error && doc.containsKey("heater")) {
+      int newHeaterStatus = doc["heater"];
+      if (newHeaterStatus == 0 || newHeaterStatus == 1) {
+        heaterStatus = newHeaterStatus;
+        Serial.print("Heater status updated to: ");
+        Serial.println(heaterStatus);
+        
+        // Apply corresponding scenario
+        if (heaterStatus == 1) {
+          deviceConfig.applyScenario("heater_active");
+        } else {
+          deviceConfig.applyScenario("default");
+        }
+        
+        updateIntervals();
+      }
+    }
+    return;
+  }
 
   // Check if this is an OTA command
   String otaTopic = String("paku/devices/") + deviceId + "/cmd/ota";
