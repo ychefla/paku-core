@@ -27,7 +27,7 @@
 
 // Firmware version
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.0"
 #endif
 
 // BLE support (ESP32 only)
@@ -913,8 +913,19 @@ void initPakuIot() {
   uint8_t mac[6];
   WiFi.macAddress(mac);
   static char deviceId[20];
-  snprintf(deviceId, sizeof(deviceId), "paku-%02X%02X%02X%02X", 
+#ifdef ESP8266
+  snprintf(deviceId, sizeof(deviceId), "ESP8266-%02X%02X%02X%02X",
            mac[2], mac[3], mac[4], mac[5]);
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+  snprintf(deviceId, sizeof(deviceId), "ESP32-S3-%02X%02X%02X%02X",
+           mac[2], mac[3], mac[4], mac[5]);
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+  snprintf(deviceId, sizeof(deviceId), "ESP32-%02X%02X%02X%02X",
+           mac[2], mac[3], mac[4], mac[5]);
+#else
+  snprintf(deviceId, sizeof(deviceId), "UNKNOWN-%02X%02X%02X%02X",
+           mac[2], mac[3], mac[4], mac[5]);
+#endif
   
   PakuIotConfig config;
   config.host = PAKU_IOT_HOST;
@@ -1195,13 +1206,19 @@ void connectMQTT() {
  * @brief Initializes the device ID from MAC address
  * 
  * Generates a unique device identifier using the last 4 bytes of the
- * ESP32's MAC address in the format "paku-AABBCCDD".
+ * ESP32/ESP8266 MAC address in the format "ESP32-AABBCCDD" or "ESP8266-AABBCCDD".
  */
 void initDeviceId() {
   uint8_t mac[6];
   WiFi.macAddress(mac);
-  snprintf(deviceId, sizeof(deviceId), "paku-%02X%02X%02X%02X", 
+#ifdef ESP8266
+  snprintf(deviceId, sizeof(deviceId), "ESP8266-%02X%02X%02X%02X",
            mac[2], mac[3], mac[4], mac[5]);
+#else
+  // ESP32 or ESP32-S3
+  snprintf(deviceId, sizeof(deviceId), "ESP32-%02X%02X%02X%02X",
+           mac[2], mac[3], mac[4], mac[5]);
+#endif
   Serial.print("Device ID: ");
   Serial.println(deviceId);
 }
@@ -1539,6 +1556,7 @@ void updateIntervals() {
  */
 void publishDeviceStatus() {
   if (!client.connected()) {
+    Serial.println("publishDeviceConfig: Client not connected!");
     return;
   }
   
@@ -1579,8 +1597,11 @@ void publishDeviceStatus() {
  */
 void publishDeviceConfig() {
   if (!client.connected()) {
+    Serial.println("publishDeviceConfig: Client not connected!");
     return;
   }
+  
+  Serial.println("publishDeviceConfig: Starting...");
   
   String configTopic = String("paku/edge/") + deviceId + "/config";
   JsonDocument doc;
@@ -1614,7 +1635,15 @@ void publishDeviceConfig() {
   serializeJson(doc, output);
   
   // Publish with QoS 1 and retain flag
-  client.publish(configTopic.c_str(), output.c_str(), true);
+  Serial.print("publishDeviceConfig: Serialized JSON length: ");
+  Serial.println(output.length());
+  
+  // Publish with QoS 1 and retain flag
+  bool published = client.publish(configTopic.c_str(), output.c_str(), true);
+  Serial.print("Published config (");
+  Serial.print(output.length());
+  Serial.print(" bytes), result: ");
+  Serial.println(published ? "SUCCESS" : "FAILED");
   Serial.print("Published device config to: ");
   Serial.println(configTopic);
 }
