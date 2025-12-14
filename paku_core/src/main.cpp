@@ -27,7 +27,7 @@
 
 // Firmware version
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "1.1.0"
+#define FIRMWARE_VERSION "1.1.1"
 #endif
 
 // BLE support (ESP32 only)
@@ -535,6 +535,13 @@ void setup() {
 
     Serial.println("Setup Wifi Connection...");
     WiFi.mode(WIFI_STA);
+#ifdef ESP8266
+    // ESP8266-specific WiFi settings for improved stability
+    WiFi.persistent(false);  // Don't write WiFi settings to flash
+    WiFi.setAutoConnect(false);  // Disable auto-connect on boot
+    WiFi.disconnect(true);  // Clear any stored WiFi credentials
+    delay(100);
+#endif
     //connect_wifi();
 
     // Initialize device ID from MAC address
@@ -1088,16 +1095,28 @@ void connect_wifi() {
   delay(10);
   Serial.println();
 
+#ifdef ESP8266
+  // ESP8266-specific WiFi initialization for better connectivity
+  WiFi.persistent(false);  // Don't write to flash on every connection
+  WiFi.setAutoConnect(false);  // Disable auto-connect
+  WiFi.setAutoReconnect(true);  // Enable auto-reconnect after connection
+#endif
+
   while (WiFi.status() != WL_CONNECTED) {
     for (int i = 0; i < WIFI_COUNT; i++) {
       Serial.print("Connecting to ");
       Serial.print(WIFI_SSIDS[i]);
       wifi_status = "Wifi connecting to ";
       wifi_status += WIFI_SSIDS[i];
+      
+      // Disconnect and clear any previous connection state
+      WiFi.disconnect();
+      delay(100);  // Small delay to ensure disconnect completes
+      
       WiFi.begin(WIFI_SSIDS[i], WIFI_PASSWORDS[i]);
       int attempts = 0;
 
-      while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+      while (WiFi.status() != WL_CONNECTED && attempts < 20) {  // Increased from 10 to 20 attempts
         delay(500);
         //Serial.print(".");
         wifi_status += ".";
