@@ -35,6 +35,8 @@
 #include "BLEDevice.h"
 #include "ruuvi.h"
 #include "ruuvi_scanner.h"
+#include "moko.h"
+#include "moko_scanner.h"
 #ifndef ESP8266
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -242,6 +244,17 @@ struct Payload {
 Payload payloads[MAX_MQTT_PAYLOADS];
 int payloadIndex = 0;
 
+// BLE Sensor Snapshot Buffer (for consolidated multi-metric payloads)
+#define MAX_BLE_SNAPSHOTS 10
+struct BLESnapshot {
+  String topic;
+  String payload;
+  bool transmitted;
+};
+
+BLESnapshot bleSnapshots[MAX_BLE_SNAPSHOTS];
+int bleSnapshotCount = 0;
+
 // ISR function declaration moved up
 void IRAM_ATTR countRisingEdges();
 void updateIntervals();
@@ -270,6 +283,8 @@ void handleSystemState();
 #if HAS_BLE
 void initRuuviTags();
 void createRuuviPayloads(const char* timestamp);
+void initMoKoSensors();
+void createMoKoPayloads(const char* timestamp);
 void scanBT(void* parameter);
 #endif // HAS_BLE
 #if HAS_WIRED_SENSORS
@@ -564,6 +579,10 @@ void setup() {
     // Initialize RuuviTag scanner (ESP32 only)
     Serial.println("Setup RuuviTag Scanner...");
     initRuuviTags();
+    
+    // Initialize MoKo sensor scanner (ESP32 only)
+    Serial.println("Setup MoKo Sensor Scanner...");
+    initMoKoSensors();
 #endif // HAS_BLE
 
 #if HAS_WIRED_SENSORS
@@ -840,6 +859,9 @@ void processData() {
 #if HAS_BLE
     // 1. RuuviTag sensor data (temperature, humidity, pressure from BLE sensors)
     createRuuviPayloads(timestamp.c_str());
+    
+    // 2. MoKo sensor data (temperature, humidity, pressure, accelerometer from BLE sensors)
+    createMoKoPayloads(timestamp.c_str());
 #endif // HAS_BLE
     
 #if HAS_WIRED_SENSORS
@@ -1291,43 +1313,154 @@ void createRuuviPayloads(const char* timestamp) {
     // Build consolidated payload with all metrics for this device
     JsonDocument doc;
     doc["timestamp"] = String(timestamp);
-    doc["device_id"] = String("ruuvi_") + tag->location;
-    doc["location"] = tag->location;
-    doc["mac"] = tag->macString;
-    
-    JsonObject metrics = doc["metrics"].to<JsonObject>();
-    metrics["temperature_c"] = tag->lastData.temperature;
-    metrics["humidity_percent"] = tag->lastData.humidity;
-    
-    if (tag->lastData.pressure > 0) {
-      metrics["pressure_hpa"] = tag->lastData.pressure / 100.0f;
-    }
-    
-    if (tag->lastData.batteryVoltage > 0) {
-      metrics["battery_mv"] = tag->lastData.batteryVoltage;
-    }
-    
-    // Serialize and add to payload queue
-    String payload;
-    serializeJson(doc, payload);
     
     // Construct device_id as ruuvi_<location>
     String deviceId = String("ruuvi_") + tag->location;
-    String topic = String("paku/sensors/") + deviceId + "/data";
+    doc["sensor_id"] = deviceId;
     
-    if (payloadIndex < MAX_MQTT_PAYLOADS) {
-      payloads[payloadIndex].topic = topic;
-      payloads[payloadIndex].data = payload;
-      payloadIndex++;
+    // Add all metrics
+    doc["temperature_c"] = tag->lastData.temperature;
+    doc["humidity_percent"] = tag->lastData.humidity;
+    
+    if (tag->lastData.pressure > 0) {
+      doc["pressure_hpa"] = tag->lastData.pressure / 100.0f;
     }
     
-    Serial.print("RuuviTag [");
+    if (tag->lastData.batteryVoltage > 0) {
+      doc["battery_mv"] = tag->lastData.batteryVoltage;
+    }
+    
+    // Serialize and buffer as snapshot
+    String payload;
+    serializeJson(doc, payload);
+    String topic = String("paku/sensors/") + deviceId + "/data";
+    
+    // Add to snapshot buffer
+    if (bleSnapshotCount < MAX_BLE_SNAPSHOTS) {
+      bleSnapshots[bleSnapshotCount].topic = topic;
+      bleSnapshots[bleSnapshotCount].payload = payload;
+      bleSnapshots[bleSnapshotCount].transmitted = false;
+      bleSnapshotCount++;
+    }
+    
+    Serial.print("Buffered RuuviTag [");
     Serial.print(tag->location);
     Serial.print("]: T=");
     Serial.print(tag->lastData.temperature);
     Serial.print("°C, H=");
     Serial.print(tag->lastData.humidity);
-    Serial.println("%");
+    Serial.print("% (buffer: ");
+    Serial.print(bleSnapshotCount);
+    Serial.println(")");
+  }
+}
+
+/**
+ * @brief Initializes MoKo sensor scanner and registers known sensors
+ * 
+ * If MOKO_SENSOR_COUNT is defined in secrets.h with known MAC addresses,
+ * those sensors will be registered. Otherwise, sensors will be auto-discovered
+ * during BLE scans.
+ */
+void initMoKoSensors() {
+  initMoKoScanner();
+  
+#if defined(MOKO_SENSOR_COUNT) && MOKO_SENSOR_COUNT > 0
+  Serial.println("Registering known MoKo sensors...");
+  for (int i = 0; i < MOKO_SENSOR_COUNT; i++) {
+    if (registerMoKoSensor(MOKO_SENSOR_MACS[i], MOKO_SENSOR_LOCATIONS[i])) {
+      Serial.print("  Registered: ");
+      Serial.print(MOKO_SENSOR_MACS[i]);
+      Serial.print(" -> ");
+      Serial.println(MOKO_SENSOR_LOCATIONS[i]);
+    }
+  }
+#else
+  Serial.println("No pre-registered MoKo sensors (auto-discovery enabled)");
+#endif
+  
+  Serial.print("MoKo sensor scanner initialized. Registered sensors: ");
+  Serial.println(getRegisteredSensorCount());
+}
+
+/**
+ * @brief Creates MQTT payloads from MoKo sensor data
+ * 
+ * Iterates through all registered sensors with fresh data and creates
+ * temperature, humidity, pressure, and accelerometer payloads using the 
+ * architecture-compliant topic structure: paku/sensors/{device_id}/data
+ * 
+ * @param timestamp Current timestamp string
+ */
+void createMoKoPayloads(const char* timestamp) {
+  const MoKoSensor* freshSensors[MAX_MOKO_SENSORS];
+  uint8_t freshCount = getFreshSensors(freshSensors, MAX_MOKO_SENSORS, millis());
+  
+  for (uint8_t i = 0; i < freshCount; i++) {
+    const MoKoSensor* sensor = freshSensors[i];
+    if (!sensor->hasData || !sensor->lastData.valid) continue;
+    
+    // Build consolidated payload with all metrics for this device
+    JsonDocument doc;
+    doc["timestamp"] = String(timestamp);
+    
+    // Construct device_id as moko_<location>
+    String deviceId = String("moko_") + sensor->location;
+    doc["sensor_id"] = deviceId;
+    
+    // Add all metrics
+    doc["temperature_c"] = sensor->lastData.temperature;
+    doc["humidity_percent"] = sensor->lastData.humidity;
+    
+    if (sensor->lastData.pressure > 0) {
+      doc["pressure_hpa"] = sensor->lastData.pressure / 100.0f;
+    }
+    
+    if (sensor->lastData.batteryVoltage > 0) {
+      doc["battery_mv"] = sensor->lastData.batteryVoltage * 1000.0f;
+    }
+    
+    if (sensor->lastData.batteryPercent > 0) {
+      doc["battery_percent"] = sensor->lastData.batteryPercent;
+    }
+    
+    // Add accelerometer data (if non-zero)
+    if (sensor->lastData.accelerationX != 0 || sensor->lastData.accelerationY != 0 || sensor->lastData.accelerationZ != 0) {
+      doc["accel_x"] = sensor->lastData.accelerationX;
+      doc["accel_y"] = sensor->lastData.accelerationY;
+      doc["accel_z"] = sensor->lastData.accelerationZ;
+    }
+    
+    // Serialize and buffer as snapshot
+    String payload;
+    serializeJson(doc, payload);
+    String topic = String("paku/sensors/") + deviceId + "/data";
+    
+    // Add to snapshot buffer
+    if (bleSnapshotCount < MAX_BLE_SNAPSHOTS) {
+      bleSnapshots[bleSnapshotCount].topic = topic;
+      bleSnapshots[bleSnapshotCount].payload = payload;
+      bleSnapshots[bleSnapshotCount].transmitted = false;
+      bleSnapshotCount++;
+    }
+    
+    // Determine model name
+    const char* modelName = "Unknown";
+    if (sensor->model == 1) modelName = "H2";
+    else if (sensor->model == 2) modelName = "H3";
+    else if (sensor->model == 3) modelName = "H4";
+    
+    Serial.print("Buffered MoKo [");
+    Serial.print(sensor->location);
+    Serial.print("] ");
+    Serial.print(modelName);
+    Serial.print(": T=");
+    Serial.print(sensor->lastData.temperature);
+    Serial.print("°C, H=");
+    Serial.print(sensor->lastData.humidity);
+    Serial.print("% (buffer: ");
+    Serial.print(bleSnapshotCount);
+    Serial.println(")");
   }
 }
 #endif // HAS_BLE
@@ -1472,30 +1605,33 @@ void scanBT(void* parameter) {
     Serial.print("Devices found: ");
     Serial.println(foundDevices.getCount());
 
-    // Iterate through the found devices and check for RuuviTags
+    // Iterate through the found devices and check for RuuviTags and MoKo sensors
     for (int i = 0; i < foundDevices.getCount(); i++) {
       BLEAdvertisedDevice device = foundDevices.getDevice(i);
+      
+      // Get device name if available
+      std::string deviceName = device.haveName() ? device.getName() : "";
       
       // Check if device has manufacturer data
       if (device.haveManufacturerData()) {
         std::string mfData = device.getManufacturerData();
         
-        // Check minimum length for Ruuvi data
+        // Check minimum length for data
         if (mfData.length() >= 2) {
           // Get manufacturer ID (little-endian)
           uint16_t manufacturerId = (uint8_t)mfData[0] | ((uint8_t)mfData[1] << 8);
+          
+          // Get MAC address bytes
+          uint8_t macBytes[6];
+          esp_bd_addr_t* nativeAddr = device.getAddress().getNative();
+          for (int j = 0; j < 6; j++) {
+            macBytes[j] = (*nativeAddr)[j];
+          }
           
           // Check if this is Ruuvi data
           if (isRuuviManufacturer(manufacturerId)) {
             Serial.print("RuuviTag found: ");
             Serial.println(device.getAddress().toString().c_str());
-            
-            // Get MAC address bytes
-            uint8_t macBytes[6];
-            esp_bd_addr_t* nativeAddr = device.getAddress().getNative();
-            for (int j = 0; j < 6; j++) {
-              macBytes[j] = (*nativeAddr)[j];
-            }
             
             // Extract Ruuvi payload (skip 2-byte manufacturer ID)
             if (mfData.length() > 2) {
@@ -1508,6 +1644,62 @@ void scanBT(void* parameter) {
               } else {
                 Serial.println("  -> Failed to parse RuuviTag data");
               }
+            }
+          }
+          // Check if this is MoKo data (by manufacturer ID or device name)
+          else if (isMoKoManufacturer(manufacturerId) || isMoKoDeviceName(deviceName.c_str())) {
+            Serial.print("MoKo sensor found: ");
+            Serial.print(device.getAddress().toString().c_str());
+            if (!deviceName.empty()) {
+              Serial.print(" (");
+              Serial.print(deviceName.c_str());
+              Serial.print(")");
+            }
+            Serial.println();
+            
+            // Debug: Print manufacturer data in hex
+            Serial.print("  MfgID: 0x");
+            Serial.print(manufacturerId, HEX);
+            Serial.print(", Length: ");
+            Serial.print(mfData.length());
+            Serial.print(", Data: ");
+            for (size_t j = 0; j < mfData.length() && j < 30; j++) {
+              if (j > 0) Serial.print(" ");
+              Serial.printf("%02X", (uint8_t)mfData[j]);
+            }
+            Serial.println();
+            
+            // Extract MoKo payload (skip 2-byte manufacturer ID if present)
+            const uint8_t* mokoPayload;
+            size_t mokoLength;
+            
+            if (isMoKoManufacturer(manufacturerId) && mfData.length() > 2) {
+              // Has manufacturer ID prefix
+              mokoPayload = (const uint8_t*)mfData.c_str() + 2;
+              mokoLength = mfData.length() - 2;
+            } else {
+              // No manufacturer ID or identified by name only
+              mokoPayload = (const uint8_t*)mfData.c_str();
+              mokoLength = mfData.length();
+            }
+            
+            // Update sensor data
+            if (updateMoKoSensorData(macBytes, mokoPayload, mokoLength, millis())) {
+              Serial.println("  -> MoKo sensor data updated");
+              
+              // Display parsed values for debugging
+              const MoKoSensor* sensor = findRegisteredSensorByMac(device.getAddress().toString().c_str());
+              if (sensor && sensor->hasData) {
+                Serial.print("     T: ");
+                Serial.print(sensor->lastData.temperature, 1);
+                Serial.print("°C, H: ");
+                Serial.print(sensor->lastData.humidity, 1);
+                Serial.print("%, Batt: ");
+                Serial.print(sensor->lastData.batteryPercent);
+                Serial.println("%");
+              }
+            } else {
+              Serial.println("  -> Failed to parse MoKo sensor data (enable debug for raw data)");
             }
           }
         }
@@ -1846,9 +2038,9 @@ void collectSensorData() {
   // BLE Sensor Collection
   if (deviceConfig.sensors.ble.enabled) {
     Serial.println("Scanning BLE sensors...");
-    // Note: BLE scanning happens in separate task, data will be added to buffer
-    // via addSensorReading() from the BLE callback
+    // Capture BLE sensor snapshots with current timestamp
     createRuuviPayloads(timestamp);
+    createMoKoPayloads(timestamp);
   }
 #endif
 
@@ -1930,6 +2122,69 @@ void transmitBufferedData() {
   
   // Clear transmitted readings
   clearTransmittedReadings();
+}
+
+/**
+ * @brief Transmit buffered BLE sensor snapshots
+ * 
+ * Sends all untransmitted BLE snapshots (consolidated payloads) to MQTT.
+ */
+void transmitBLESnapshots() {
+  if (!client.connected()) {
+    return; // Silently skip if not connected
+  }
+  
+  if (bleSnapshotCount == 0) {
+    return; // Nothing to transmit
+  }
+  
+  Serial.print("Transmitting ");
+  Serial.print(bleSnapshotCount);
+  Serial.println(" BLE snapshots...");
+  
+  int transmitted = 0;
+  for (int i = 0; i < bleSnapshotCount; i++) {
+    BLESnapshot* snapshot = &bleSnapshots[i];
+    
+    if (snapshot->transmitted) {
+      continue; // Skip already transmitted
+    }
+    
+    // Publish
+    if (client.publish(snapshot->topic.c_str(), snapshot->payload.c_str())) {
+      snapshot->transmitted = true;
+      transmitted++;
+      Serial.print("  TX: ");
+      Serial.println(snapshot->topic);
+    } else {
+      Serial.print("  FAILED: ");
+      Serial.println(snapshot->topic);
+    }
+  }
+  
+  Serial.print("Transmitted ");
+  Serial.print(transmitted);
+  Serial.print(" / ");
+  Serial.println(bleSnapshotCount);
+  
+  // Clear transmitted snapshots
+  int writeIndex = 0;
+  for (int readIndex = 0; readIndex < bleSnapshotCount; readIndex++) {
+    if (!bleSnapshots[readIndex].transmitted) {
+      if (writeIndex != readIndex) {
+        bleSnapshots[writeIndex] = bleSnapshots[readIndex];
+      }
+      writeIndex++;
+    }
+  }
+  int cleared = bleSnapshotCount - writeIndex;
+  bleSnapshotCount = writeIndex;
+  
+  if (cleared > 0) {
+    Serial.print("Cleared ");
+    Serial.print(cleared);
+    Serial.println(" transmitted BLE snapshots from buffer");
+  }
 }
 
 /**
@@ -2053,6 +2308,8 @@ void handleSystemState() {
       // Transmit buffered data
       static bool transmissionStarted = false;
       if (!transmissionStarted) {
+        // Transmit all buffered data
+        transmitBLESnapshots();
         transmitBufferedData();
         publishDeviceStatus();
         transmissionStarted = true;

@@ -32,7 +32,8 @@ ESP32/ESP8266-based edge firmware for the Paku IoT system.
 - Environmental monitoring
   - Room temperatures and humidities (Cabin, Kitchen, Lounge, Dryer)
 - **BLE sensor integration** (ESP32 only)
-  - Ruuvi tags or equivalent BLE sensors
+  - Ruuvi tags (RAWv2 format)
+  - **MoKo sensors (H2/H3/H4 series)** - NEW!
 - **Wired I2C sensor integration** (ESP8266 and ESP32)
   - BME280: Temperature, humidity, and atmospheric pressure
   - Expandable to other I2C sensors
@@ -225,7 +226,10 @@ The firmware uses the following libraries (managed via PlatformIO):
 - [Integration Guide](docs/INTEGRATION.md) - Connecting paku-core to paku-iot
 - [Development Modes](docs/development-modes.md) - Container vs. local development
 - [Quickstart Guide](docs/edge/quickstart.md) - Detailed setup instructions
-- [ESP8266 Quickstart](docs/edge/esp8266-quickstart.md) - **NEW** Setup guide for ESP8266 with wired sensors
+- [ESP8266 Quickstart](docs/edge/esp8266-quickstart.md) - Setup guide for ESP8266 with wired sensors
+- [RuuviTag Integration](docs/edge/ruuvi-integration.md) - RuuviTag BLE sensor setup
+- [**MoKo Sensor Integration**](docs/edge/moko-integration.md) - **NEW** MoKo H2/H3/H4 sensor setup
+- [MoKo Quick Start](docs/edge/moko-quick-start.md) - **NEW** 5-minute MoKo setup guide
 - [Configuration Reference](docs/edge/config.md) - Configuration options
 - [Naming Conventions](docs/naming.md) - Terminology and naming
 - [Requirements](docs/requirements.md) - Functional and non-functional requirements
