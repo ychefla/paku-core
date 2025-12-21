@@ -1182,10 +1182,10 @@ void connectMQTT() {
       Serial.print("Subscribed to edge control topic: ");
       Serial.println(edgeControlTopic);
       
-      // Phase 2: Subscribe to config topic
-      String edgeConfigTopic = String("paku/edge/") + deviceId + "/config";
+      // Phase 2: Subscribe to config/set topic (for receiving configuration commands)
+      String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
       client.subscribe(edgeConfigTopic.c_str());
-      Serial.print("Subscribed to config topic: ");
+      Serial.print("Subscribed to config/set topic: ");
       Serial.println(edgeConfigTopic);
       
       // Subscribe to device-specific OTA command topic
@@ -1730,7 +1730,7 @@ void publishDeviceStatus() {
 /**
  * @brief Publish device configuration to MQTT
  * 
- * Publishes current configuration to paku/edge/{deviceId}/config topic
+ * Publishes current configuration to paku/edge/{deviceId}/config/report topic
  * following the documented MQTT schema.
  */
 void publishDeviceConfig() {
@@ -1741,7 +1741,7 @@ void publishDeviceConfig() {
   
   Serial.println("publishDeviceConfig: Starting...");
   
-  String configTopic = String("paku/edge/") + deviceId + "/config";
+  String configTopic = String("paku/edge/") + deviceId + "/config/report";
   JsonDocument doc;
   
   doc["version"] = "1.0";
@@ -2477,10 +2477,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // Phase 2: Check for configuration update topic
-  String edgeConfigTopic = String("paku/edge/") + deviceId + "/config";
+  // Phase 2: Check for configuration command topic (config/set)
+  String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
   if (String(topic) == edgeConfigTopic) {
-    Serial.println("Received configuration update");
+    Serial.println("Received configuration command from config/set topic");
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
     
