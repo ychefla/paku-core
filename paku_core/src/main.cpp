@@ -227,6 +227,7 @@ float calibrationFactor = 6.6;
 float requiredDeltaT;
 const float heaterPower = 5000;
 bool testMode = true;  // Set to true to simulate flow data
+bool flowSensorEnabled = false;  // Set to true to enable flow sensor (currently placeholder)
 
 // Default heater status to 1 (on) for testing - use fast mode by default
 // Controlled via MQTT paku/control topic: {"heater": 1} on, {"heater": 0} off
@@ -874,24 +875,26 @@ void processData() {
     createPlaceholderPayloads(timestamp.c_str());
 #endif // HAS_BLE
     
-    // 4. Flow sensor data - consolidated payload with all metrics
-    JsonDocument flowDoc;
-    flowDoc["timestamp"] = timestamp;
-    flowDoc["device_id"] = "coolant";
-    flowDoc["location"] = "coolant_line";
-    
-    JsonObject flowMetrics = flowDoc["metrics"].to<JsonObject>();
-    flowMetrics["flow_rate_lpm"] = flowRate;
-    flowMetrics["frequency_hz"] = frequency;
-    flowMetrics["required_dt_c"] = requiredDeltaT;
-    
-    String flowPayload;
-    serializeJson(flowDoc, flowPayload);
-    
-    if (payloadIndex < MAX_MQTT_PAYLOADS) {
-      payloads[payloadIndex].topic = "paku/flow/coolant/data";
-      payloads[payloadIndex].data = flowPayload;
-      payloadIndex++;
+    // 4. Flow sensor data - consolidated payload with all metrics (disabled by default)
+    if (flowSensorEnabled) {
+      JsonDocument flowDoc;
+      flowDoc["timestamp"] = timestamp;
+      flowDoc["device_id"] = "coolant";
+      flowDoc["location"] = "coolant_line";
+      
+      JsonObject flowMetrics = flowDoc["metrics"].to<JsonObject>();
+      flowMetrics["flow_rate_lpm"] = flowRate;
+      flowMetrics["frequency_hz"] = frequency;
+      flowMetrics["required_dt_c"] = requiredDeltaT;
+      
+      String flowPayload;
+      serializeJson(flowDoc, flowPayload);
+      
+      if (payloadIndex < MAX_MQTT_PAYLOADS) {
+        payloads[payloadIndex].topic = "paku/flow/coolant/data";
+        payloads[payloadIndex].data = flowPayload;
+        payloadIndex++;
+      }
     }
  }
 }
@@ -1316,18 +1319,20 @@ void createRuuviPayloads(const char* timestamp) {
     
     // Construct device_id as ruuvi_<location>
     String deviceId = String("ruuvi_") + tag->location;
-    doc["sensor_id"] = deviceId;
+    doc["device_id"] = deviceId;
+    doc["location"] = tag->location;
     
-    // Add all metrics
-    doc["temperature_c"] = tag->lastData.temperature;
-    doc["humidity_percent"] = tag->lastData.humidity;
+    // Create nested metrics object
+    JsonObject metrics = doc.createNestedObject("metrics");
+    metrics["temperature_c"] = tag->lastData.temperature;
+    metrics["humidity_percent"] = tag->lastData.humidity;
     
     if (tag->lastData.pressure > 0) {
-      doc["pressure_hpa"] = tag->lastData.pressure / 100.0f;
+      metrics["pressure_hpa"] = tag->lastData.pressure / 100.0f;
     }
     
     if (tag->lastData.batteryVoltage > 0) {
-      doc["battery_mv"] = tag->lastData.batteryVoltage;
+      metrics["battery_mv"] = tag->lastData.batteryVoltage;
     }
     
     // Serialize and buffer as snapshot
@@ -1406,29 +1411,31 @@ void createMoKoPayloads(const char* timestamp) {
     
     // Construct device_id as moko_<location>
     String deviceId = String("moko_") + sensor->location;
-    doc["sensor_id"] = deviceId;
+    doc["device_id"] = deviceId;
+    doc["location"] = sensor->location;
     
-    // Add all metrics
-    doc["temperature_c"] = sensor->lastData.temperature;
-    doc["humidity_percent"] = sensor->lastData.humidity;
+    // Nest all metrics under "metrics" object
+    JsonObject metrics = doc["metrics"].to<JsonObject>();
+    metrics["temperature_c"] = sensor->lastData.temperature;
+    metrics["humidity_percent"] = sensor->lastData.humidity;
     
     if (sensor->lastData.pressure > 0) {
-      doc["pressure_hpa"] = sensor->lastData.pressure / 100.0f;
+      metrics["pressure_hpa"] = sensor->lastData.pressure / 100.0f;
     }
     
     if (sensor->lastData.batteryVoltage > 0) {
-      doc["battery_mv"] = sensor->lastData.batteryVoltage * 1000.0f;
+      metrics["battery_mv"] = sensor->lastData.batteryVoltage * 1000.0f;
     }
     
     if (sensor->lastData.batteryPercent > 0) {
-      doc["battery_percent"] = sensor->lastData.batteryPercent;
+      metrics["battery_percent"] = sensor->lastData.batteryPercent;
     }
     
     // Add accelerometer data (if non-zero)
     if (sensor->lastData.accelerationX != 0 || sensor->lastData.accelerationY != 0 || sensor->lastData.accelerationZ != 0) {
-      doc["accel_x"] = sensor->lastData.accelerationX;
-      doc["accel_y"] = sensor->lastData.accelerationY;
-      doc["accel_z"] = sensor->lastData.accelerationZ;
+      metrics["accel_x"] = sensor->lastData.accelerationX;
+      metrics["accel_y"] = sensor->lastData.accelerationY;
+      metrics["accel_z"] = sensor->lastData.accelerationZ;
     }
     
     // Serialize and buffer as snapshot
@@ -1646,62 +1653,13 @@ void scanBT(void* parameter) {
               }
             }
           }
-          // Check if this is MoKo data (by manufacturer ID or device name)
+          // MOKO sensor support disabled - advertisement format requires additional documentation
+          // TODO: Re-enable when complete protocol specification is available
+          /*
           else if (isMoKoManufacturer(manufacturerId) || isMoKoDeviceName(deviceName.c_str())) {
-            Serial.print("MoKo sensor found: ");
-            Serial.print(device.getAddress().toString().c_str());
-            if (!deviceName.empty()) {
-              Serial.print(" (");
-              Serial.print(deviceName.c_str());
-              Serial.print(")");
-            }
-            Serial.println();
-            
-            // Debug: Print manufacturer data in hex
-            Serial.print("  MfgID: 0x");
-            Serial.print(manufacturerId, HEX);
-            Serial.print(", Length: ");
-            Serial.print(mfData.length());
-            Serial.print(", Data: ");
-            for (size_t j = 0; j < mfData.length() && j < 30; j++) {
-              if (j > 0) Serial.print(" ");
-              Serial.printf("%02X", (uint8_t)mfData[j]);
-            }
-            Serial.println();
-            
-            // Extract MoKo payload (skip 2-byte manufacturer ID if present)
-            const uint8_t* mokoPayload;
-            size_t mokoLength;
-            
-            if (isMoKoManufacturer(manufacturerId) && mfData.length() > 2) {
-              // Has manufacturer ID prefix
-              mokoPayload = (const uint8_t*)mfData.c_str() + 2;
-              mokoLength = mfData.length() - 2;
-            } else {
-              // No manufacturer ID or identified by name only
-              mokoPayload = (const uint8_t*)mfData.c_str();
-              mokoLength = mfData.length();
-            }
-            
-            // Update sensor data
-            if (updateMoKoSensorData(macBytes, mokoPayload, mokoLength, millis())) {
-              Serial.println("  -> MoKo sensor data updated");
-              
-              // Display parsed values for debugging
-              const MoKoSensor* sensor = findRegisteredSensorByMac(device.getAddress().toString().c_str());
-              if (sensor && sensor->hasData) {
-                Serial.print("     T: ");
-                Serial.print(sensor->lastData.temperature, 1);
-                Serial.print("°C, H: ");
-                Serial.print(sensor->lastData.humidity, 1);
-                Serial.print("%, Batt: ");
-                Serial.print(sensor->lastData.batteryPercent);
-                Serial.println("%");
-              }
-            } else {
-              Serial.println("  -> Failed to parse MoKo sensor data (enable debug for raw data)");
-            }
+            // MoKo sensor processing disabled
           }
+          */
         }
       }
     }
