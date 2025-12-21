@@ -153,10 +153,6 @@ String pendingOtaUrl = "";
 String pendingOtaChecksum = "";
 String pendingOtaVersion = "";
 
-// Flow sensor pin - moved from GPIO2 to GPIO4 to avoid conflict with LED
-// Note: GPIO2 is used for the onboard LED on many ESP32 dev boards
-#define PIN_FLOW_SENSOR 4
-
 // ============================================================================
 // Timing Configuration and State Management
 // ============================================================================
@@ -218,16 +214,13 @@ unsigned long mqttInterval;
 unsigned long sensorInterval;
 
 // ============================================================================
-// Sensor and Flow Variables
+// Flow Sensor (DISABLED - Future Development)
 // ============================================================================
+// Flow sensor functionality has been moved to lib/paku_lib/src/flow_sensor.h
+// Awaiting hardware integration and calibration before production use.
+// TODO: Re-enable when hardware is installed and calibrated
 
-volatile unsigned int count = 0;
-float flowRate;
-float calibrationFactor = 6.6;
-float requiredDeltaT;
-const float heaterPower = 5000;
-bool testMode = true;  // Set to true to simulate flow data
-bool flowSensorEnabled = false;  // Set to true to enable flow sensor (currently placeholder)
+#define FLOW_SENSOR_ENABLED false  // Set to true when ready for production
 
 // Default heater status to 1 (on) for testing - use fast mode by default
 // Controlled via MQTT paku/control topic: {"heater": 1} on, {"heater": 0} off
@@ -427,10 +420,6 @@ void ledError() {
 }
 #endif // HAS_LED
 
-void IRAM_ATTR countRisingEdges() {
-  count++;
-}
-
 /**
  * @brief Get ISO 8601 formatted timestamp string
  * 
@@ -598,9 +587,9 @@ void setup() {
     }
 #endif // HAS_WIRED_SENSORS
 
-    Serial.println("Setup Flow Sensor on GPIO4...");
-    pinMode(PIN_FLOW_SENSOR, INPUT);
-    attachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR), countRisingEdges, RISING);
+    // Flow sensor disabled - awaiting hardware integration and calibration
+    // TODO: Enable flow sensor when ready (see lib/paku_lib/src/flow_sensor.h)
+    Serial.println("Flow Sensor: DISABLED (future development)");
     
     // Initialize device configuration with defaults
     Serial.println("Loading device configuration...");
@@ -657,8 +646,8 @@ void setup() {
  * - Checks and maintains WiFi connection.
  * - Checks and maintains MQTT connection.
  * - Updates the time client.
- * - Processes flow data and calculates flow rate and required temperature delta.
- * - Creates payloads for humidity, temperature, flow, heating power, battery voltage, and heater status.
+ * - Processes sensor data from BLE and wired sensors.
+ * - Creates payloads for temperature, humidity, and other metrics.
  * - Sends payloads to MQTT broker at specified intervals.
  * 
  * The function uses the following global variables:
@@ -667,10 +656,6 @@ void setup() {
  * - timeClient: NTP time client object.
  * - lastTime_sensor: Timestamp of the last sensor data processing.
  * - sensorInterval: Interval for sensor data processing.
- * - count: Pulse count from the flow sensor.
- * - testMode: Flag to enable test mode with random pulse counts.
- * - calibrationFactor: Calibration factor for flow rate calculation.
- * - heaterPower: Power of the heater.
  * - lastTime_mqtt: Timestamp of the last MQTT data sending.
  * - mqttInterval: Interval for sending data to MQTT broker.
  * - payloads: Array of payload objects to be sent to MQTT broker.
@@ -681,11 +666,10 @@ void setup() {
  * - connectMQTT(): Connects to MQTT broker.
  * - updateIntervals(): Updates intervals based on heater status.
  * - createPayload(): Creates a payload for a given topic, value, and timestamp.
- * - countRisingEdges(): Interrupt service routine for counting rising edges of flow sensor pulses.
  */
 /**
  * @brief Main loop function that handles WiFi and MQTT connections, updates time, 
- *        processes flow data, and sends data to MQTT.
+ *        processes sensor data, and sends data to MQTT.
  * 
  * This function performs the following tasks:
  * - Checks and maintains WiFi connection.
@@ -694,7 +678,7 @@ void setup() {
  * - Updates the time using the time client.
  * - Updates the heater status (placeholder for actual implementation).
  * - Updates intervals based on the heater status.
- * - Processes flow data.
+ * - Processes sensor data.
  * - Sends data to the MQTT broker.
  */
 /**
@@ -838,22 +822,9 @@ void processData() {
   if (currentTime - lastTime_sensor >= sensorInterval) {
     Serial.print(".");
  
-    // process flow data
-    detachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR));
-    
-    if (testMode) {
-      count = random(198, 462);
-    }
-
-    // Calculate frequency in Hz (pulses per second)
-    float frequency = count / ((currentTime - lastTime_sensor) / 1000.0); 
-    flowRate = (frequency / calibrationFactor) * 60.0;
-    requiredDeltaT = heaterPower / (3.5 * flowRate);
+    // Flow sensor processing disabled - moved to flow_sensor.cpp
+    // TODO: Re-enable when flow sensor hardware is ready
     String timestamp = getISO8601Timestamp();
-
-    count = 0;
-    lastTime_sensor = currentTime;
-    attachInterrupt(digitalPinToInterrupt(PIN_FLOW_SENSOR), countRisingEdges, RISING);
  
     // Create payloads for all data
     
@@ -875,27 +846,9 @@ void processData() {
     createPlaceholderPayloads(timestamp.c_str());
 #endif // HAS_BLE
     
-    // 4. Flow sensor data - consolidated payload with all metrics (disabled by default)
-    if (flowSensorEnabled) {
-      JsonDocument flowDoc;
-      flowDoc["timestamp"] = timestamp;
-      flowDoc["device_id"] = "coolant";
-      flowDoc["location"] = "coolant_line";
-      
-      JsonObject flowMetrics = flowDoc["metrics"].to<JsonObject>();
-      flowMetrics["flow_rate_lpm"] = flowRate;
-      flowMetrics["frequency_hz"] = frequency;
-      flowMetrics["required_dt_c"] = requiredDeltaT;
-      
-      String flowPayload;
-      serializeJson(flowDoc, flowPayload);
-      
-      if (payloadIndex < MAX_MQTT_PAYLOADS) {
-        payloads[payloadIndex].topic = "paku/flow/coolant/data";
-        payloads[payloadIndex].data = flowPayload;
-        payloadIndex++;
-      }
-    }
+    // Flow sensor data disabled - future development
+    // TODO: Re-enable flow sensor payload generation when hardware ready
+    // See lib/paku_lib/src/flow_sensor.h for flow sensor module
  }
 }
 
@@ -1055,22 +1008,23 @@ void sendToPakuIot() {
       readingCount++;
     }
     
-    // Only send actual sensor values (not placeholder -1000 values)
-    if (flowRate > 0) {
-      readings[readingCount].metric = "flow/coolant";
-      readings[readingCount].value = flowRate;
-      readings[readingCount].unit = "l_per_min";
-      readings[readingCount].timestamp = timestampBuf;
-      readingCount++;
-    }
-    
-    if (requiredDeltaT > 0 && requiredDeltaT < 1000) {
-      readings[readingCount].metric = "temperature/heating/required_dt";
-      readings[readingCount].value = requiredDeltaT;
-      readings[readingCount].unit = "celsius";
-      readings[readingCount].timestamp = timestampBuf;
-      readingCount++;
-    }
+    // Flow sensor disabled - future development
+    // TODO: Re-enable flow readings when hardware is ready
+    // if (FLOW_SENSOR_ENABLED && flowRate > 0) {
+    //   readings[readingCount].metric = "flow/coolant";
+    //   readings[readingCount].value = flowRate;
+    //   readings[readingCount].unit = "l_per_min";
+    //   readings[readingCount].timestamp = timestampBuf;
+    //   readingCount++;
+    // }
+    //
+    // if (FLOW_SENSOR_ENABLED && requiredDeltaT > 0 && requiredDeltaT < 1000) {
+    //   readings[readingCount].metric = "temperature/heating/required_dt";
+    //   readings[readingCount].value = requiredDeltaT;
+    //   readings[readingCount].unit = "celsius";
+    //   readings[readingCount].timestamp = timestampBuf;
+    //   readingCount++;
+    // }
     
     // Add heater status
     readings[readingCount].metric = "status/heater";
@@ -2010,15 +1964,14 @@ void collectSensorData() {
   }
 #endif
 
-  // Flow Sensor Collection
-  if (deviceConfig.sensors.flow.enabled) {
-    Serial.println("Measuring flow...");
-    // Flow measurement logic here
-    // For now, use testMode data
-    if (testMode) {
-      addSensorReading(deviceId, "flow_rate", 1.5, timestamp);
-    }
-  }
+  // Flow Sensor Collection - DISABLED (future development)
+  // TODO: Re-enable when flow sensor hardware is installed and calibrated
+  // if (deviceConfig.sensors.flow.enabled && FLOW_SENSOR_ENABLED) {
+  //   Serial.println("Measuring flow...");
+  //   float flow = processFlowData(millis() - lastSensorCollection);
+  //   addSensorReading(deviceId, "flow_rate", flow, timestamp);
+  //   addSensorReading(deviceId, "required_dt", getRequiredDeltaT(), timestamp);
+  // }
   
   lastSensorCollection = millis();
   Serial.print("Sensor collection complete. Buffer size: ");
