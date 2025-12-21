@@ -35,7 +35,7 @@ bool isValidMoKoData(const uint8_t* data, size_t length) {
     uint8_t frameLength = data[1];
     
     // Type 0x10 with length 0x06 = Temperature and Humidity frame
-    // Format: 10 06 [temp LSB] [temp MSB] [humid LSB] [humid MSB]
+    // Format: 10 06 [temp MSB] [temp LSB] [humid MSB] [humid LSB]
     if (frameType == 0x10 && frameLength == 0x06 && length >= 6) {
         return true;
     }
@@ -46,12 +46,6 @@ bool isValidMoKoData(const uint8_t* data, size_t length) {
         return true;
     }
     
-    // Type 0x09 = TLM or other extended data (may contain sensor data)
-    // Accept if we have enough data
-    if (frameType == 0x09 && length >= 6) {
-        return true;
-    }
-    
     // Type 0x16 with service data format (less common but valid)
     // Service data UUID + temp/humid data
     if (frameType == 0x16 && frameLength >= 0x06 && length >= 9) {
@@ -59,7 +53,8 @@ bool isValidMoKoData(const uint8_t* data, size_t length) {
     }
     
     // Reject other frame types:
-    // - 0x12 = Other beacon types (not sensor data)
+    // - 0x12 = Other beacon types
+    // - 0x09 = Name or other data
     return false;
 }
 
@@ -111,24 +106,19 @@ MoKoData parseMoKoData(const uint8_t* data, size_t length) {
     // BeaconX Pro "Temperature and Humidity" frame format
     if (frameType == 0x10 && frameLength == 0x06 && length >= 6) {
         // Type 0x10, Length 0x06 = Temperature and Humidity frame
-        // Format: 10 06 [temp bytes] [humid bytes]
+        // Format: 10 06 [temp LSB] [temp MSB] [humid LSB] [humid MSB]
         // Data starts at offset 2
         uint8_t offset = 2;
         
-        // Try little-endian first (most common)
+        // Temperature: 2 bytes, signed, 0.01°C resolution (little-endian)
         int16_t tempRaw = data[offset] | (data[offset + 1] << 8);
-        uint16_t humidRaw = data[offset + 2] | (data[offset + 3] << 8);
         result.temperature = tempRaw * 0.01f;
-        result.humidity = humidRaw * 0.01f;
+        offset += 2;
         
-        // If values are out of range, try big-endian (some BeaconX Pro variants)
-        if (result.humidity > 100.0f || result.humidity < 0.0f || 
-            result.temperature < -40.0f || result.temperature > 85.0f) {
-            tempRaw = (data[offset] << 8) | data[offset + 1];
-            humidRaw = (data[offset + 2] << 8) | data[offset + 3];
-            result.temperature = tempRaw * 0.01f;
-            result.humidity = humidRaw * 0.01f;
-        }
+        // Humidity: 2 bytes, unsigned, 0.01% resolution (little-endian)
+        uint16_t humidRaw = data[offset] | (data[offset + 1] << 8);
+        result.humidity = humidRaw * 0.01f;
+        offset += 2;
         
         // Validate ranges
         if (result.temperature < -40.0f || result.temperature > 85.0f) {
@@ -137,8 +127,6 @@ MoKoData parseMoKoData(const uint8_t* data, size_t length) {
         if (result.humidity < 0.0f || result.humidity > 100.0f) {
             return result; // Invalid humidity
         }
-        
-        offset += 4;
         
         // Battery data may be present (optional)
         if (length >= offset + 1) {
@@ -166,42 +154,6 @@ MoKoData parseMoKoData(const uint8_t* data, size_t length) {
         result.valid = true;
         return result;
     }
-    else if (frameType == 0x12 && frameLength == 0x02 && length >= 4) {
-        // Type 0x12, Length 0x02 = iBeacon format (NOT a sensor!)
-        // These are generic Apple beacon frames (iPhones, AirPods, etc.)
-        // Return invalid to skip these non-sensor devices
-        return result;
-    }
-    else if (frameType == 0x09 && length >= 10) {
-        // Type 0x09 format (TLM or extended data) - BeaconX Pro extended format
-        // This can contain additional sensor data beyond basic T/H
-        // Byte 2-3: might be length/subtype
-        // Data typically starts at offset 4 or later
-        // Try parsing if we have enough data
-        uint8_t offset = 4;
-        
-        if (length >= offset + 4) {
-            // Temperature: 2 bytes, signed, 0.01°C resolution (little-endian)
-            int16_t tempRaw = data[offset] | (data[offset + 1] << 8);
-            result.temperature = tempRaw * 0.01f;
-            offset += 2;
-            
-            // Humidity: 2 bytes, unsigned, 0.01% resolution (little-endian)
-            uint16_t humidRaw = data[offset] | (data[offset + 1] << 8);
-            result.humidity = humidRaw * 0.01f;
-            offset += 2;
-            
-            // Validate ranges
-            if (result.temperature >= -40.0f && result.temperature <= 85.0f &&
-                result.humidity >= 0.0f && result.humidity <= 100.0f) {
-                result.valid = true;
-                return result;
-            }
-        }
-        
-        // If validation failed or not enough data, return invalid
-        return result;
-    }
     else if (frameType == 0x16 && frameLength >= 6 && length >= 9) {
         // Type 0x16 format (service data) - BeaconX Pro extended format
         // Byte 2: Service UUID LSB (usually 0x00 for MoKo)
@@ -209,20 +161,15 @@ MoKoData parseMoKoData(const uint8_t* data, size_t length) {
         // Byte 5-6: Humidity
         uint8_t offset = 3;
         
-        // Try little-endian first
+        // Temperature: 2 bytes, signed, 0.01°C resolution (little-endian)
         int16_t tempRaw = data[offset] | (data[offset + 1] << 8);
-        uint16_t humidRaw = data[offset + 2] | (data[offset + 3] << 8);
         result.temperature = tempRaw * 0.01f;
-        result.humidity = humidRaw * 0.01f;
+        offset += 2;
         
-        // If values are out of range, try big-endian
-        if (result.humidity > 100.0f || result.humidity < 0.0f || 
-            result.temperature < -40.0f || result.temperature > 85.0f) {
-            tempRaw = (data[offset] << 8) | data[offset + 1];
-            humidRaw = (data[offset + 2] << 8) | data[offset + 3];
-            result.temperature = tempRaw * 0.01f;
-            result.humidity = humidRaw * 0.01f;
-        }
+        // Humidity: 2 bytes, unsigned, 0.01% resolution (little-endian)
+        uint16_t humidRaw = data[offset] | (data[offset + 1] << 8);
+        result.humidity = humidRaw * 0.01f;
+        offset += 2;
         
         // Validate ranges
         if (result.temperature < -40.0f || result.temperature > 85.0f) {
