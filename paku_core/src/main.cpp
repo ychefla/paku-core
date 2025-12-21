@@ -249,6 +249,10 @@ struct BLESnapshot {
 BLESnapshot bleSnapshots[MAX_BLE_SNAPSHOTS];
 int bleSnapshotCount = 0;
 
+// MQTT connection state tracking
+bool mqttJustConnected = false;
+unsigned long mqttConnectTime = 0;
+
 // ISR function declaration moved up
 void IRAM_ATTR countRisingEdges();
 void updateIntervals();
@@ -694,6 +698,14 @@ void setup() {
 void loop() {
   // Phase 2: State machine-based operation
   handleSystemState();
+  
+  // Check if we should publish config after connection (allow time for retained messages)
+  // This runs in the loop while the state machine is operating, so it won't block anything
+  if (mqttJustConnected && (millis() - mqttConnectTime > 2000)) {
+    Serial.println("Publishing initial config after processing retained messages");
+    publishDeviceConfig();
+    mqttJustConnected = false;
+  }
   
 #if HAS_LED
   // LED heartbeat - brief flash every 5 seconds during normal operation
@@ -1182,9 +1194,12 @@ void connectMQTT() {
       Serial.print("Subscribed to OTA topic: ");
       Serial.println(otaTopic);
       
-      // Publish device status and config on successful connection
+      // Mark that we just connected - will publish config after processing any retained messages
+      mqttJustConnected = true;
+      mqttConnectTime = millis();
+      
+      // Publish device status immediately
       publishDeviceStatus();
-      publishDeviceConfig();
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
