@@ -18,6 +18,7 @@ struct DeviceConfig {
         uint32_t connection_duration_max_s; // Max time to stay connected (default: 30)
         uint32_t wifi_connect_timeout_s;    // WiFi connection timeout (default: 10)
         uint32_t mqtt_connect_timeout_s;    // MQTT connection timeout (default: 5)
+        char timezone[64];                  // POSIX timezone string (default: "EET-2EEST,M3.5.0/3,M10.5.0/4" for Finland with auto DST)
     } timing;
     
     /**
@@ -60,6 +61,10 @@ struct DeviceConfig {
         timing.connection_duration_max_s = 30;
         timing.wifi_connect_timeout_s = 10;
         timing.mqtt_connect_timeout_s = 5;
+        // Finland: EET (UTC+2) with automatic DST to EEST (UTC+3)
+        // DST: last Sunday of March at 3 AM -> last Sunday of October at 4 AM
+        strncpy(timing.timezone, "EET-2EEST,M3.5.0/3,M10.5.0/4", sizeof(timing.timezone) - 1);
+        timing.timezone[sizeof(timing.timezone) - 1] = '\0';
         
         // Sensor defaults
         sensors.ble.enabled = true;

@@ -6,8 +6,7 @@
 
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
+#include <time.h>  // ESP32 native time functions
 
 // Preferences for persistent storage
 #ifdef ESP8266
@@ -135,8 +134,7 @@ const int mqtt_port = MQTT_PORT;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);  // GMT, update interval 1 minute
+// ESP32 native time functions will be used instead of NTPClient for automatic DST support
 
 // paku-iot HTTP client (enabled via PAKU_IOT_ENABLED in secrets.h)
 PakuIotClient pakuIotClient;
@@ -248,10 +246,6 @@ struct BLESnapshot {
 
 BLESnapshot bleSnapshots[MAX_BLE_SNAPSHOTS];
 int bleSnapshotCount = 0;
-
-// MQTT connection state tracking
-bool mqttJustConnected = false;
-unsigned long mqttConnectTime = 0;
 
 // ISR function declaration moved up
 void IRAM_ATTR countRisingEdges();
@@ -427,60 +421,50 @@ void ledError() {
 /**
  * @brief Get ISO 8601 formatted timestamp string
  * 
- * Creates a timestamp in format: YYYY-MM-DDTHH:MM:SSZ
- * Uses NTP time to get accurate UTC time
+ * Creates a timestamp in format: YYYY-MM-DDTHH:MM:SS±HH:MM
+ * Uses ESP32 native time functions with automatic DST support
  * 
  * @return String containing ISO 8601 formatted timestamp
  */
 String getISO8601Timestamp() {
-  unsigned long epochTime = timeClient.getEpochTime();
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return "1970-01-01T00:00:00+00:00";  // Fallback
+  }
   
-  // Calculate date components from epoch
-  int year = 1970;
-  int month = 1;
-  int day = 1;
+  // Get both local and UTC time to calculate offset
+  time_t now = time(nullptr);
+  struct tm localTime;
+  struct tm utcTime;
+  localtime_r(&now, &localTime);
+  gmtime_r(&now, &utcTime);
   
-  // Simplified date calculation (good enough for this use case)
-  unsigned long days = epochTime / 86400;
-  unsigned long seconds = epochTime % 86400;
+  // Calculate offset in seconds (local - UTC)
+  time_t localSec = localTime.tm_hour * 3600 + localTime.tm_min * 60 + localTime.tm_sec;
+  time_t utcSec = utcTime.tm_hour * 3600 + utcTime.tm_min * 60 + utcTime.tm_sec;
+  long tzOffset = localSec - utcSec;
   
-  int hours = seconds / 3600;
-  seconds %= 3600;
-  int minutes = seconds / 60;
-  int secs = seconds % 60;
-  
-  // Calculate year (accounting for leap years)
-  while (true) {
-    int daysInYear = ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) ? 366 : 365;
-    if (days >= daysInYear) {
-      days -= daysInYear;
-      year++;
+  // Handle day boundary crossing
+  if (localTime.tm_mday != utcTime.tm_mday) {
+    if (localTime.tm_mday > utcTime.tm_mday || (localTime.tm_mday == 1 && utcTime.tm_mday > 1)) {
+      tzOffset += 86400;  // Add a day
     } else {
-      break;
+      tzOffset -= 86400;  // Subtract a day
     }
   }
   
-  // Calculate month and day
-  int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-    daysInMonth[1] = 29; // Leap year
-  }
+  char tzSign = tzOffset >= 0 ? '+' : '-';
+  int tzHours = abs(tzOffset) / 3600;
+  int tzMinutes = (abs(tzOffset) % 3600) / 60;
   
-  for (int m = 0; m < 12; m++) {
-    if (days >= daysInMonth[m]) {
-      days -= daysInMonth[m];
-      month++;
-    } else {
-      break;
-    }
-  }
-  day += days;
-  
-  // Format as ISO 8601: YYYY-MM-DDTHH:MM:SSZ
+  // Format as ISO 8601 with timezone: YYYY-MM-DDTHH:MM:SS±HH:MM
   char isoTimestamp[32];
   snprintf(isoTimestamp, sizeof(isoTimestamp), 
-           "%04d-%02d-%02dT%02d:%02d:%02dZ",
-           year, month, day, hours, minutes, secs);
+           "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d",
+           timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+           tzSign, tzHours, tzMinutes);
   
   return String(isoTimestamp);
 }
@@ -556,8 +540,22 @@ void setup() {
     // Initialize device ID from MAC address
     initDeviceId();
 
+    // Initialize device configuration BEFORE setting up time (needs timezone)
+    Serial.println("Loading device configuration...");
+    deviceConfig.loadDefaults();
+    
+    // Phase 2: Load persisted config if available
+    loadConfig();
+
     Serial.println("Setup MQTT Connection...");
-    timeClient.begin();
+    
+    // Configure ESP32 native time with timezone support (auto DST)
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    setenv("TZ", deviceConfig.timing.timezone, 1);
+    tzset();
+    Serial.print("Timezone configured: ");
+    Serial.println(deviceConfig.timing.timezone);
+    
     client.setServer(mqtt_server, mqtt_port);
     client.setCallback(handleMqttMessage);  // Set MQTT message callback
 
@@ -594,13 +592,6 @@ void setup() {
     // Flow sensor disabled - awaiting hardware integration and calibration
     // TODO: Enable flow sensor when ready (see lib/paku_lib/src/flow_sensor.h)
     Serial.println("Flow Sensor: DISABLED (future development)");
-    
-    // Initialize device configuration with defaults
-    Serial.println("Loading device configuration...");
-    deviceConfig.loadDefaults();
-    
-    // Phase 2: Load persisted config if available
-    loadConfig();
     
     // Apply scenario based on heater status (Phase 1: maintain existing behavior)
     if (heaterStatus == 1) {
@@ -699,14 +690,6 @@ void loop() {
   // Phase 2: State machine-based operation
   handleSystemState();
   
-  // Check if we should publish config after connection (allow time for retained messages)
-  // This runs in the loop while the state machine is operating, so it won't block anything
-  if (mqttJustConnected && (millis() - mqttConnectTime > 2000)) {
-    Serial.println("Publishing initial config after processing retained messages");
-    publishDeviceConfig();
-    mqttJustConnected = false;
-  }
-  
 #if HAS_LED
   // LED heartbeat - brief flash every 5 seconds during normal operation
   ledHeartbeat();
@@ -715,12 +698,7 @@ void loop() {
   // Update display if we have one
   updateDisplay();
   
-  // Update NTP time when connected
-  if (WiFi.status() == WL_CONNECTED) {
-    timeClient.update();
-  }
-  
-  // Small delay to prevent watchdog issues
+  // Periodically sync time from NTP (ESP32 native time syncs automatically)\n  // No manual update needed - configTime() handles periodic sync\n  \n  // Small delay to prevent watchdog issues
   delay(10);
 }
 
@@ -1194,12 +1172,9 @@ void connectMQTT() {
       Serial.print("Subscribed to OTA topic: ");
       Serial.println(otaTopic);
       
-      // Mark that we just connected - will publish config after processing any retained messages
-      mqttJustConnected = true;
-      mqttConnectTime = millis();
-      
-      // Publish device status immediately
+      // Publish initial status and config
       publishDeviceStatus();
+      publishDeviceConfig();
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -1694,9 +1669,11 @@ void updateIntervals() {
  */
 void publishDeviceStatus() {
   if (!client.connected()) {
-    Serial.println("publishDeviceConfig: Client not connected!");
+    Serial.println("publishDeviceStatus: Client not connected!");
     return;
   }
+  
+  Serial.println("publishDeviceStatus: Starting...");
   
   String statusTopic = String("paku/edge/") + deviceId + "/status";
   JsonDocument doc;
@@ -1751,6 +1728,7 @@ void publishDeviceConfig() {
   doc["timing"]["connection_duration_max_s"] = deviceConfig.timing.connection_duration_max_s;
   doc["timing"]["wifi_connect_timeout_s"] = deviceConfig.timing.wifi_connect_timeout_s;
   doc["timing"]["mqtt_connect_timeout_s"] = deviceConfig.timing.mqtt_connect_timeout_s;
+  doc["timing"]["timezone"] = deviceConfig.timing.timezone;
   
   // Sensor configuration
   doc["sensors"]["ble"]["enabled"] = deviceConfig.sensors.ble.enabled;
@@ -1810,6 +1788,7 @@ void saveConfig() {
   preferences.putUInt("conn_dur", deviceConfig.timing.connection_duration_max_s);
   preferences.putUInt("wifi_to", deviceConfig.timing.wifi_connect_timeout_s);
   preferences.putUInt("mqtt_to", deviceConfig.timing.mqtt_connect_timeout_s);
+  preferences.putString("timezone", deviceConfig.timing.timezone);
   
   preferences.putBool("ble_en", deviceConfig.sensors.ble.enabled);
   preferences.putUInt("ble_dur", deviceConfig.sensors.ble.scan_duration_s);
@@ -1861,6 +1840,9 @@ void loadConfig() {
     deviceConfig.timing.connection_duration_max_s = preferences.getUInt("conn_dur", 30);
     deviceConfig.timing.wifi_connect_timeout_s = preferences.getUInt("wifi_to", 10);
     deviceConfig.timing.mqtt_connect_timeout_s = preferences.getUInt("mqtt_to", 5);
+    String tz = preferences.getString("timezone", "EET-2EEST,M3.5.0/3,M10.5.0/4");
+    strncpy(deviceConfig.timing.timezone, tz.c_str(), sizeof(deviceConfig.timing.timezone) - 1);
+    deviceConfig.timing.timezone[sizeof(deviceConfig.timing.timezone) - 1] = '\0';
     
     deviceConfig.sensors.ble.enabled = preferences.getBool("ble_en", true);
     deviceConfig.sensors.ble.scan_duration_s = preferences.getUInt("ble_dur", 10);
@@ -2242,11 +2224,10 @@ void handleSystemState() {
       }
       
       // Check if we should disconnect
-      // Disconnect if: transmission complete OR connection timeout
       bool transmissionComplete = (bufferCount == 0);
       bool connectionTimeout = (stateElapsed >= (deviceConfig.timing.connection_duration_max_s * 1000));
       
-      if (transmissionComplete || connectionTimeout) {
+      if (transmissionComplete && connectionTimeout) {
         transmissionStarted = false;
         currentSystemState = SYS_STATE_DISCONNECT;
         stateEnteredAt = now;
@@ -2521,6 +2502,19 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (newValue != deviceConfig.timing.mqtt_connect_timeout_s) {
           deviceConfig.timing.mqtt_connect_timeout_s = newValue;
           configChanged = true;
+        }
+      }
+      if (doc["timing"].containsKey("timezone")) {
+        const char* newValue = doc["timing"]["timezone"];
+        if (strcmp(newValue, deviceConfig.timing.timezone) != 0) {
+          strncpy(deviceConfig.timing.timezone, newValue, sizeof(deviceConfig.timing.timezone) - 1);
+          deviceConfig.timing.timezone[sizeof(deviceConfig.timing.timezone) - 1] = '\0';
+          // Apply new timezone immediately
+          setenv("TZ", deviceConfig.timing.timezone, 1);
+          tzset();
+          configChanged = true;
+          Serial.print("Timezone updated to: ");
+          Serial.println(deviceConfig.timing.timezone);
         }
       }
     }
