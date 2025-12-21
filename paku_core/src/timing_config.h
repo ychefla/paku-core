@@ -70,7 +70,7 @@ struct DeviceConfig {
         sensors.wired.sample_count = 3;
         sensors.wired.sample_interval_ms = 100;
         
-        sensors.flow.enabled = true;
+        sensors.flow.enabled = false;  // Disabled by default (no hardware)
         sensors.flow.measurement_duration_s = 5;
         
         // Power defaults

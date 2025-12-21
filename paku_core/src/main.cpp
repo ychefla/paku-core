@@ -1855,7 +1855,7 @@ void loadConfig() {
     deviceConfig.sensors.wired.sample_count = preferences.getUInt("wired_cnt", 3);
     deviceConfig.sensors.wired.sample_interval_ms = preferences.getUInt("wired_int", 100);
     
-    deviceConfig.sensors.flow.enabled = preferences.getBool("flow_en", true);
+    deviceConfig.sensors.flow.enabled = preferences.getBool("flow_en", false);  // Disabled by default
     deviceConfig.sensors.flow.measurement_duration_s = preferences.getUInt("flow_dur", 5);
     
     deviceConfig.power.deep_sleep_enabled = preferences.getBool("deep_sl", false);
@@ -2475,19 +2475,38 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       return;
     }
     
+    // Track if any config actually changed to avoid processing our own published config
+    bool configChanged = false;
+    
     // Update timing configuration if present
     if (doc.containsKey("timing")) {
       if (doc["timing"].containsKey("wake_interval_s")) {
-        deviceConfig.timing.wake_interval_s = doc["timing"]["wake_interval_s"];
+        uint32_t newValue = doc["timing"]["wake_interval_s"];
+        if (newValue != deviceConfig.timing.wake_interval_s) {
+          deviceConfig.timing.wake_interval_s = newValue;
+          configChanged = true;
+        }
       }
       if (doc["timing"].containsKey("connection_duration_max_s")) {
-        deviceConfig.timing.connection_duration_max_s = doc["timing"]["connection_duration_max_s"];
+        uint32_t newValue = doc["timing"]["connection_duration_max_s"];
+        if (newValue != deviceConfig.timing.connection_duration_max_s) {
+          deviceConfig.timing.connection_duration_max_s = newValue;
+          configChanged = true;
+        }
       }
       if (doc["timing"].containsKey("wifi_connect_timeout_s")) {
-        deviceConfig.timing.wifi_connect_timeout_s = doc["timing"]["wifi_connect_timeout_s"];
+        uint32_t newValue = doc["timing"]["wifi_connect_timeout_s"];
+        if (newValue != deviceConfig.timing.wifi_connect_timeout_s) {
+          deviceConfig.timing.wifi_connect_timeout_s = newValue;
+          configChanged = true;
+        }
       }
       if (doc["timing"].containsKey("mqtt_connect_timeout_s")) {
-        deviceConfig.timing.mqtt_connect_timeout_s = doc["timing"]["mqtt_connect_timeout_s"];
+        uint32_t newValue = doc["timing"]["mqtt_connect_timeout_s"];
+        if (newValue != deviceConfig.timing.mqtt_connect_timeout_s) {
+          deviceConfig.timing.mqtt_connect_timeout_s = newValue;
+          configChanged = true;
+        }
       }
     }
     
@@ -2495,34 +2514,66 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     if (doc.containsKey("sensors")) {
       if (doc["sensors"].containsKey("ble")) {
         if (doc["sensors"]["ble"].containsKey("enabled")) {
-          deviceConfig.sensors.ble.enabled = doc["sensors"]["ble"]["enabled"];
+          bool newValue = doc["sensors"]["ble"]["enabled"];
+          if (newValue != deviceConfig.sensors.ble.enabled) {
+            deviceConfig.sensors.ble.enabled = newValue;
+            configChanged = true;
+          }
         }
         if (doc["sensors"]["ble"].containsKey("scan_duration_s")) {
-          deviceConfig.sensors.ble.scan_duration_s = doc["sensors"]["ble"]["scan_duration_s"];
+          uint32_t newValue = doc["sensors"]["ble"]["scan_duration_s"];
+          if (newValue != deviceConfig.sensors.ble.scan_duration_s) {
+            deviceConfig.sensors.ble.scan_duration_s = newValue;
+            configChanged = true;
+          }
         }
         if (doc["sensors"]["ble"].containsKey("scan_active")) {
-          deviceConfig.sensors.ble.scan_active = doc["sensors"]["ble"]["scan_active"];
+          bool newValue = doc["sensors"]["ble"]["scan_active"];
+          if (newValue != deviceConfig.sensors.ble.scan_active) {
+            deviceConfig.sensors.ble.scan_active = newValue;
+            configChanged = true;
+          }
         }
       }
       
       if (doc["sensors"].containsKey("wired")) {
         if (doc["sensors"]["wired"].containsKey("enabled")) {
-          deviceConfig.sensors.wired.enabled = doc["sensors"]["wired"]["enabled"];
+          bool newValue = doc["sensors"]["wired"]["enabled"];
+          if (newValue != deviceConfig.sensors.wired.enabled) {
+            deviceConfig.sensors.wired.enabled = newValue;
+            configChanged = true;
+          }
         }
         if (doc["sensors"]["wired"].containsKey("sample_count")) {
-          deviceConfig.sensors.wired.sample_count = doc["sensors"]["wired"]["sample_count"];
+          uint8_t newValue = doc["sensors"]["wired"]["sample_count"];
+          if (newValue != deviceConfig.sensors.wired.sample_count) {
+            deviceConfig.sensors.wired.sample_count = newValue;
+            configChanged = true;
+          }
         }
         if (doc["sensors"]["wired"].containsKey("sample_interval_ms")) {
-          deviceConfig.sensors.wired.sample_interval_ms = doc["sensors"]["wired"]["sample_interval_ms"];
+          uint16_t newValue = doc["sensors"]["wired"]["sample_interval_ms"];
+          if (newValue != deviceConfig.sensors.wired.sample_interval_ms) {
+            deviceConfig.sensors.wired.sample_interval_ms = newValue;
+            configChanged = true;
+          }
         }
       }
       
       if (doc["sensors"].containsKey("flow")) {
         if (doc["sensors"]["flow"].containsKey("enabled")) {
-          deviceConfig.sensors.flow.enabled = doc["sensors"]["flow"]["enabled"];
+          bool newValue = doc["sensors"]["flow"]["enabled"];
+          if (newValue != deviceConfig.sensors.flow.enabled) {
+            deviceConfig.sensors.flow.enabled = newValue;
+            configChanged = true;
+          }
         }
         if (doc["sensors"]["flow"].containsKey("measurement_duration_s")) {
-          deviceConfig.sensors.flow.measurement_duration_s = doc["sensors"]["flow"]["measurement_duration_s"];
+          uint32_t newValue = doc["sensors"]["flow"]["measurement_duration_s"];
+          if (newValue != deviceConfig.sensors.flow.measurement_duration_s) {
+            deviceConfig.sensors.flow.measurement_duration_s = newValue;
+            configChanged = true;
+          }
         }
       }
     }
@@ -2530,24 +2581,41 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     // Update power configuration if present
     if (doc.containsKey("power")) {
       if (doc["power"].containsKey("deep_sleep_enabled")) {
-        deviceConfig.power.deep_sleep_enabled = doc["power"]["deep_sleep_enabled"];
+        bool newValue = doc["power"]["deep_sleep_enabled"];
+        if (newValue != deviceConfig.power.deep_sleep_enabled) {
+          deviceConfig.power.deep_sleep_enabled = newValue;
+          configChanged = true;
+        }
       }
       if (doc["power"].containsKey("light_sleep_during_wait")) {
-        deviceConfig.power.light_sleep_during_wait = doc["power"]["light_sleep_during_wait"];
+        bool newValue = doc["power"]["light_sleep_during_wait"];
+        if (newValue != deviceConfig.power.light_sleep_during_wait) {
+          deviceConfig.power.light_sleep_during_wait = newValue;
+          configChanged = true;
+        }
       }
       if (doc["power"].containsKey("battery_monitor_enabled")) {
-        deviceConfig.power.battery_monitor_enabled = doc["power"]["battery_monitor_enabled"];
+        bool newValue = doc["power"]["battery_monitor_enabled"];
+        if (newValue != deviceConfig.power.battery_monitor_enabled) {
+          deviceConfig.power.battery_monitor_enabled = newValue;
+          configChanged = true;
+        }
       }
     }
     
-    // Save updated configuration to persistent storage
-    saveConfig();
-    
-    // Publish updated config back as confirmation
-    publishDeviceConfig();
-    publishDeviceStatus();
-    
-    Serial.println("Configuration updated and saved");
+    // Only save and republish if config actually changed
+    if (configChanged) {
+      // Save updated configuration to persistent storage
+      saveConfig();
+      
+      // Publish updated config back as confirmation
+      publishDeviceConfig();
+      publishDeviceStatus();
+      
+      Serial.println("Configuration updated and saved");
+    } else {
+      Serial.println("Config unchanged (ignoring duplicate/own message)");
+    }
     return;
   }
 
