@@ -1731,8 +1731,8 @@ void publishDeviceConfig() {
   
   String configTopic = String("paku/edge/") + deviceId + "/config/report";
   JsonDocument doc;
-  
-  doc["version"] = "1.0";
+
+  doc["version"] = FIRMWARE_VERSION;
   
   // Timing configuration
   doc["timing"]["wake_interval_s"] = deviceConfig.timing.wake_interval_s;
