@@ -236,16 +236,34 @@ struct Payload {
 Payload payloads[MAX_MQTT_PAYLOADS];
 int payloadIndex = 0;
 
-// BLE Sensor Snapshot Buffer (for consolidated multi-metric payloads)
-#define MAX_BLE_SNAPSHOTS 10
-struct BLESnapshot {
+// Sensor Snapshot Buffer (for consolidated multi-metric payloads from BLE, wired, etc.)
+#define MAX_SENSOR_SNAPSHOTS 10
+struct SensorSnapshot {
   String topic;
   String payload;
   bool transmitted;
 };
 
-BLESnapshot bleSnapshots[MAX_BLE_SNAPSHOTS];
-int bleSnapshotCount = 0;
+SensorSnapshot sensorSnapshots[MAX_SENSOR_SNAPSHOTS];
+int sensorSnapshotCount = 0;
+
+// Edge device friendly name lookup
+const char* getEdgeDeviceFriendlyName() {
+#ifdef EDGE_DEVICE_COUNT
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  
+  for (size_t i = 0; i < EDGE_DEVICE_COUNT; i++) {
+    if (strcmp(macStr, EDGE_DEVICE_MACS[i]) == 0) {
+      return EDGE_DEVICE_NAMES[i];
+    }
+  }
+#endif
+  return nullptr;  // No friendly name configured
+}
 
 // ISR function declaration moved up
 void IRAM_ATTR countRisingEdges();
@@ -857,10 +875,23 @@ void sendToMQTT() {
   unsigned long currentTime = millis();
 
   if (currentTime - lastTime_mqtt >= mqttInterval) {
-    Serial.println("send to MQTT");
+    Serial.print("[DEBUG] sendToMQTT - payloadIndex before transmission: ");
+    Serial.println(payloadIndex);
+    
+    if (payloadIndex == 0) {
+      Serial.println("[DEBUG] No payloads to send to MQTT!");
+    }
     
     for (int i = 0; i < payloadIndex; i++) {
-      client.publish((char*) payloads[i].topic.c_str(), (char*) payloads[i].data.c_str());
+      Serial.print("[DEBUG] Publishing payload ");
+      Serial.print(i);
+      Serial.print(" to topic: ");
+      Serial.println(payloads[i].topic);
+      Serial.print("[DEBUG] Data: ");
+      Serial.println(payloads[i].data);
+      bool result = client.publish((char*) payloads[i].topic.c_str(), (char*) payloads[i].data.c_str());
+      Serial.print("[DEBUG] Publish result: ");
+      Serial.println(result ? "SUCCESS" : "FAILED");
     }
     
     payloadIndex = 0;
@@ -1420,7 +1451,7 @@ void createMoKoPayloads(const char* timestamp) {
     Serial.print("°C, H=");
     Serial.print(sensor->lastData.humidity);
     Serial.print("% (buffer: ");
-    Serial.print(bleSnapshotCount);
+    Serial.print(sensorSnapshotCount);
     Serial.println(")");
   }
 }
@@ -1474,15 +1505,20 @@ void createWiredSensorPayloads(const char* timestamp) {
   
   String topic = String("paku/sensors/") + deviceId + WIRED_SENSOR_SUFFIX + "/data";
   
-  if (payloadIndex < MAX_MQTT_PAYLOADS) {
-    payloads[payloadIndex].topic = topic;
-    payloads[payloadIndex].data = payload;
-    payloadIndex++;
+  // Add to sensor snapshot buffer (used for all consolidated sensor transmissions)
+  if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
+    sensorSnapshots[sensorSnapshotCount].topic = topic;
+    sensorSnapshots[sensorSnapshotCount].payload = payload;
+    sensorSnapshots[sensorSnapshotCount].transmitted = false;
+    Serial.print("Buffered DS18B20 [wired_sensor]: T=");
+    Serial.print(data.temperature, 2);
+    Serial.print("°C (buffer: ");
+    Serial.print(sensorSnapshotCount + 1);
+    Serial.println(")");
+    sensorSnapshotCount++;
+  } else {
+    Serial.println("Warning: Snapshot buffer full, dropping DS18B20 reading");
   }
-  
-  Serial.print("DS18B20 Sensor: T=");
-  Serial.print(data.temperature, 2);
-  Serial.println("°C");
 }
 #endif // HAS_WIRED_SENSORS
 
@@ -1688,7 +1724,22 @@ void publishDeviceStatus() {
   String statusTopic = String("paku/edge/") + deviceId + "/status";
   JsonDocument doc;
   
+  // Get MAC address
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  
   doc["online"] = true;
+  doc["mac_address"] = macStr;
+  
+  // Add friendly name if configured
+  const char* friendlyName = getEdgeDeviceFriendlyName();
+  if (friendlyName != nullptr) {
+    doc["friendly_name"] = friendlyName;
+  }
+  
   doc["last_seen"] = getISO8601Timestamp();
   doc["signal_strength_dbm"] = WiFi.RSSI();
   doc["uptime_seconds"] = millis() / 1000;
@@ -2111,26 +2162,26 @@ void transmitBufferedData() {
 }
 
 /**
- * @brief Transmit buffered BLE sensor snapshots
+ * @brief Transmit buffered sensor snapshots
  * 
- * Sends all untransmitted BLE snapshots (consolidated payloads) to MQTT.
+ * Sends all untransmitted sensor snapshots (consolidated payloads from BLE, wired, etc.) to MQTT.
  */
-void transmitBLESnapshots() {
+void transmitSensorSnapshots() {
   if (!client.connected()) {
     return; // Silently skip if not connected
   }
   
-  if (bleSnapshotCount == 0) {
+  if (sensorSnapshotCount == 0) {
     return; // Nothing to transmit
   }
   
   Serial.print("Transmitting ");
-  Serial.print(bleSnapshotCount);
-  Serial.println(" BLE snapshots...");
+  Serial.print(sensorSnapshotCount);
+  Serial.println(" sensor snapshots...");
   
   int transmitted = 0;
-  for (int i = 0; i < bleSnapshotCount; i++) {
-    BLESnapshot* snapshot = &bleSnapshots[i];
+  for (int i = 0; i < sensorSnapshotCount; i++) {
+    SensorSnapshot* snapshot = &sensorSnapshots[i];
     
     if (snapshot->transmitted) {
       continue; // Skip already transmitted
@@ -2151,25 +2202,25 @@ void transmitBLESnapshots() {
   Serial.print("Transmitted ");
   Serial.print(transmitted);
   Serial.print(" / ");
-  Serial.println(bleSnapshotCount);
+  Serial.println(sensorSnapshotCount);
   
   // Clear transmitted snapshots
   int writeIndex = 0;
-  for (int readIndex = 0; readIndex < bleSnapshotCount; readIndex++) {
-    if (!bleSnapshots[readIndex].transmitted) {
+  for (int readIndex = 0; readIndex < sensorSnapshotCount; readIndex++) {
+    if (!sensorSnapshots[readIndex].transmitted) {
       if (writeIndex != readIndex) {
-        bleSnapshots[writeIndex] = bleSnapshots[readIndex];
+        sensorSnapshots[writeIndex] = sensorSnapshots[readIndex];
       }
       writeIndex++;
     }
   }
-  int cleared = bleSnapshotCount - writeIndex;
-  bleSnapshotCount = writeIndex;
+  int cleared = sensorSnapshotCount - writeIndex;
+  sensorSnapshotCount = writeIndex;
   
   if (cleared > 0) {
     Serial.print("Cleared ");
     Serial.print(cleared);
-    Serial.println(" transmitted BLE snapshots from buffer");
+    Serial.println(" transmitted sensor snapshots from buffer");
   }
 }
 
@@ -2295,7 +2346,7 @@ void handleSystemState() {
       static bool transmissionStarted = false;
       if (!transmissionStarted) {
         // Transmit all buffered data
-        transmitBLESnapshots();
+        transmitSensorSnapshots();
         transmitBufferedData();
         publishDeviceStatus();
         transmissionStarted = true;
