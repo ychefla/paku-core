@@ -262,6 +262,7 @@ void publishDeviceStatus();
 void publishDeviceConfig();
 
 // Phase 2: New function declarations
+void printConfig(const char* context);
 void saveConfig();
 void loadConfig();
 void addSensorReading(const char* sensor_id, const char* metric, float value, const char* timestamp);
@@ -542,9 +543,8 @@ void setup() {
 
     // Initialize device configuration BEFORE setting up time (needs timezone)
     Serial.println("Loading device configuration...");
-    deviceConfig.loadDefaults();
     
-    // Phase 2: Load persisted config if available
+    // Load persisted config if available, otherwise use defaults
     loadConfig();
 
     Serial.println("Setup MQTT Connection...");
@@ -558,6 +558,7 @@ void setup() {
     
     client.setServer(mqtt_server, mqtt_port);
     client.setCallback(handleMqttMessage);  // Set MQTT message callback
+    client.setBufferSize(1024);  // Increase from default 256 bytes to handle larger config messages
 
     // Initialize paku-iot HTTP client if enabled
     initPakuIot();
@@ -1172,8 +1173,17 @@ void connectMQTT() {
       Serial.print("Subscribed to OTA topic: ");
       Serial.println(otaTopic);
       
-      // Publish initial status and config
+      // Step 1: Publish device status first (announce we're online)
       publishDeviceStatus();
+      
+      // Step 2 & 3: Process any retained config/set messages and apply them
+      Serial.println("Processing retained messages...");
+      for (int i = 0; i < 10; i++) {
+        client.loop();
+        delay(10);
+      }
+      
+      // Step 4: Report current config (includes any updates from config/set)
       publishDeviceConfig();
     } else {
       Serial.print("failed, rc=");
@@ -1717,6 +1727,7 @@ void publishDeviceConfig() {
   }
   
   Serial.println("publishDeviceConfig: Starting...");
+  printConfig("Publishing to MQTT");
   
   String configTopic = String("paku/edge/") + deviceId + "/config/report";
   JsonDocument doc;
@@ -1769,6 +1780,59 @@ void publishDeviceConfig() {
 // ============================================================================
 
 /**
+ * @brief Print current device configuration for debugging
+ * 
+ * @param context Description of when/why config is being printed
+ */
+void printConfig(const char* context) {
+  Serial.println("========================================");
+  Serial.print("CONFIG [");
+  Serial.print(context);
+  Serial.println("]");
+  Serial.println("========================================");
+  
+  Serial.println("Timing:");
+  Serial.print("  wake_interval_s: ");
+  Serial.println(deviceConfig.timing.wake_interval_s);
+  Serial.print("  connection_duration_max_s: ");
+  Serial.println(deviceConfig.timing.connection_duration_max_s);
+  Serial.print("  wifi_connect_timeout_s: ");
+  Serial.println(deviceConfig.timing.wifi_connect_timeout_s);
+  Serial.print("  mqtt_connect_timeout_s: ");
+  Serial.println(deviceConfig.timing.mqtt_connect_timeout_s);
+  Serial.print("  timezone: ");
+  Serial.println(deviceConfig.timing.timezone);
+  
+  Serial.println("Sensors:");
+  Serial.print("  ble.enabled: ");
+  Serial.println(deviceConfig.sensors.ble.enabled ? "true" : "false");
+  Serial.print("  ble.scan_duration_s: ");
+  Serial.println(deviceConfig.sensors.ble.scan_duration_s);
+  Serial.print("  ble.scan_active: ");
+  Serial.println(deviceConfig.sensors.ble.scan_active ? "true" : "false");
+  Serial.print("  wired.enabled: ");
+  Serial.println(deviceConfig.sensors.wired.enabled ? "true" : "false");
+  Serial.print("  wired.sample_count: ");
+  Serial.println(deviceConfig.sensors.wired.sample_count);
+  Serial.print("  wired.sample_interval_ms: ");
+  Serial.println(deviceConfig.sensors.wired.sample_interval_ms);
+  Serial.print("  flow.enabled: ");
+  Serial.println(deviceConfig.sensors.flow.enabled ? "true" : "false");
+  Serial.print("  flow.measurement_duration_s: ");
+  Serial.println(deviceConfig.sensors.flow.measurement_duration_s);
+  
+  Serial.println("Power:");
+  Serial.print("  deep_sleep_enabled: ");
+  Serial.println(deviceConfig.power.deep_sleep_enabled ? "true" : "false");
+  Serial.print("  light_sleep_during_wait: ");
+  Serial.println(deviceConfig.power.light_sleep_during_wait ? "true" : "false");
+  Serial.print("  battery_monitor_enabled: ");
+  Serial.println(deviceConfig.power.battery_monitor_enabled ? "true" : "false");
+  
+  Serial.println("========================================");
+}
+
+/**
  * @brief Save device configuration to persistent storage
  * 
  * Saves the current deviceConfig to NVS (ESP32) or EEPROM (ESP8266).
@@ -1781,6 +1845,7 @@ void saveConfig() {
   EEPROM.commit();
   EEPROM.end();
   Serial.println("Config saved to EEPROM");
+  printConfig("Saved to EEPROM");
 #else
   // ESP32: Use Preferences
   preferences.begin("paku", false);
@@ -1807,6 +1872,7 @@ void saveConfig() {
   
   preferences.end();
   Serial.println("Config saved to Preferences");
+  printConfig("Saved to NVS");
 #endif
 }
 
@@ -1828,14 +1894,20 @@ void loadConfig() {
   if (loadedConfig.timing.wake_interval_s > 0 && loadedConfig.timing.wake_interval_s < 86400) {
     deviceConfig = loadedConfig;
     Serial.println("Config loaded from EEPROM");
+    printConfig("Loaded from EEPROM");
   } else {
-    Serial.println("No valid config in EEPROM, using defaults");
+    Serial.println("No valid config in EEPROM, loading defaults");
+    deviceConfig.loadDefaults();
+    printConfig("Defaults loaded (first boot)");
+    Serial.println("Saving default config to EEPROM...");
+    saveConfig();  // Save defaults so next boot doesn't re-initialize
   }
 #else
   // ESP32: Use Preferences
   preferences.begin("paku", true); // read-only
   
   if (preferences.isKey("wake_int")) {
+    // Load existing config from NVS
     deviceConfig.timing.wake_interval_s = preferences.getUInt("wake_int", 60);
     deviceConfig.timing.connection_duration_max_s = preferences.getUInt("conn_dur", 30);
     deviceConfig.timing.wifi_connect_timeout_s = preferences.getUInt("wifi_to", 10);
@@ -1852,7 +1924,7 @@ void loadConfig() {
     deviceConfig.sensors.wired.sample_count = preferences.getUInt("wired_cnt", 3);
     deviceConfig.sensors.wired.sample_interval_ms = preferences.getUInt("wired_int", 100);
     
-    deviceConfig.sensors.flow.enabled = preferences.getBool("flow_en", false);  // Disabled by default
+    deviceConfig.sensors.flow.enabled = preferences.getBool("flow_en", false);
     deviceConfig.sensors.flow.measurement_duration_s = preferences.getUInt("flow_dur", 5);
     
     deviceConfig.power.deep_sleep_enabled = preferences.getBool("deep_sl", false);
@@ -1860,8 +1932,14 @@ void loadConfig() {
     deviceConfig.power.battery_monitor_enabled = preferences.getBool("batt_mon", false);
     
     Serial.println("Config loaded from Preferences");
+    printConfig("Loaded from NVS");
   } else {
-    Serial.println("No saved config found, using defaults");
+    // No saved config - this is first boot or NVS was erased
+    Serial.println("No saved config found, loading defaults");
+    deviceConfig.loadDefaults();
+    printConfig("Defaults loaded (first boot)");
+    Serial.println("Saving default config to Preferences...");
+    saveConfig();  // Save defaults so next boot doesn't re-initialize
   }
   
   preferences.end();
@@ -2461,7 +2539,13 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   // Phase 2: Check for configuration command topic (config/set)
   String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
   if (String(topic) == edgeConfigTopic) {
-    Serial.println("Received configuration command from config/set topic");
+    Serial.println("========================================");
+    Serial.println("MQTT CONFIG/SET MESSAGE RECEIVED");
+    Serial.print("Message: ");
+    Serial.println(message);
+    Serial.println("========================================");
+    printConfig("Current config before processing MQTT");
+    
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
     
@@ -2479,6 +2563,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       if (doc["timing"].containsKey("wake_interval_s")) {
         uint32_t newValue = doc["timing"]["wake_interval_s"];
         if (newValue != deviceConfig.timing.wake_interval_s) {
+          Serial.print("Config change: wake_interval_s ");
+          Serial.print(deviceConfig.timing.wake_interval_s);
+          Serial.print(" -> ");
+          Serial.println(newValue);
           deviceConfig.timing.wake_interval_s = newValue;
           configChanged = true;
         }
@@ -2486,6 +2574,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       if (doc["timing"].containsKey("connection_duration_max_s")) {
         uint32_t newValue = doc["timing"]["connection_duration_max_s"];
         if (newValue != deviceConfig.timing.connection_duration_max_s) {
+          Serial.print("Config change: connection_duration_max_s ");
+          Serial.print(deviceConfig.timing.connection_duration_max_s);
+          Serial.print(" -> ");
+          Serial.println(newValue);
           deviceConfig.timing.connection_duration_max_s = newValue;
           configChanged = true;
         }
@@ -2493,6 +2585,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       if (doc["timing"].containsKey("wifi_connect_timeout_s")) {
         uint32_t newValue = doc["timing"]["wifi_connect_timeout_s"];
         if (newValue != deviceConfig.timing.wifi_connect_timeout_s) {
+          Serial.print("Config change: wifi_connect_timeout_s ");
+          Serial.print(deviceConfig.timing.wifi_connect_timeout_s);
+          Serial.print(" -> ");
+          Serial.println(newValue);
           deviceConfig.timing.wifi_connect_timeout_s = newValue;
           configChanged = true;
         }
@@ -2500,6 +2596,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       if (doc["timing"].containsKey("mqtt_connect_timeout_s")) {
         uint32_t newValue = doc["timing"]["mqtt_connect_timeout_s"];
         if (newValue != deviceConfig.timing.mqtt_connect_timeout_s) {
+          Serial.print("Config change: mqtt_connect_timeout_s ");
+          Serial.print(deviceConfig.timing.mqtt_connect_timeout_s);
+          Serial.print(" -> ");
+          Serial.println(newValue);
           deviceConfig.timing.mqtt_connect_timeout_s = newValue;
           configChanged = true;
         }
@@ -2525,6 +2625,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (doc["sensors"]["ble"].containsKey("enabled")) {
           bool newValue = doc["sensors"]["ble"]["enabled"];
           if (newValue != deviceConfig.sensors.ble.enabled) {
+            Serial.print("Config change: sensors.ble.enabled ");
+            Serial.print(deviceConfig.sensors.ble.enabled ? "true" : "false");
+            Serial.print(" -> ");
+            Serial.println(newValue ? "true" : "false");
             deviceConfig.sensors.ble.enabled = newValue;
             configChanged = true;
           }
@@ -2532,6 +2636,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (doc["sensors"]["ble"].containsKey("scan_duration_s")) {
           uint32_t newValue = doc["sensors"]["ble"]["scan_duration_s"];
           if (newValue != deviceConfig.sensors.ble.scan_duration_s) {
+            Serial.print("Config change: sensors.ble.scan_duration_s ");
+            Serial.print(deviceConfig.sensors.ble.scan_duration_s);
+            Serial.print(" -> ");
+            Serial.println(newValue);
             deviceConfig.sensors.ble.scan_duration_s = newValue;
             configChanged = true;
           }
@@ -2539,6 +2647,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (doc["sensors"]["ble"].containsKey("scan_active")) {
           bool newValue = doc["sensors"]["ble"]["scan_active"];
           if (newValue != deviceConfig.sensors.ble.scan_active) {
+            Serial.print("Config change: sensors.ble.scan_active ");
+            Serial.print(deviceConfig.sensors.ble.scan_active ? "true" : "false");
+            Serial.print(" -> ");
+            Serial.println(newValue ? "true" : "false");
             deviceConfig.sensors.ble.scan_active = newValue;
             configChanged = true;
           }
@@ -2549,6 +2661,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (doc["sensors"]["wired"].containsKey("enabled")) {
           bool newValue = doc["sensors"]["wired"]["enabled"];
           if (newValue != deviceConfig.sensors.wired.enabled) {
+            Serial.print("Config change: sensors.wired.enabled ");
+            Serial.print(deviceConfig.sensors.wired.enabled ? "true" : "false");
+            Serial.print(" -> ");
+            Serial.println(newValue ? "true" : "false");
             deviceConfig.sensors.wired.enabled = newValue;
             configChanged = true;
           }
@@ -2556,6 +2672,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (doc["sensors"]["wired"].containsKey("sample_count")) {
           uint8_t newValue = doc["sensors"]["wired"]["sample_count"];
           if (newValue != deviceConfig.sensors.wired.sample_count) {
+            Serial.print("Config change: sensors.wired.sample_count ");
+            Serial.print(deviceConfig.sensors.wired.sample_count);
+            Serial.print(" -> ");
+            Serial.println(newValue);
             deviceConfig.sensors.wired.sample_count = newValue;
             configChanged = true;
           }
@@ -2563,6 +2683,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (doc["sensors"]["wired"].containsKey("sample_interval_ms")) {
           uint16_t newValue = doc["sensors"]["wired"]["sample_interval_ms"];
           if (newValue != deviceConfig.sensors.wired.sample_interval_ms) {
+            Serial.print("Config change: sensors.wired.sample_interval_ms ");
+            Serial.print(deviceConfig.sensors.wired.sample_interval_ms);
+            Serial.print(" -> ");
+            Serial.println(newValue);
             deviceConfig.sensors.wired.sample_interval_ms = newValue;
             configChanged = true;
           }
@@ -2573,6 +2697,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (doc["sensors"]["flow"].containsKey("enabled")) {
           bool newValue = doc["sensors"]["flow"]["enabled"];
           if (newValue != deviceConfig.sensors.flow.enabled) {
+            Serial.print("Config change: sensors.flow.enabled ");
+            Serial.print(deviceConfig.sensors.flow.enabled ? "true" : "false");
+            Serial.print(" -> ");
+            Serial.println(newValue ? "true" : "false");
             deviceConfig.sensors.flow.enabled = newValue;
             configChanged = true;
           }
@@ -2580,6 +2708,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (doc["sensors"]["flow"].containsKey("measurement_duration_s")) {
           uint32_t newValue = doc["sensors"]["flow"]["measurement_duration_s"];
           if (newValue != deviceConfig.sensors.flow.measurement_duration_s) {
+            Serial.print("Config change: sensors.flow.measurement_duration_s ");
+            Serial.print(deviceConfig.sensors.flow.measurement_duration_s);
+            Serial.print(" -> ");
+            Serial.println(newValue);
             deviceConfig.sensors.flow.measurement_duration_s = newValue;
             configChanged = true;
           }
@@ -2592,6 +2724,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       if (doc["power"].containsKey("deep_sleep_enabled")) {
         bool newValue = doc["power"]["deep_sleep_enabled"];
         if (newValue != deviceConfig.power.deep_sleep_enabled) {
+          Serial.print("Config change: power.deep_sleep_enabled ");
+          Serial.print(deviceConfig.power.deep_sleep_enabled ? "true" : "false");
+          Serial.print(" -> ");
+          Serial.println(newValue ? "true" : "false");
           deviceConfig.power.deep_sleep_enabled = newValue;
           configChanged = true;
         }
@@ -2599,6 +2735,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       if (doc["power"].containsKey("light_sleep_during_wait")) {
         bool newValue = doc["power"]["light_sleep_during_wait"];
         if (newValue != deviceConfig.power.light_sleep_during_wait) {
+          Serial.print("Config change: power.light_sleep_during_wait ");
+          Serial.print(deviceConfig.power.light_sleep_during_wait ? "true" : "false");
+          Serial.print(" -> ");
+          Serial.println(newValue ? "true" : "false");
           deviceConfig.power.light_sleep_during_wait = newValue;
           configChanged = true;
         }
@@ -2606,6 +2746,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       if (doc["power"].containsKey("battery_monitor_enabled")) {
         bool newValue = doc["power"]["battery_monitor_enabled"];
         if (newValue != deviceConfig.power.battery_monitor_enabled) {
+          Serial.print("Config change: power.battery_monitor_enabled ");
+          Serial.print(deviceConfig.power.battery_monitor_enabled ? "true" : "false");
+          Serial.print(" -> ");
+          Serial.println(newValue ? "true" : "false");
           deviceConfig.power.battery_monitor_enabled = newValue;
           configChanged = true;
         }
@@ -2614,6 +2758,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     
     // Only save and republish if config actually changed
     if (configChanged) {
+      Serial.println("========================================");
+      Serial.println("CONFIG CHANGED - Saving and republishing");
+      Serial.println("========================================");
+      
       // Save updated configuration to persistent storage
       saveConfig();
       
@@ -2623,7 +2771,9 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       
       Serial.println("Configuration updated and saved");
     } else {
+      Serial.println("========================================");
       Serial.println("Config unchanged (ignoring duplicate/own message)");
+      Serial.println("========================================");
     }
     return;
   }
