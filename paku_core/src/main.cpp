@@ -1308,7 +1308,7 @@ void createRuuviPayloads(const char* timestamp) {
     doc["location"] = tag->location;
     
     // Create nested metrics object
-    JsonObject metrics = doc.createNestedObject("metrics");
+    JsonObject metrics = doc["metrics"].to<JsonObject>();
     metrics["temperature_c"] = tag->lastData.temperature;
     metrics["humidity_percent"] = tag->lastData.humidity;
     
@@ -1326,11 +1326,11 @@ void createRuuviPayloads(const char* timestamp) {
     String topic = String("paku/sensors/") + deviceId + "/data";
     
     // Add to snapshot buffer
-    if (bleSnapshotCount < MAX_BLE_SNAPSHOTS) {
-      bleSnapshots[bleSnapshotCount].topic = topic;
-      bleSnapshots[bleSnapshotCount].payload = payload;
-      bleSnapshots[bleSnapshotCount].transmitted = false;
-      bleSnapshotCount++;
+    if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
+      sensorSnapshots[sensorSnapshotCount].topic = topic;
+      sensorSnapshots[sensorSnapshotCount].payload = payload;
+      sensorSnapshots[sensorSnapshotCount].transmitted = false;
+      sensorSnapshotCount++;
     }
     
     Serial.print("Buffered RuuviTag [");
@@ -1340,7 +1340,7 @@ void createRuuviPayloads(const char* timestamp) {
     Serial.print("°C, H=");
     Serial.print(tag->lastData.humidity);
     Serial.print("% (buffer: ");
-    Serial.print(bleSnapshotCount);
+    Serial.print(sensorSnapshotCount);
     Serial.println(")");
   }
 }
@@ -1429,11 +1429,11 @@ void createMoKoPayloads(const char* timestamp) {
     String topic = String("paku/sensors/") + deviceId + "/data";
     
     // Add to snapshot buffer
-    if (bleSnapshotCount < MAX_BLE_SNAPSHOTS) {
-      bleSnapshots[bleSnapshotCount].topic = topic;
-      bleSnapshots[bleSnapshotCount].payload = payload;
-      bleSnapshots[bleSnapshotCount].transmitted = false;
-      bleSnapshotCount++;
+    if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
+      sensorSnapshots[sensorSnapshotCount].topic = topic;
+      sensorSnapshots[sensorSnapshotCount].payload = payload;
+      sensorSnapshots[sensorSnapshotCount].transmitted = false;
+      sensorSnapshotCount++;
     }
     
     // Determine model name
@@ -2535,7 +2535,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
     
-    if (!error && doc.containsKey("scenario")) {
+    if (!error && !doc["scenario"].isNull()) {
       const char* scenario = doc["scenario"];
       Serial.print("Switching to scenario: ");
       Serial.println(scenario);
@@ -2563,7 +2563,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
     
-    if (!error && doc.containsKey("heater")) {
+    if (!error && !doc["heater"].isNull()) {
       int newHeaterStatus = doc["heater"];
       if (newHeaterStatus == 0 || newHeaterStatus == 1) {
         heaterStatus = newHeaterStatus;
@@ -2610,8 +2610,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     bool configChanged = false;
     
     // Update timing configuration if present
-    if (doc.containsKey("timing")) {
-      if (doc["timing"].containsKey("wake_interval_s")) {
+    if (!doc["timing"].isNull()) {
+      if (!doc["timing"]["wake_interval_s"].isNull()) {
         uint32_t newValue = doc["timing"]["wake_interval_s"];
         if (newValue != deviceConfig.timing.wake_interval_s) {
           Serial.print("Config change: wake_interval_s ");
@@ -2622,7 +2622,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           configChanged = true;
         }
       }
-      if (doc["timing"].containsKey("connection_duration_max_s")) {
+      if (!doc["timing"]["connection_duration_max_s"].isNull()) {
         uint32_t newValue = doc["timing"]["connection_duration_max_s"];
         if (newValue != deviceConfig.timing.connection_duration_max_s) {
           Serial.print("Config change: connection_duration_max_s ");
@@ -2633,7 +2633,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           configChanged = true;
         }
       }
-      if (doc["timing"].containsKey("wifi_connect_timeout_s")) {
+      if (!doc["timing"]["wifi_connect_timeout_s"].isNull()) {
         uint32_t newValue = doc["timing"]["wifi_connect_timeout_s"];
         if (newValue != deviceConfig.timing.wifi_connect_timeout_s) {
           Serial.print("Config change: wifi_connect_timeout_s ");
@@ -2644,7 +2644,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           configChanged = true;
         }
       }
-      if (doc["timing"].containsKey("mqtt_connect_timeout_s")) {
+      if (!doc["timing"]["mqtt_connect_timeout_s"].isNull()) {
         uint32_t newValue = doc["timing"]["mqtt_connect_timeout_s"];
         if (newValue != deviceConfig.timing.mqtt_connect_timeout_s) {
           Serial.print("Config change: mqtt_connect_timeout_s ");
@@ -2655,7 +2655,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           configChanged = true;
         }
       }
-      if (doc["timing"].containsKey("timezone")) {
+      if (!doc["timing"]["timezone"].isNull()) {
         const char* newValue = doc["timing"]["timezone"];
         if (strcmp(newValue, deviceConfig.timing.timezone) != 0) {
           strncpy(deviceConfig.timing.timezone, newValue, sizeof(deviceConfig.timing.timezone) - 1);
@@ -2671,9 +2671,9 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     }
     
     // Update sensor configuration if present
-    if (doc.containsKey("sensors")) {
-      if (doc["sensors"].containsKey("ble")) {
-        if (doc["sensors"]["ble"].containsKey("enabled")) {
+    if (!doc["sensors"].isNull()) {
+      if (!doc["sensors"]["ble"].isNull()) {
+        if (!doc["sensors"]["ble"]["enabled"].isNull()) {
           bool newValue = doc["sensors"]["ble"]["enabled"];
           if (newValue != deviceConfig.sensors.ble.enabled) {
             Serial.print("Config change: sensors.ble.enabled ");
@@ -2684,7 +2684,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
             configChanged = true;
           }
         }
-        if (doc["sensors"]["ble"].containsKey("scan_duration_s")) {
+        if (!doc["sensors"]["ble"]["scan_duration_s"].isNull()) {
           uint32_t newValue = doc["sensors"]["ble"]["scan_duration_s"];
           if (newValue != deviceConfig.sensors.ble.scan_duration_s) {
             Serial.print("Config change: sensors.ble.scan_duration_s ");
@@ -2695,7 +2695,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
             configChanged = true;
           }
         }
-        if (doc["sensors"]["ble"].containsKey("scan_active")) {
+        if (!doc["sensors"]["ble"]["scan_active"].isNull()) {
           bool newValue = doc["sensors"]["ble"]["scan_active"];
           if (newValue != deviceConfig.sensors.ble.scan_active) {
             Serial.print("Config change: sensors.ble.scan_active ");
@@ -2708,8 +2708,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         }
       }
       
-      if (doc["sensors"].containsKey("wired")) {
-        if (doc["sensors"]["wired"].containsKey("enabled")) {
+      if (!doc["sensors"]["wired"].isNull()) {
+        if (!doc["sensors"]["wired"]["enabled"].isNull()) {
           bool newValue = doc["sensors"]["wired"]["enabled"];
           if (newValue != deviceConfig.sensors.wired.enabled) {
             Serial.print("Config change: sensors.wired.enabled ");
@@ -2720,7 +2720,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
             configChanged = true;
           }
         }
-        if (doc["sensors"]["wired"].containsKey("sample_count")) {
+        if (!doc["sensors"]["wired"]["sample_count"].isNull()) {
           uint8_t newValue = doc["sensors"]["wired"]["sample_count"];
           if (newValue != deviceConfig.sensors.wired.sample_count) {
             Serial.print("Config change: sensors.wired.sample_count ");
@@ -2731,7 +2731,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
             configChanged = true;
           }
         }
-        if (doc["sensors"]["wired"].containsKey("sample_interval_ms")) {
+        if (!doc["sensors"]["wired"]["sample_interval_ms"].isNull()) {
           uint16_t newValue = doc["sensors"]["wired"]["sample_interval_ms"];
           if (newValue != deviceConfig.sensors.wired.sample_interval_ms) {
             Serial.print("Config change: sensors.wired.sample_interval_ms ");
@@ -2744,8 +2744,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         }
       }
       
-      if (doc["sensors"].containsKey("flow")) {
-        if (doc["sensors"]["flow"].containsKey("enabled")) {
+      if (!doc["sensors"]["flow"].isNull()) {
+        if (!doc["sensors"]["flow"]["enabled"].isNull()) {
           bool newValue = doc["sensors"]["flow"]["enabled"];
           if (newValue != deviceConfig.sensors.flow.enabled) {
             Serial.print("Config change: sensors.flow.enabled ");
@@ -2756,7 +2756,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
             configChanged = true;
           }
         }
-        if (doc["sensors"]["flow"].containsKey("measurement_duration_s")) {
+        if (!doc["sensors"]["flow"]["measurement_duration_s"].isNull()) {
           uint32_t newValue = doc["sensors"]["flow"]["measurement_duration_s"];
           if (newValue != deviceConfig.sensors.flow.measurement_duration_s) {
             Serial.print("Config change: sensors.flow.measurement_duration_s ");
@@ -2771,8 +2771,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     }
     
     // Update power configuration if present
-    if (doc.containsKey("power")) {
-      if (doc["power"].containsKey("deep_sleep_enabled")) {
+    if (!doc["power"].isNull()) {
+      if (!doc["power"]["deep_sleep_enabled"].isNull()) {
         bool newValue = doc["power"]["deep_sleep_enabled"];
         if (newValue != deviceConfig.power.deep_sleep_enabled) {
           Serial.print("Config change: power.deep_sleep_enabled ");
@@ -2783,7 +2783,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           configChanged = true;
         }
       }
-      if (doc["power"].containsKey("light_sleep_during_wait")) {
+      if (!doc["power"]["light_sleep_during_wait"].isNull()) {
         bool newValue = doc["power"]["light_sleep_during_wait"];
         if (newValue != deviceConfig.power.light_sleep_during_wait) {
           Serial.print("Config change: power.light_sleep_during_wait ");
@@ -2794,7 +2794,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           configChanged = true;
         }
       }
-      if (doc["power"].containsKey("battery_monitor_enabled")) {
+      if (!doc["power"]["battery_monitor_enabled"].isNull()) {
         bool newValue = doc["power"]["battery_monitor_enabled"];
         if (newValue != deviceConfig.power.battery_monitor_enabled) {
           Serial.print("Config change: power.battery_monitor_enabled ");
