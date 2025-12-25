@@ -23,6 +23,7 @@
 #include "PakuIotClient.h"
 #include "sensor_placeholders.h"
 #include "OtaClient.h"
+#include "wifi_manager.h"       // WiFi credentials manager with NVS persistence
 #include <string>
 
 // Firmware version
@@ -137,6 +138,9 @@ const int mqtt_port = MQTT_PORT;
 WiFiClient espClient;
 PubSubClient client(espClient);
 // ESP32 native time functions will be used instead of NTPClient for automatic DST support
+
+// WiFi credentials manager with NVS persistence
+WiFiManager wifiManager;
 
 // paku-iot HTTP client (enabled via PAKU_IOT_ENABLED in secrets.h)
 PakuIotClient pakuIotClient;
@@ -573,6 +577,11 @@ void setup() {
     WiFi.disconnect(true);  // Clear any stored WiFi credentials
     delay(100);
 #endif
+    
+    // Initialize WiFi manager with NVS persistence
+    Serial.println("Initializing WiFi Manager...");
+    wifiManager.begin();
+    
     //connect_wifi();
 
     // Initialize device ID from MAC address
@@ -1056,23 +1065,16 @@ void sendToPakuIot() {
 }
 
 /**
- * @brief Attempts to connect to a WiFi network from a list of SSIDs and passwords.
+ * @brief Establishes a WiFi connection using stored NVS credentials first, then firmware defaults.
  * 
- * This function iterates through a predefined list of WiFi SSIDs and passwords,
- * attempting to connect to each one until a successful connection is made or all
- * options are exhausted. It prints the connection status to the Serial monitor.
+ * Priority order:
+ * 1. NVS stored networks (configured via MQTT)
+ * 2. Firmware default networks (from secrets.h)
  * 
- * @note The function will delay for 10 milliseconds at the start and will print
- *       connection attempts and results to the Serial monitor.
+ * @note This function loops through NVS networks first, then firmware networks.
+ *       For each network, it tries to connect for up to 20 attempts with 500ms delay.
  * 
- * @details The function will try to connect to each SSID in the list. For each SSID,
- *          it will attempt to connect up to 20 times, with a 500-millisecond delay
- *          between each attempt. If a connection is established, it prints the IP
- *          address assigned to the device. If the connection fails, it moves on to
- *          the next SSID in the list.
- * 
- * @warning Ensure that the `wifi_ssid` and `wifi_password` arrays are properly defined
- *          and contain valid SSIDs and passwords.
+ * @warning Ensure that the firmware networks in secrets.h are properly defined.
  */
 void connect_wifi() {
   
@@ -1087,6 +1089,66 @@ void connect_wifi() {
 #endif
 
   while (WiFi.status() != WL_CONNECTED) {
+    // Try NVS stored networks first (higher priority)
+    int nvsCount = wifiManager.getStoredNetworkCount();
+    for (int i = 0; i < nvsCount; i++) {
+      WiFiCredential cred = wifiManager.getNetwork(i);
+      if (!cred.valid) continue;
+      
+      Serial.print("Connecting to NVS network: ");
+      Serial.println(cred.ssid);
+      wifi_status = "WiFi connecting to ";
+      wifi_status += cred.ssid;
+      wifi_status += " (NVS)";
+      
+      // Disconnect and clear any previous connection state
+      WiFi.disconnect();
+      delay(100);
+      
+      WiFi.begin(cred.ssid, cred.password);
+      int attempts = 0;
+
+      while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        wifi_status += ".";
+        attempts++;
+#if HAS_LED
+        ledWifiConnecting();
+#endif
+#if HAS_DISPLAY
+        displayUI.update();
+        displayUI.refresh();
+#endif
+      }
+
+      if (WiFi.status() == WL_CONNECTED) {
+        LOG_INFO("WiFi", "Connected to NVS network: %s", cred.ssid);
+        LOG_INFO("WiFi", "IP address: %s", WiFi.localIP().toString().c_str());
+        LOG_DEBUG_WIFI("RSSI: %d dBm", WiFi.RSSI());
+        
+        wifi_status = "WiFi connected to ";
+        wifi_status += cred.ssid;
+        wifi_status += " (NVS) (";
+        wifi_status += WiFi.localIP().toString();
+        wifi_status += ")";
+#if HAS_LED
+        ledWifiConnected();
+#endif
+#if HAS_DISPLAY
+        displayUI.refresh();
+#endif
+        return;
+      } else {
+        Serial.println("");
+        Serial.print("Failed to connect to NVS network: ");
+        Serial.println(cred.ssid);
+#if HAS_LED
+        ledError();
+#endif
+      }
+    }
+    
+    // Fall back to firmware default networks
     for (int i = 0; i < WIFI_COUNT; i++) {
       Serial.print("Connecting to ");
       Serial.print(WIFI_SSIDS[i]);
@@ -1191,6 +1253,12 @@ void connectMQTT() {
       client.subscribe(otaTopic.c_str());
       Serial.print("Subscribed to OTA topic: ");
       Serial.println(otaTopic);
+      
+      // Subscribe to WiFi management command topic
+      String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
+      client.subscribe(wifiCmdTopic.c_str());
+      Serial.print("Subscribed to WiFi cmd topic: ");
+      Serial.println(wifiCmdTopic);
       
       // Step 1: Publish device status first (announce we're online)
       publishDeviceStatus();
@@ -2814,6 +2882,89 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       Serial.println("Config unchanged (ignoring duplicate/own message)");
       Serial.println("========================================");
     }
+    return;
+  }
+
+  // Phase 2: Check for WiFi management commands (paku/devices/{deviceId}/cmd/wifi)
+  String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
+  if (String(topic) == wifiCmdTopic) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("WiFi CMD: Parse error: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    
+    const char* action = doc["action"];
+    String responseTopic = String("paku/devices/") + deviceId + "/wifi/status";
+    JsonDocument responseDoc;
+    responseDoc["timestamp"] = getISO8601Timestamp();
+    
+    if (!action) {
+      responseDoc["success"] = false;
+      responseDoc["error"] = "Missing action";
+    } else if (strcmp(action, "add") == 0) {
+      const char* ssid = doc["ssid"];
+      const char* password = doc["password"];
+      
+      if (!ssid || strlen(ssid) == 0) {
+        responseDoc["success"] = false;
+        responseDoc["error"] = "Missing or empty SSID";
+      } else {
+        bool success = wifiManager.addNetwork(ssid, password ? password : "");
+        responseDoc["success"] = success;
+        responseDoc["action"] = "add";
+        responseDoc["ssid"] = ssid;
+        if (success) {
+          LOG_INFO("WiFi", "Added network via MQTT: %s", ssid);
+        } else {
+          responseDoc["error"] = "Failed to add network (storage full)";
+        }
+      }
+    } else if (strcmp(action, "remove") == 0) {
+      const char* ssid = doc["ssid"];
+      
+      if (!ssid || strlen(ssid) == 0) {
+        responseDoc["success"] = false;
+        responseDoc["error"] = "Missing or empty SSID";
+      } else {
+        bool success = wifiManager.removeNetwork(ssid);
+        responseDoc["success"] = success;
+        responseDoc["action"] = "remove";
+        responseDoc["ssid"] = ssid;
+        if (success) {
+          LOG_INFO("WiFi", "Removed network via MQTT: %s", ssid);
+        } else {
+          responseDoc["error"] = "Network not found";
+        }
+      }
+    } else if (strcmp(action, "list") == 0) {
+      String networks = wifiManager.listNetworks();
+      responseDoc["success"] = true;
+      responseDoc["action"] = "list";
+      
+      // Parse the listNetworks JSON and merge it
+      JsonDocument listDoc;
+      deserializeJson(listDoc, networks);
+      responseDoc["networks"] = listDoc["networks"];
+      responseDoc["count"] = listDoc["count"];
+      
+      LOG_INFO("WiFi", "Listed stored networks via MQTT");
+    } else if (strcmp(action, "clear") == 0) {
+      wifiManager.clearAllNetworks();
+      responseDoc["success"] = true;
+      responseDoc["action"] = "clear";
+      LOG_INFO("WiFi", "Cleared all stored networks via MQTT");
+    } else {
+      responseDoc["success"] = false;
+      responseDoc["error"] = "Unknown action";
+    }
+    
+    String responsePayload;
+    serializeJson(responseDoc, responsePayload);
+    client.publish(responseTopic.c_str(), responsePayload.c_str());
     return;
   }
 
