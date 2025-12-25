@@ -27,7 +27,7 @@
 
 // Firmware version
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "1.1.1"
+#define FIRMWARE_VERSION "1.2.0"
 #endif
 
 // BLE support (ESP32 only)
