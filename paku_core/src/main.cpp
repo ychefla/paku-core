@@ -16,9 +16,10 @@
 #endif
 
 #include "Arduino.h"
-#include "device_config.h"  // Device selection and feature detection
+#include "logging.h"            // Flexible logging system
+#include "device_config.h"      // Device selection and feature detection
 #include "pin_config.h"
-#include "timing_config.h"  // Timing and power management configuration
+#include "timing_config.h"      // Timing and power management configuration
 #include "PakuIotClient.h"
 #include "sensor_placeholders.h"
 #include "OtaClient.h"
@@ -502,9 +503,14 @@ String getISO8601Timestamp() {
  */
 void setup() {
     Serial.begin(115200);
-    Serial.println("Starting setup...");
-    Serial.print("Device: ");
-    Serial.println(DEVICE_NAME);
+    delay(100);  // Allow serial to initialize
+    
+    // Display logging configuration
+    printLoggingConfig();
+    
+    LOG_INFO("System", "Starting setup...");
+    LOG_INFO("System", "Device: %s", DEVICE_NAME);
+    LOG_INFO("System", "Firmware: %s", FIRMWARE_VERSION);
     
 #if HAS_LED
     // Initialize LED for status indication
@@ -1129,10 +1135,10 @@ void connect_wifi() {
       }
 
       if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("");
-        Serial.println("WiFi connected");
-        Serial.println("IP address: ");
-        Serial.println(WiFi.localIP());
+        LOG_INFO("WiFi", "Connected to %s", WIFI_SSIDS[i]);
+        LOG_INFO("WiFi", "IP address: %s", WiFi.localIP().toString().c_str());
+        LOG_DEBUG_WIFI("RSSI: %d dBm", WiFi.RSSI());
+        
         wifi_status = "WiFi connected to ";
         wifi_status += WIFI_SSIDS[i];
         wifi_status += " (";
