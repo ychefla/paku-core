@@ -24,6 +24,12 @@ ESP32/ESP8266-based edge firmware for the Paku IoT system.
 
 ## Features
 
+- **Multi-screen Display UI** (LilyGo T-Display S3)
+  - 5 information screens: Status, BLE Sensors, Wired Sensors, System Info, Network
+  - Button 1 (GPIO 0): Toggle display on/off for power saving
+  - Button 2 (GPIO 14): Switch between screens
+  - Real-time sensor data visualization
+  - See [Display UI Guide](docs/DISPLAY_UI_GUIDE.md) for details
 - Heater control and monitoring
   - Measuring heater temperatures
   - Measuring coolant flows

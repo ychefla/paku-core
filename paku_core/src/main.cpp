@@ -52,6 +52,7 @@
 #if HAS_DISPLAY
 #include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
 #include "img_logo.h"
+#include "display_ui.h"  // Multi-screen UI with button controls
 
 /* The product now has two screens, and the initialization code needs a small change in the new version. The LCD_MODULE_CMD_1 is used to define the
  * switch macro. */
@@ -549,6 +550,18 @@ void setup() {
     ledcAttach(PIN_LCD_BL, 200, 8);
     ledcWrite(PIN_LCD_BL, 255);
 #endif
+
+    // Initialize the display UI system with button controls
+    Serial.println("Initializing Display UI...");
+    displayUI.begin(&tft);
+    
+    // Reduce CPU frequency to save power and reduce heat
+    // 240MHz is overkill for this application
+    setCpuFrequencyMhz(160);  // Reduce from 240MHz to 160MHz
+    Serial.print("CPU frequency set to: ");
+    Serial.print(getCpuFrequencyMhz());
+    Serial.println(" MHz (power saving mode)");
+    
 #endif // HAS_DISPLAY
 
     Serial.println("Setup Wifi Connection...");
@@ -712,6 +725,12 @@ void setup() {
  * - DISCONNECT: Turn off WiFi
  */
 void loop() {
+#if HAS_DISPLAY
+  // CRITICAL: Update display UI FIRST to ensure button responsiveness
+  // Must be before any potentially blocking operations
+  displayUI.update();
+#endif
+
   // Phase 2: State machine-based operation
   handleSystemState();
   
@@ -719,12 +738,12 @@ void loop() {
   // LED heartbeat - brief flash every 5 seconds during normal operation
   ledHeartbeat();
 #endif
-
-  // Update display if we have one
-  updateDisplay();
   
-  // Periodically sync time from NTP (ESP32 native time syncs automatically)\n  // No manual update needed - configTime() handles periodic sync\n  \n  // Small delay to prevent watchdog issues
-  delay(10);
+  // Legacy display update (can be removed if displayUI is fully adopted)
+  // updateDisplay();
+  
+  // Periodically sync time from NTP (ESP32 native time syncs automatically)\n  // No manual update needed - configTime() handles periodic sync\n  \n  // Small delay to prevent watchdog issues and reduce CPU usage
+  delay(50);  // Increased from 10ms to 50ms for better power efficiency
 }
 
 void goToSleep() {
@@ -761,52 +780,10 @@ void goToSleep() {
 
 void updateDisplay() {
 #if HAS_DISPLAY
-  unsigned long currentTime = millis();
-  if (currentTime - lastTime_sensor >= TFT_UPDATE_WAIT) {
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.println("Paku-Core");
-    tft.setTextSize(1);
-    tft.println(wifi_status);
-    if (!client.connected()){
-      tft.println("MQTT disconnected");
-    }else{
-      tft.println("MQTT connected");
-    }
-    
-    //tft.println("Time: " + timeClient.getFormattedTime());
-    //tft.println("Flow: " + String(flowRate, 1) + " L/min | dT: " + String(requiredDeltaT, 1) + "C");
-    tft.println("");
-    
-    // Display RuuviTag data
-    tft.setTextSize(2);
-    tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.println("Ruuvi Tags");
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    
-    const RuuviTag* freshTags[MAX_RUUVI_TAGS];
-    uint8_t freshCount = getFreshTags(freshTags, MAX_RUUVI_TAGS, millis());
-    
-    if (freshCount == 0) {
-      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-      tft.println("No data available");
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    } else {
-      for (uint8_t i = 0; i < freshCount && i < 4; i++) {  // Show max 4 tags to fit screen
-        const RuuviTag* tag = freshTags[i];
-        if (tag->hasData && tag->lastData.valid) {
-          tft.print(tag->location);
-          tft.print(": ");
-          tft.print(String(tag->lastData.temperature, 1));
-          tft.print("C ");
-          tft.print(String(tag->lastData.humidity, 0));
-          tft.println("%");
-        }
-      }
-    }
-  }
+  // DEPRECATED: Legacy display function replaced by DisplayUI class
+  // This function is kept for backward compatibility but does nothing
+  // The new displayUI.update() in loop() handles all display operations
+  // If you need to force a display refresh, use: displayUI.refresh()
 #endif // HAS_DISPLAY
 }
 
@@ -1131,7 +1108,10 @@ void connect_wifi() {
 #if HAS_LED
         ledWifiConnecting();  // Fast blink while connecting
 #endif
-        updateDisplay();
+#if HAS_DISPLAY
+        displayUI.update();  // Keep buttons responsive during WiFi connection
+        displayUI.refresh();  // Update display during WiFi connection
+#endif
       }
 
       if (WiFi.status() == WL_CONNECTED) {
@@ -1147,7 +1127,9 @@ void connect_wifi() {
 #if HAS_LED
         ledWifiConnected();  // Solid ON briefly to indicate success
 #endif
-        updateDisplay();
+#if HAS_DISPLAY
+        displayUI.refresh();  // Update display on WiFi connected
+#endif
         return;
       } else {
         Serial.println("");
