@@ -1096,12 +1096,12 @@ void connect_wifi() {
     String source;  // "NVS" or "firmware"
   };
   
-  NetworkConfig configuredNetworks[MAX_WIFI_NETWORKS + WIFI_COUNT];
+  NetworkConfig configuredNetworks[MAX_NVS_WIFI_NETWORKS + WIFI_COUNT];
   int configuredCount = 0;
   
   // Add NVS networks
   int nvsCount = wifiManager.getStoredNetworkCount();
-  for (int i = 0; i < nvsCount && configuredCount < (MAX_WIFI_NETWORKS + WIFI_COUNT); i++) {
+  for (int i = 0; i < nvsCount && configuredCount < (MAX_NVS_WIFI_NETWORKS + WIFI_COUNT); i++) {
     WiFiCredential cred = wifiManager.getNetwork(i);
     if (cred.valid) {
       configuredNetworks[configuredCount].ssid = String(cred.ssid);
@@ -1112,7 +1112,7 @@ void connect_wifi() {
   }
   
   // Add firmware networks
-  for (int i = 0; i < WIFI_COUNT && configuredCount < (MAX_WIFI_NETWORKS + WIFI_COUNT); i++) {
+  for (int i = 0; i < WIFI_COUNT && configuredCount < (MAX_NVS_WIFI_NETWORKS + WIFI_COUNT); i++) {
     configuredNetworks[configuredCount].ssid = String(WIFI_SSIDS[i]);
     configuredNetworks[configuredCount].password = String(WIFI_PASSWORDS[i]);
     configuredNetworks[configuredCount].source = "firmware";
@@ -1141,6 +1141,19 @@ void connect_wifi() {
     if (networksFound == 0) {
       Serial.println("No networks found in range");
       continue;
+    }
+    
+    // Log all found networks
+    Serial.println("Available networks:");
+    for (int j = 0; j < networksFound; j++) {
+      Serial.printf("  %d: %s (RSSI: %d, Ch: %d, Enc: %d)\n", 
+                   j, WiFi.SSID(j).c_str(), WiFi.RSSI(j), WiFi.channel(j), WiFi.encryptionType(j));
+    }
+    
+    // Log configured networks
+    Serial.println("Configured networks:");
+    for (int i = 0; i < configuredCount; i++) {
+      Serial.printf("  %d: %s (%s)\n", i, configuredNetworks[i].ssid.c_str(), configuredNetworks[i].source.c_str());
     }
     
     // Try to connect to any available configured network
