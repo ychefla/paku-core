@@ -28,7 +28,7 @@
 
 // Firmware version
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "1.4.1"
+#define FIRMWARE_VERSION "1.4.2"
 #endif
 
 // BLE support (ESP32 only)
@@ -2561,7 +2561,7 @@ void processOtaUpdate() {
   OtaResult result = otaClient.startUpdate(config, otaProgressCallback);
 
   // Report result via MQTT
-  String resultTopic = String("paku/devices/") + deviceId + "/ota/result";
+  String resultTopic = String("paku/edge/") + deviceId + "/ota/result";
   JsonDocument resultDoc;
   resultDoc["timestamp"] = getISO8601Timestamp();
   resultDoc["current_version"] = FIRMWARE_VERSION;
@@ -3039,7 +3039,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     Serial.println(pendingOtaVersion);
 
     // Send acknowledgment
-    String ackTopic = String("paku/devices/") + deviceId + "/ota/status";
+    String ackTopic = String("paku/edge/") + deviceId + "/ota/status";
     JsonDocument ackDoc;
     ackDoc["timestamp"] = getISO8601Timestamp();
     ackDoc["status"] = "accepted";
@@ -3067,7 +3067,7 @@ void otaProgressCallback(const OtaProgress& progress) {
   Serial.println(OtaClient::stateToString(progress.state));
 
   // Publish progress to MQTT
-  String progressTopic = String("paku/devices/") + deviceId + "/ota/progress";
+  String progressTopic = String("paku/edge/") + deviceId + "/ota/progress";
   JsonDocument progressDoc;
   progressDoc["timestamp"] = getISO8601Timestamp();
   progressDoc["state"] = OtaClient::stateToString(progress.state);

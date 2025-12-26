@@ -114,7 +114,7 @@ echo "$OTA_COMMAND" | jq '.' 2>/dev/null || echo "$OTA_COMMAND"
 echo ""
 
 # Send OTA command via MQTT
-MQTT_TOPIC="paku/devices/${DEVICE_ID}/cmd/ota"
+MQTT_TOPIC="paku/edge/${DEVICE_ID}/cmd/ota"
 
 echo -e "${YELLOW}Publishing to MQTT topic: $MQTT_TOPIC${NC}"
 echo "$OTA_COMMAND" | mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" -t "$MQTT_TOPIC" -l
@@ -131,16 +131,16 @@ echo -e "${BLUE}Monitoring OTA progress...${NC}"
 echo "Press Ctrl+C to stop monitoring (update will continue on device)"
 echo ""
 echo "Topics being monitored:"
-echo "  - paku/devices/${DEVICE_ID}/ota/status"
-echo "  - paku/devices/${DEVICE_ID}/ota/progress"
-echo "  - paku/devices/${DEVICE_ID}/ota/result"
+echo "  - paku/edge/${DEVICE_ID}/ota/status"
+echo "  - paku/edge/${DEVICE_ID}/ota/progress"
+echo "  - paku/edge/${DEVICE_ID}/ota/result"
 echo ""
 
 # Subscribe to OTA topics and monitor progress
 mosquitto_sub -h "$MQTT_BROKER" -p "$MQTT_PORT" -v \
-    -t "paku/devices/${DEVICE_ID}/ota/status" \
-    -t "paku/devices/${DEVICE_ID}/ota/progress" \
-    -t "paku/devices/${DEVICE_ID}/ota/result" \
+    -t "paku/edge/${DEVICE_ID}/ota/status" \
+    -t "paku/edge/${DEVICE_ID}/ota/progress" \
+    -t "paku/edge/${DEVICE_ID}/ota/result" \
     | while read -r topic message; do
     
     # Parse and format the message
