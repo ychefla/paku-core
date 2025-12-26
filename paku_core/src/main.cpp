@@ -1801,6 +1801,9 @@ void publishDeviceStatus() {
   doc["signal_strength_dbm"] = WiFi.RSSI();
   doc["uptime_seconds"] = millis() / 1000;
   doc["firmware_version"] = FIRMWARE_VERSION;
+  #ifdef DEVICE_MODEL
+  doc["device_model"] = DEVICE_MODEL;
+  #endif
   doc["state"] = (currentState == STATE_CONTINUOUS ? "continuous" : "unknown");
   doc["heater_status"] = heaterStatus;
   

@@ -40,6 +40,7 @@
 // =============================================================================
 #if defined(DEVICE_LILYGO_T_DISPLAY_S3)
     #define DEVICE_NAME "LilyGo T-Display S3"
+    #define DEVICE_MODEL "lilygo-t-display-s3"
     #define MCU_ESP32_S3 1      // MCU type indicator for future MCU-specific code
     #define HAS_DISPLAY 1
     #define HAS_TOUCH 1
@@ -61,6 +62,7 @@
 // =============================================================================
 #elif defined(DEVICE_ESP32_CH340C_30PIN)
     #define DEVICE_NAME "ESP32 CH340C 30PIN"
+    #define DEVICE_MODEL "esp32-ch340c-30pin"
     #define MCU_ESP32 1         // MCU type indicator for future MCU-specific code
     #define HAS_DISPLAY 0
     #define HAS_TOUCH 0
@@ -78,6 +80,7 @@
 // =============================================================================
 #elif defined(DEVICE_ESP8266_WIRED_SENSORS)
     #define DEVICE_NAME "ESP8266 DS18B20 Sensor"
+    #define DEVICE_MODEL "esp8266-wired-sensors"
     #define MCU_ESP8266 1       // MCU type indicator for ESP8266-specific code
     #define HAS_DISPLAY 0
     #define HAS_TOUCH 0
