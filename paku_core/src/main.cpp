@@ -28,7 +28,7 @@
 
 // Firmware version
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "1.4.0"
+#define FIRMWARE_VERSION "1.4.1"
 #endif
 
 // BLE support (ESP32 only)
@@ -1279,18 +1279,11 @@ void connectMQTT() {
       Serial.print("Subscribed to config/set topic: ");
       Serial.println(edgeConfigTopic);
       
-      // Subscribe to OTA command topics (both old and new for migration)
-      // Old topic: paku/devices/{deviceId}/cmd/ota (legacy)
-      String otaTopicLegacy = String("paku/devices/") + deviceId + "/cmd/ota";
-      client.subscribe(otaTopicLegacy.c_str());
-      Serial.print("Subscribed to OTA topic (legacy): ");
-      Serial.println(otaTopicLegacy);
-      
-      // New topic: paku/edge/{deviceId}/cmd/ota (aligned with edge structure)
-      String otaTopicEdge = String("paku/edge/") + deviceId + "/cmd/ota";
-      client.subscribe(otaTopicEdge.c_str());
-      Serial.print("Subscribed to OTA topic (edge): ");
-      Serial.println(otaTopicEdge);
+      // Subscribe to OTA command topic (edge structure)
+      String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
+      client.subscribe(otaTopic.c_str());
+      Serial.print("Subscribed to OTA topic: ");
+      Serial.println(otaTopic);
       
       // Subscribe to WiFi management command topic
       String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
@@ -2571,7 +2564,8 @@ void processOtaUpdate() {
   String resultTopic = String("paku/devices/") + deviceId + "/ota/result";
   JsonDocument resultDoc;
   resultDoc["timestamp"] = getISO8601Timestamp();
-  resultDoc["version"] = pendingOtaVersion;
+  resultDoc["current_version"] = FIRMWARE_VERSION;
+  resultDoc["target_version"] = pendingOtaVersion;
   resultDoc["success"] = (result == OtaResult::SUCCESS);
   resultDoc["result_code"] = (int)result;
   resultDoc["message"] = OtaClient::resultToString(result);
@@ -2609,7 +2603,7 @@ void processOtaUpdate() {
  * Supported topics:
  * - paku/control: Legacy control commands (e.g., {"heater": 1})
  * - paku/edge/{deviceId}/control: New schema-compliant control (e.g., {"scenario": "heater_active"})
- * - paku/devices/{deviceId}/cmd/ota: OTA update commands
+ * - paku/edge/{deviceId}/cmd/ota: OTA update commands
  * 
  * @param topic MQTT topic
  * @param payload Message payload
@@ -3010,10 +3004,9 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // Check if this is an OTA command (support both legacy and edge topics)
-  String otaTopicLegacy = String("paku/devices/") + deviceId + "/cmd/ota";
-  String otaTopicEdge = String("paku/edge/") + deviceId + "/cmd/ota";
-  if (String(topic) == otaTopicLegacy || String(topic) == otaTopicEdge) {
+  // Check if this is an OTA command
+  String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
+  if (String(topic) == otaTopic) {
     // Parse OTA command JSON
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
@@ -3050,7 +3043,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     JsonDocument ackDoc;
     ackDoc["timestamp"] = getISO8601Timestamp();
     ackDoc["status"] = "accepted";
-    ackDoc["version"] = pendingOtaVersion;
+    ackDoc["current_version"] = FIRMWARE_VERSION;
+    ackDoc["target_version"] = pendingOtaVersion;
     
     String ackPayload;
     serializeJson(ackDoc, ackPayload);
