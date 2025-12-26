@@ -121,7 +121,7 @@ unsigned long lastWiredSensorRead = 0;
 // static const char* RUUVI_TAG_LOCATIONS[] = {"cabin", "kitchen", "lounge", "dryer"};
 
 // Device ID buffer (derived from MAC address)
-static char deviceId[20] = "";
+char deviceId[20] = "";  // Not static - needs external linkage for display_ui.cpp
 
 // Enable placeholder sensor data generation for testing
 // Set to false by default - only enable for local testing
