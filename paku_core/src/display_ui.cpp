@@ -11,7 +11,7 @@
 #include <WiFi.h>
 
 // External references from main.cpp
-extern const char* deviceId;
+extern char deviceId[];  // Array, not pointer
 extern PubSubClient client;
 extern String wifi_status;
 
