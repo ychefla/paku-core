@@ -28,7 +28,7 @@
 
 // Firmware version
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "1.3.0"
+#define FIRMWARE_VERSION "1.4.0"
 #endif
 
 // BLE support (ESP32 only)
@@ -1279,11 +1279,18 @@ void connectMQTT() {
       Serial.print("Subscribed to config/set topic: ");
       Serial.println(edgeConfigTopic);
       
-      // Subscribe to device-specific OTA command topic
-      String otaTopic = String("paku/devices/") + deviceId + "/cmd/ota";
-      client.subscribe(otaTopic.c_str());
-      Serial.print("Subscribed to OTA topic: ");
-      Serial.println(otaTopic);
+      // Subscribe to OTA command topics (both old and new for migration)
+      // Old topic: paku/devices/{deviceId}/cmd/ota (legacy)
+      String otaTopicLegacy = String("paku/devices/") + deviceId + "/cmd/ota";
+      client.subscribe(otaTopicLegacy.c_str());
+      Serial.print("Subscribed to OTA topic (legacy): ");
+      Serial.println(otaTopicLegacy);
+      
+      // New topic: paku/edge/{deviceId}/cmd/ota (aligned with edge structure)
+      String otaTopicEdge = String("paku/edge/") + deviceId + "/cmd/ota";
+      client.subscribe(otaTopicEdge.c_str());
+      Serial.print("Subscribed to OTA topic (edge): ");
+      Serial.println(otaTopicEdge);
       
       // Subscribe to WiFi management command topic
       String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
@@ -3003,9 +3010,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // Check if this is an OTA command
-  String otaTopic = String("paku/devices/") + deviceId + "/cmd/ota";
-  if (String(topic) == otaTopic) {
+  // Check if this is an OTA command (support both legacy and edge topics)
+  String otaTopicLegacy = String("paku/devices/") + deviceId + "/cmd/ota";
+  String otaTopicEdge = String("paku/edge/") + deviceId + "/cmd/ota";
+  if (String(topic) == otaTopicLegacy || String(topic) == otaTopicEdge) {
     // Parse OTA command JSON
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
