@@ -1065,14 +1065,15 @@ void sendToPakuIot() {
 }
 
 /**
- * @brief Establishes a WiFi connection using stored NVS credentials first, then firmware defaults.
+ * @brief Establishes a WiFi connection by scanning for available networks first.
  * 
- * Priority order:
- * 1. NVS stored networks (configured via MQTT)
- * 2. Firmware default networks (from secrets.h)
+ * Strategy:
+ * 1. Scan for available networks
+ * 2. Try to connect to any matching network (NVS or firmware) that's in range
+ * 3. If all available networks fail, rescan and retry (max 2 scan attempts)
  * 
- * @note This function loops through NVS networks first, then firmware networks.
- *       For each network, it tries to connect for up to 20 attempts with 500ms delay.
+ * @note Networks from NVS and firmware defaults are treated equally - no priority order.
+ *       The function will connect to whichever available network succeeds first.
  * 
  * @warning Ensure that the firmware networks in secrets.h are properly defined.
  */
@@ -1088,24 +1089,89 @@ void connect_wifi() {
   WiFi.setAutoReconnect(true);  // Enable auto-reconnect after connection
 #endif
 
-  while (WiFi.status() != WL_CONNECTED) {
-    // Try NVS stored networks first (higher priority)
-    int nvsCount = wifiManager.getStoredNetworkCount();
-    for (int i = 0; i < nvsCount; i++) {
-      WiFiCredential cred = wifiManager.getNetwork(i);
-      if (!cred.valid) continue;
+  // Build list of all configured networks (NVS + firmware)
+  struct NetworkConfig {
+    String ssid;
+    String password;
+    String source;  // "NVS" or "firmware"
+  };
+  
+  NetworkConfig configuredNetworks[MAX_WIFI_NETWORKS + WIFI_COUNT];
+  int configuredCount = 0;
+  
+  // Add NVS networks
+  int nvsCount = wifiManager.getStoredNetworkCount();
+  for (int i = 0; i < nvsCount && configuredCount < (MAX_WIFI_NETWORKS + WIFI_COUNT); i++) {
+    WiFiCredential cred = wifiManager.getNetwork(i);
+    if (cred.valid) {
+      configuredNetworks[configuredCount].ssid = String(cred.ssid);
+      configuredNetworks[configuredCount].password = String(cred.password);
+      configuredNetworks[configuredCount].source = "NVS";
+      configuredCount++;
+    }
+  }
+  
+  // Add firmware networks
+  for (int i = 0; i < WIFI_COUNT && configuredCount < (MAX_WIFI_NETWORKS + WIFI_COUNT); i++) {
+    configuredNetworks[configuredCount].ssid = String(WIFI_SSIDS[i]);
+    configuredNetworks[configuredCount].password = String(WIFI_PASSWORDS[i]);
+    configuredNetworks[configuredCount].source = "firmware";
+    configuredCount++;
+  }
+  
+  Serial.printf("Total configured networks: %d\n", configuredCount);
+  
+  // Try up to 2 scan cycles
+  for (int scanCycle = 0; scanCycle < 2 && WiFi.status() != WL_CONNECTED; scanCycle++) {
+    if (scanCycle > 0) {
+      Serial.println("Rescanning for networks...");
+      delay(1000);  // Wait before rescanning
+    }
+    
+    // Scan for available networks
+    Serial.println("Scanning for WiFi networks...");
+    wifi_status = "Scanning WiFi...";
+#if HAS_DISPLAY
+    displayUI.refresh();
+#endif
+    
+    int networksFound = WiFi.scanNetworks();
+    Serial.printf("Found %d networks\n", networksFound);
+    
+    if (networksFound == 0) {
+      Serial.println("No networks found in range");
+      continue;
+    }
+    
+    // Try to connect to any available configured network
+    for (int i = 0; i < configuredCount && WiFi.status() != WL_CONNECTED; i++) {
+      // Check if this network is in range
+      bool networkAvailable = false;
+      for (int j = 0; j < networksFound; j++) {
+        if (WiFi.SSID(j) == configuredNetworks[i].ssid) {
+          networkAvailable = true;
+          Serial.printf("Found configured network: %s (RSSI: %d)\n", 
+                       configuredNetworks[i].ssid.c_str(), WiFi.RSSI(j));
+          break;
+        }
+      }
       
-      Serial.print("Connecting to NVS network: ");
-      Serial.println(cred.ssid);
-      wifi_status = "WiFi connecting to ";
-      wifi_status += cred.ssid;
-      wifi_status += " (NVS)";
+      if (!networkAvailable) {
+        continue;  // Skip networks not in range
+      }
+      
+      // Try to connect
+      Serial.printf("Connecting to %s (%s)...\n", 
+                   configuredNetworks[i].ssid.c_str(), 
+                   configuredNetworks[i].source.c_str());
+      wifi_status = "Connecting to ";
+      wifi_status += configuredNetworks[i].ssid;
       
       // Disconnect and clear any previous connection state
       WiFi.disconnect();
       delay(100);
       
-      WiFi.begin(cred.ssid, cred.password);
+      WiFi.begin(configuredNetworks[i].ssid.c_str(), configuredNetworks[i].password.c_str());
       int attempts = 0;
 
       while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -1122,13 +1188,15 @@ void connect_wifi() {
       }
 
       if (WiFi.status() == WL_CONNECTED) {
-        LOG_INFO("WiFi", "Connected to NVS network: %s", cred.ssid);
+        LOG_INFO("WiFi", "Connected to %s (%s)", 
+                configuredNetworks[i].ssid.c_str(), 
+                configuredNetworks[i].source.c_str());
         LOG_INFO("WiFi", "IP address: %s", WiFi.localIP().toString().c_str());
         LOG_DEBUG_WIFI("RSSI: %d dBm", WiFi.RSSI());
         
         wifi_status = "WiFi connected to ";
-        wifi_status += cred.ssid;
-        wifi_status += " (NVS) (";
+        wifi_status += configuredNetworks[i].ssid;
+        wifi_status += " (";
         wifi_status += WiFi.localIP().toString();
         wifi_status += ")";
 #if HAS_LED
@@ -1139,70 +1207,20 @@ void connect_wifi() {
 #endif
         return;
       } else {
-        Serial.println("");
-        Serial.print("Failed to connect to NVS network: ");
-        Serial.println(cred.ssid);
+        Serial.printf("Failed to connect to %s\n", configuredNetworks[i].ssid.c_str());
 #if HAS_LED
         ledError();
 #endif
       }
     }
-    
-    // Fall back to firmware default networks
-    for (int i = 0; i < WIFI_COUNT; i++) {
-      Serial.print("Connecting to ");
-      Serial.print(WIFI_SSIDS[i]);
-      wifi_status = "Wifi connecting to ";
-      wifi_status += WIFI_SSIDS[i];
-      
-      // Disconnect and clear any previous connection state
-      WiFi.disconnect();
-      delay(100);  // Small delay to ensure disconnect completes
-      
-      WiFi.begin(WIFI_SSIDS[i], WIFI_PASSWORDS[i]);
-      int attempts = 0;
-
-      while (WiFi.status() != WL_CONNECTED && attempts < 20) {  // Increased from 10 to 20 attempts
-        delay(500);
-        //Serial.print(".");
-        wifi_status += ".";
-        attempts++;
-#if HAS_LED
-        ledWifiConnecting();  // Fast blink while connecting
-#endif
-#if HAS_DISPLAY
-        displayUI.update();  // Keep buttons responsive during WiFi connection
-        displayUI.refresh();  // Update display during WiFi connection
-#endif
-      }
-
-      if (WiFi.status() == WL_CONNECTED) {
-        LOG_INFO("WiFi", "Connected to %s", WIFI_SSIDS[i]);
-        LOG_INFO("WiFi", "IP address: %s", WiFi.localIP().toString().c_str());
-        LOG_DEBUG_WIFI("RSSI: %d dBm", WiFi.RSSI());
-        
-        wifi_status = "WiFi connected to ";
-        wifi_status += WIFI_SSIDS[i];
-        wifi_status += " (";
-        wifi_status += WiFi.localIP().toString();
-        wifi_status += ")";
-#if HAS_LED
-        ledWifiConnected();  // Solid ON briefly to indicate success
-#endif
-#if HAS_DISPLAY
-        displayUI.refresh();  // Update display on WiFi connected
-#endif
-        return;
-      } else {
-        Serial.println("");
-        Serial.print("Failed to connect to ");
-        Serial.println(WIFI_SSIDS[i]);
-#if HAS_LED
-        ledError();  // Error blink for failed connection
-#endif
-      }
-    }
   }
+  
+  // All connection attempts failed
+  Serial.println("Failed to connect to any WiFi network after scanning");
+  wifi_status = "WiFi connection failed";
+#if HAS_DISPLAY
+  displayUI.refresh();
+#endif
 }
 
 /**
