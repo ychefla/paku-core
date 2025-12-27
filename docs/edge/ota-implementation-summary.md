@@ -43,10 +43,10 @@ This document summarizes the OTA (Over-The-Air) firmware update implementation f
 - Updated MQTT subscription to include OTA command topic
 
 **MQTT Topics:**
-- Command: `paku/devices/{device_id}/cmd/ota` (subscribe)
-- Status: `paku/devices/{device_id}/ota/status` (publish)
-- Progress: `paku/devices/{device_id}/ota/progress` (publish)
-- Result: `paku/devices/{device_id}/ota/result` (publish)
+- Command: `paku/edge/{device_id}/cmd/ota` (subscribe)
+- Status: `paku/edge/{device_id}/ota/status` (publish)
+- Progress: `paku/edge/{device_id}/ota/progress` (publish)
+- Result: `paku/edge/{device_id}/ota/result` (publish)
 
 ### 3. Documentation
 
@@ -311,7 +311,7 @@ For full OTA functionality, the paku-iot backend should implement:
 ### Trigger Update via MQTT
 ```bash
 mosquitto_pub -h mqtt.server.com \
-  -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+  -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{
     "url":"https://fw.server.com/paku-core-v1.2.0.bin",
     "checksum":"a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
@@ -322,7 +322,7 @@ mosquitto_pub -h mqtt.server.com \
 ### Monitor Progress
 ```bash
 mosquitto_sub -h mqtt.server.com \
-  -t "paku/devices/paku-AABBCCDD/ota/#" -v
+  -t "paku/edge/paku-AABBCCDD/ota/#" -v
 ```
 
 ### Check Current Version (Serial)

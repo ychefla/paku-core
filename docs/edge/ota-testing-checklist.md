@@ -42,14 +42,14 @@ OTA: Client initialized successfully
 
 ### 2. MQTT Topic Subscription
 - [ ] Device subscribes to OTA command topic on MQTT connect
-- [ ] Topic format matches: `paku/devices/{device_id}/cmd/ota`
+- [ ] Topic format matches: `paku/edge/{device_id}/cmd/ota`
 - [ ] Device reconnects to MQTT after network drop
 - [ ] OTA subscription restored after reconnection
 
 **Verification:**
 ```bash
 # Subscribe to all device topics
-mosquitto_sub -h mqtt.server.com -t "paku/devices/+/cmd/ota" -v
+mosquitto_sub -h mqtt.server.com -t "paku/edge/+/cmd/ota" -v
 ```
 
 ### 3. Command Parsing
@@ -63,15 +63,15 @@ mosquitto_sub -h mqtt.server.com -t "paku/devices/+/cmd/ota" -v
 **Test Commands:**
 ```bash
 # Valid command
-mosquitto_pub -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+mosquitto_pub -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{"url":"http://example.com/fw.bin","checksum":"abc...","version":"1.1.0"}'
 
 # Missing URL (should fail)
-mosquitto_pub -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+mosquitto_pub -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{"version":"1.1.0"}'
 
 # Malformed JSON (should fail)
-mosquitto_pub -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+mosquitto_pub -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{invalid json}'
 ```
 
@@ -115,15 +115,15 @@ http://not-a-real-domain-12345.com/firmware.bin
 **Test Cases:**
 ```bash
 # Correct checksum (should succeed)
-mosquitto_pub -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+mosquitto_pub -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{"url":"http://server/fw.bin","checksum":"a1b2c3d4...correct"}'
 
 # Wrong checksum (should fail)
-mosquitto_pub -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+mosquitto_pub -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{"url":"http://server/fw.bin","checksum":"0000000...wrong"}'
 
 # No checksum (should warn but continue)
-mosquitto_pub -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+mosquitto_pub -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{"url":"http://server/fw.bin"}'
 ```
 
@@ -137,7 +137,7 @@ mosquitto_pub -t "paku/devices/paku-AABBCCDD/cmd/ota" \
 
 **Expected MQTT Messages:**
 ```json
-// paku/devices/{device_id}/ota/result
+// paku/edge/{device_id}/ota/result
 {
   "timestamp": "2025-12-08T12:36:45Z",
   "version": "1.1.0",
@@ -158,17 +158,17 @@ mosquitto_pub -t "paku/devices/paku-AABBCCDD/cmd/ota" \
 **Monitor Progress:**
 ```bash
 # Subscribe to all OTA topics
-mosquitto_sub -h mqtt.server.com -t "paku/devices/paku-AABBCCDD/ota/#" -v
+mosquitto_sub -h mqtt.server.com -t "paku/edge/paku-AABBCCDD/ota/#" -v
 ```
 
 **Expected Messages:**
 ```
-paku/devices/paku-AABBCCDD/ota/status {"status":"accepted","version":"1.1.0"}
-paku/devices/paku-AABBCCDD/ota/progress {"state":"Downloading","percent":10,...}
-paku/devices/paku-AABBCCDD/ota/progress {"state":"Downloading","percent":20,...}
+paku/edge/paku-AABBCCDD/ota/status {"status":"accepted","version":"1.1.0"}
+paku/edge/paku-AABBCCDD/ota/progress {"state":"Downloading","percent":10,...}
+paku/edge/paku-AABBCCDD/ota/progress {"state":"Downloading","percent":20,...}
 ...
-paku/devices/paku-AABBCCDD/ota/progress {"state":"Verifying","percent":100,...}
-paku/devices/paku-AABBCCDD/ota/result {"success":true,"message":"Success"}
+paku/edge/paku-AABBCCDD/ota/progress {"state":"Verifying","percent":100,...}
+paku/edge/paku-AABBCCDD/ota/result {"success":true,"message":"Success"}
 ```
 
 ## Failure Scenarios
@@ -429,7 +429,7 @@ pio device monitor
 5. **Monitor MQTT:**
 ```bash
 # In another terminal
-mosquitto_sub -h mqtt.server.com -t "paku/devices/+/ota/#" -v
+mosquitto_sub -h mqtt.server.com -t "paku/edge/+/ota/#" -v
 ```
 
 6. **Trigger Update:**
@@ -437,7 +437,7 @@ mosquitto_sub -h mqtt.server.com -t "paku/devices/+/ota/#" -v
 # Get your device ID from serial output
 # Get checksum from checksum.txt
 mosquitto_pub -h mqtt.server.com \
-  -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+  -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{"url":"http://192.168.1.100:8080/firmware.bin","checksum":"<checksum>","version":"1.1.0"}'
 ```
 

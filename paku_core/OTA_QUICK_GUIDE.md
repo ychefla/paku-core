@@ -117,7 +117,7 @@ VERSION="v2.0.1"
 
 # Send MQTT command
 mosquitto_pub -h localhost -p 1883 \
-  -t "paku/devices/${DEVICE_ID}/cmd/ota" \
+  -t "paku/edge/${DEVICE_ID}/cmd/ota" \
   -m "{\"url\":\"${FIRMWARE_URL}\",\"checksum\":\"${FIRMWARE_SHA256}\",\"version\":\"${VERSION}\"}"
 ```
 
@@ -126,23 +126,23 @@ mosquitto_pub -h localhost -p 1883 \
 ```bash
 # In another terminal, subscribe to OTA topics
 mosquitto_sub -h localhost -p 1883 -v \
-  -t "paku/devices/${DEVICE_ID}/ota/#"
+  -t "paku/edge/${DEVICE_ID}/ota/#"
 ```
 
 You'll see messages like:
 ```
-paku/devices/esp8266_wired/ota/status {"status":"accepted","version":"v2.0.1"}
-paku/devices/esp8266_wired/ota/progress {"state":"downloading","percent":25}
-paku/devices/esp8266_wired/ota/progress {"state":"downloading","percent":50}
-paku/devices/esp8266_wired/ota/progress {"state":"installing","percent":100}
-paku/devices/esp8266_wired/ota/result {"status":"success"}
+paku/edge/esp8266_wired/ota/status {"status":"accepted","version":"v2.0.1"}
+paku/edge/esp8266_wired/ota/progress {"state":"downloading","percent":25}
+paku/edge/esp8266_wired/ota/progress {"state":"downloading","percent":50}
+paku/edge/esp8266_wired/ota/progress {"state":"installing","percent":100}
+paku/edge/esp8266_wired/ota/result {"status":"success"}
 ```
 
 ## MQTT Topics
 
 ### Command Topic (Publish to this)
 ```
-paku/devices/{device_id}/cmd/ota
+paku/edge/{device_id}/cmd/ota
 ```
 
 **Payload format:**
@@ -156,9 +156,9 @@ paku/devices/{device_id}/cmd/ota
 
 ### Status Topics (Subscribe to these)
 ```
-paku/devices/{device_id}/ota/status     # Acknowledgment
-paku/devices/{device_id}/ota/progress   # Download/install progress
-paku/devices/{device_id}/ota/result     # Final result (success/failed)
+paku/edge/{device_id}/ota/status     # Acknowledgment
+paku/edge/{device_id}/ota/progress   # Download/install progress
+paku/edge/{device_id}/ota/result     # Final result (success/failed)
 ```
 
 ## OTA Process Flow
@@ -190,7 +190,7 @@ paku/devices/{device_id}/ota/result     # Final result (success/failed)
 **Check:**
 1. Is device connected to MQTT?
    ```bash
-   mosquitto_sub -h localhost -t "paku/devices/${DEVICE_ID}/#" -v
+   mosquitto_sub -h localhost -t "paku/edge/${DEVICE_ID}/#" -v
    ```
 
 2. Is device ID correct?

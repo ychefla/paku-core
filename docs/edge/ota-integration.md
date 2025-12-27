@@ -56,7 +56,7 @@ The OTA update client enables secure, remote firmware updates for ESP32 devices 
 
 ### Command Topic (Subscribe)
 
-**Topic:** `paku/devices/{device_id}/cmd/ota`
+**Topic:** `paku/edge/{device_id}/cmd/ota`
 
 **Payload (JSON):**
 ```json
@@ -74,7 +74,7 @@ The OTA update client enables secure, remote firmware updates for ESP32 devices 
 
 ### Status Topic (Publish)
 
-**Topic:** `paku/devices/{device_id}/ota/status`
+**Topic:** `paku/edge/{device_id}/ota/status`
 
 **Payload (JSON):**
 ```json
@@ -89,7 +89,7 @@ Published when OTA command is received and accepted.
 
 ### Progress Topic (Publish)
 
-**Topic:** `paku/devices/{device_id}/ota/progress`
+**Topic:** `paku/edge/{device_id}/ota/progress`
 
 **Payload (JSON):**
 ```json
@@ -116,7 +116,7 @@ Published periodically during update (every second).
 
 ### Result Topic (Publish)
 
-**Topic:** `paku/devices/{device_id}/ota/result`
+**Topic:** `paku/edge/{device_id}/ota/result`
 
 **Payload (JSON):**
 ```json
@@ -204,7 +204,7 @@ a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
 ### Using MQTT Explorer
 
 1. Connect to your MQTT broker
-2. Navigate to topic: `paku/devices/{device_id}/cmd/ota`
+2. Navigate to topic: `paku/edge/{device_id}/cmd/ota`
 3. Publish JSON payload:
 ```json
 {
@@ -218,7 +218,7 @@ a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
 
 ```bash
 mosquitto_pub -h mqtt.server.com -p 1883 \
-  -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+  -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{"url":"http://192.168.1.100:8080/firmware.bin","checksum":"a1b2...","version":"1.2.0"}'
 ```
 
@@ -445,11 +445,11 @@ sha256sum firmware.bin
 python3 -m http.server 8080
 
 # 4. Trigger update (in another terminal)
-mosquitto_pub -h localhost -t "paku/devices/paku-AABBCCDD/cmd/ota" \
+mosquitto_pub -h localhost -t "paku/edge/paku-AABBCCDD/cmd/ota" \
   -m '{"url":"http://192.168.1.100:8080/firmware.bin","checksum":"a1b2c3d4...","version":"1.2.0"}'
 
 # 5. Monitor progress
-mosquitto_sub -h localhost -t "paku/devices/paku-AABBCCDD/ota/#" -v
+mosquitto_sub -h localhost -t "paku/edge/paku-AABBCCDD/ota/#" -v
 
 # 6. Watch serial output
 pio device monitor

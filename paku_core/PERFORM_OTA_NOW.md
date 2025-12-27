@@ -90,7 +90,7 @@ VERSION="v$(date +%Y%m%d)_analog_sensor"
 **Send the command:**
 ```bash
 mosquitto_pub -h $MQTT_BROKER -p 1883 \
-  -t "paku/devices/${DEVICE_ID}/cmd/ota" \
+  -t "paku/edge/${DEVICE_ID}/cmd/ota" \
   -m "{\"url\":\"${FIRMWARE_URL}\",\"checksum\":\"${CHECKSUM}\",\"version\":\"${VERSION}\"}"
 ```
 
@@ -98,7 +98,7 @@ mosquitto_pub -h $MQTT_BROKER -p 1883 \
 
 ```bash
 mosquitto_sub -h $MQTT_BROKER -p 1883 -v \
-  -t "paku/devices/${DEVICE_ID}/ota/#"
+  -t "paku/edge/${DEVICE_ID}/ota/#"
 ```
 
 Watch for:
