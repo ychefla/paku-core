@@ -455,7 +455,8 @@ String getISO8601Timestamp() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
     Serial.println("Failed to obtain time");
-    return "1970-01-01T00:00:00+00:00";  // Fallback
+    // Return empty string to signal invalid timestamp (caller should not publish)
+    return "";  // Fallback - empty indicates time not available
   }
   
   // Get both local and UTC time to calculate offset
@@ -601,6 +602,25 @@ void setup() {
     tzset();
     Serial.print("Timezone configured: ");
     Serial.println(deviceConfig.timing.timezone);
+    
+    // Wait for NTP sync before proceeding (prevents epoch 0 timestamps)
+    Serial.print("Waiting for NTP time sync");
+    struct tm timeinfo;
+    int ntpAttempts = 0;
+    const int maxNtpAttempts = 30;  // 30 seconds timeout
+    while (!getLocalTime(&timeinfo) && ntpAttempts < maxNtpAttempts) {
+        Serial.print(".");
+        delay(1000);
+        ntpAttempts++;
+    }
+    if (ntpAttempts >= maxNtpAttempts) {
+        Serial.println(" TIMEOUT!");
+        Serial.println("WARNING: NTP sync failed. Timestamps may be incorrect.");
+    } else {
+        Serial.println(" SUCCESS!");
+        Serial.print("Current time: ");
+        Serial.println(getISO8601Timestamp());
+    }
     
     client.setServer(mqtt_server, mqtt_port);
     client.setCallback(handleMqttMessage);  // Set MQTT message callback
@@ -982,6 +1002,14 @@ void sendToPakuIot() {
     // Store timestamp in a static buffer to ensure pointer validity
     static char timestampBuf[32];
     String timestamp = getISO8601Timestamp();
+    
+    // Skip publishing if time is not available (empty string indicates NTP not synced)
+    if (timestamp.length() == 0) {
+      Serial.println("paku-iot: Skipping - time not synced yet");
+      lastTime_pakuIot = currentTime;
+      return;
+    }
+    
     strncpy(timestampBuf, timestamp.c_str(), sizeof(timestampBuf) - 1);
     timestampBuf[sizeof(timestampBuf) - 1] = '\0';
     
