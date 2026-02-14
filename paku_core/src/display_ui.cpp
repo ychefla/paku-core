@@ -25,6 +25,10 @@ extern WiredSensors wiredSensors;
 extern bool wiredSensorsEnabled;
 #endif
 
+#ifdef HEATER_ENABLED
+#include "heater_addon.h"
+#endif
+
 // Static member initialization
 DisplayUI* DisplayUI::instance = nullptr;
 DisplayUI displayUI;
@@ -104,6 +108,9 @@ void DisplayUI::begin(TFT_eSPI* display) {
     updateInterval = 3000;  // Update every 3 seconds to reduce power consumption
     wifiStatus = "Disconnected";
     mqttConnected = false;
+    button2Down = false;
+    button2DownTime = 0;
+    button2LongHandled = false;
     
     Serial.println("Display UI initialized (interrupt-based buttons)");
     Serial.println("Button 1 (PIN 0): Toggle display on/off");
@@ -122,7 +129,36 @@ void DisplayUI::update() {
     
     if (button2Pressed) {
         button2Pressed = false;  // Clear flag
-        onButton2Click();
+        // Mark button as down — we'll decide short vs long on release
+        if (!button2Down) {
+            button2Down = true;
+            button2DownTime = millis();
+            button2LongHandled = false;
+        }
+    }
+    
+    // Long-press detection: check while button is held
+    if (button2Down) {
+        bool pinState = digitalRead(PIN_BUTTON_2);  // Active low
+        unsigned long held = millis() - button2DownTime;
+        
+        if (pinState == LOW && held >= LONG_PRESS_MS && !button2LongHandled) {
+            // Long press detected!
+            button2LongHandled = true;
+#ifdef HEATER_ENABLED
+            if (displayEnabled && currentScreen == SCREEN_HEATER) {
+                toggleHeater();
+                lastUpdate = 0;  // Force immediate redraw
+            }
+#endif
+        } else if (pinState == HIGH) {
+            // Button released
+            if (!button2LongHandled && held < LONG_PRESS_MS) {
+                // Short press — switch screen
+                onButton2Click();
+            }
+            button2Down = false;
+        }
     }
     
     // Update display if enabled and interval has passed
@@ -157,6 +193,11 @@ void DisplayUI::refresh() {
         case SCREEN_NETWORK:
             renderNetworkScreen();
             break;
+#ifdef HEATER_ENABLED
+        case SCREEN_HEATER:
+            renderHeaterScreen();
+            break;
+#endif
         default:
             currentScreen = SCREEN_STATUS;
             renderStatusScreen();
@@ -547,5 +588,175 @@ void DisplayUI::renderNetworkScreen() {
     
     drawFooter();
 }
+
+// ===========================================================================
+// Heater screen (only when compiled with -D HEATER_ENABLED)
+// ===========================================================================
+#ifdef HEATER_ENABLED
+
+void DisplayUI::renderHeaterScreen() {
+    clearScreen();
+    drawHeader("Heater");
+
+    AutotermUart&  uart   = heater_addon_getUart();
+    HeaterSafety&  safety = heater_addon_getSafety();
+    const auto&    st     = uart.getStatus();
+
+    tft->setTextSize(2);
+    int y = 32;
+
+    // --- Row 1: Heater state (large, colored) ---
+    tft->setCursor(5, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("State: ");
+
+    if (safety.isTripped()) {
+        tft->setTextColor(TFT_RED, TFT_BLACK);
+        tft->println("TRIPPED");
+    } else if (!uart.isOnline()) {
+        tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+        tft->println("OFFLINE");
+    } else if (st.valid) {
+        switch (st.state) {
+            case AutotermState::Running:
+                tft->setTextColor(TFT_GREEN, TFT_BLACK);
+                break;
+            case AutotermState::Starting:
+            case AutotermState::Warming:
+                tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+                break;
+            case AutotermState::ShuttingDown:
+            case AutotermState::Cooling:
+                tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+                break;
+            default:
+                tft->setTextColor(TFT_WHITE, TFT_BLACK);
+                break;
+        }
+        tft->println(autotermStateName(st.state));
+    } else {
+        tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+        tft->println("---");
+    }
+
+    // --- Row 2: Coolant temp ---
+    y += 20;
+    tft->setCursor(5, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Coolant: ");
+    float coolant = safety.getCoolantTemp();
+    if (isnan(coolant)) {
+        tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+        tft->println("N/A");
+    } else {
+        if (coolant > 85.0f) {
+            tft->setTextColor(TFT_RED, TFT_BLACK);
+        } else if (coolant > 60.0f) {
+            tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+        } else {
+            tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        }
+        tft->printf("%.1fC\n", coolant);
+    }
+
+    // --- Row 3: Flow rate ---
+    y += 20;
+    tft->setCursor(5, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Flow: ");
+    float flow = safety.getFlowRate();
+    if (flow > 0.5f) {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+    } else {
+        tft->setTextColor(TFT_RED, TFT_BLACK);
+    }
+    tft->printf("%.1f L/m\n", flow);
+
+    // --- Row 4: Battery voltage ---
+    y += 20;
+    tft->setCursor(5, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Battery: ");
+    if (st.valid) {
+        if (st.voltage < 11.5f) {
+            tft->setTextColor(TFT_RED, TFT_BLACK);
+        } else if (st.voltage < 12.2f) {
+            tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+        } else {
+            tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        }
+        tft->printf("%.1fV\n", st.voltage);
+    } else {
+        tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+        tft->println("---");
+    }
+
+    // --- Row 5: Safety trip detail (if tripped) ---
+    if (safety.isTripped()) {
+        y += 20;
+        tft->setCursor(5, y);
+        tft->setTextColor(TFT_RED, TFT_BLACK);
+        uint8_t reason = safety.getTripReason();
+        if (reason & TRIP_COOLANT_OVERHEAT) tft->print("T1 ");
+        if (reason & TRIP_FLOW_LOSS)        tft->print("F1 ");
+        if (reason & TRIP_UART_TIMEOUT)     tft->print("U1 ");
+        if (reason & TRIP_HEATER_ERROR)     tft->print("E1 ");
+    }
+
+    // --- Footer: show long-press hint on this screen ---
+    tft->drawLine(0, 145, 320, 145, TFT_DARKGREY);
+    tft->setTextSize(2);
+    tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft->setCursor(5, 150);
+    tft->printf("[%d/%d]", currentScreen + 1, SCREEN_COUNT);
+
+    // Right-aligned hint
+    bool heaterRunning = st.valid &&
+        (st.state == AutotermState::Starting ||
+         st.state == AutotermState::Warming  ||
+         st.state == AutotermState::Running);
+    tft->setCursor(150, 150);
+    if (safety.isTripped()) {
+        tft->setTextColor(TFT_RED, TFT_BLACK);
+        tft->print("Hold:Reset");
+    } else if (heaterRunning) {
+        tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+        tft->print("Hold:Stop");
+    } else {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        tft->print("Hold:Start");
+    }
+}
+
+void DisplayUI::toggleHeater() {
+    AutotermUart&  uart   = heater_addon_getUart();
+    HeaterSafety&  safety = heater_addon_getSafety();
+    const auto&    st     = uart.getStatus();
+
+    if (safety.isTripped()) {
+        // Long-press on tripped screen = try to clear trip
+        if (safety.clearTrip()) {
+            Serial.println("[Display] Safety trip cleared via button");
+        } else {
+            Serial.println("[Display] Cannot clear trip — conditions not met");
+        }
+        return;
+    }
+
+    bool heaterRunning = st.valid &&
+        (st.state == AutotermState::Starting ||
+         st.state == AutotermState::Warming  ||
+         st.state == AutotermState::Running);
+
+    if (heaterRunning) {
+        uart.shutdown();
+        Serial.println("[Display] Heater STOP via button");
+    } else {
+        uart.start(MODE_BY_POWER, 0xFF, 5);
+        Serial.println("[Display] Heater START via button (power 5)");
+    }
+}
+
+#endif // HEATER_ENABLED
 
 #endif // HAS_DISPLAY

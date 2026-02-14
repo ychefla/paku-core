@@ -30,6 +30,9 @@ enum DisplayScreen {
     SCREEN_WIRED,           // Wired sensor data (DS18B20)
     SCREEN_SYSTEM,          // System info (Device ID, firmware, uptime)
     SCREEN_NETWORK,         // Network details (IP, signal)
+#ifdef HEATER_ENABLED
+    SCREEN_HEATER,          // Hydronic heater status + control
+#endif
     SCREEN_COUNT            // Total number of screens
 };
 
@@ -124,6 +127,12 @@ private:
     static volatile unsigned long button1LastPress;
     static volatile unsigned long button2LastPress;
     
+    // Long-press detection for Button 2
+    bool button2Down;                    ///< True while button is held
+    unsigned long button2DownTime;       ///< millis() when press started
+    bool button2LongHandled;             ///< Long-press already acted on
+    static constexpr unsigned long LONG_PRESS_MS = 800;  ///< Hold threshold
+    
     // Button callback functions (must be static)
     static void onButton1Click();
     static void onButton2Click();
@@ -138,6 +147,10 @@ private:
     void renderWiredSensorScreen();
     void renderSystemScreen();
     void renderNetworkScreen();
+#ifdef HEATER_ENABLED
+    void renderHeaterScreen();
+    void toggleHeater();  ///< Start or stop heater (called on long-press)
+#endif
     
     // Helper functions
     void drawHeader(const char* title);
