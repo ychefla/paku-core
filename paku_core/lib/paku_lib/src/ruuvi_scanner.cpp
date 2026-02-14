@@ -11,6 +11,7 @@
 static RuuviTag registeredTags[MAX_RUUVI_TAGS];
 static uint8_t tagCount = 0;
 static bool initialized = false;
+static RuuviWhitelistMode whitelistMode = RuuviWhitelistMode::AUTO_DISCOVER;
 
 bool initRuuviScanner(void) {
     clearRegisteredTags();
@@ -21,6 +22,43 @@ bool initRuuviScanner(void) {
 void clearRegisteredTags(void) {
     memset(registeredTags, 0, sizeof(registeredTags));
     tagCount = 0;
+}
+
+void setWhitelistMode(RuuviWhitelistMode mode) {
+    whitelistMode = mode;
+}
+
+RuuviWhitelistMode getWhitelistMode(void) {
+    return whitelistMode;
+}
+
+bool removeRuuviTag(const char* macAddress) {
+    if (macAddress == nullptr) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < tagCount; i++) {
+        // Case-insensitive MAC comparison (reuse existing pattern)
+        bool match = true;
+        const char* a = macAddress;
+        const char* b = registeredTags[i].macString;
+        while (*a && *b) {
+            char ca = (*a >= 'a' && *a <= 'z') ? (*a - 32) : *a;
+            char cb = (*b >= 'a' && *b <= 'z') ? (*b - 32) : *b;
+            if (ca != cb) { match = false; break; }
+            a++; b++;
+        }
+        if (match && *a == *b) {
+            // Shift remaining tags down
+            for (uint8_t j = i; j < tagCount - 1; j++) {
+                registeredTags[j] = registeredTags[j + 1];
+            }
+            memset(&registeredTags[tagCount - 1], 0, sizeof(RuuviTag));
+            tagCount--;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool registerRuuviTag(const char* macAddress, const char* location) {
@@ -162,16 +200,23 @@ bool updateRuuviTagData(const uint8_t* macAddress, const uint8_t* data,
         }
     }
     
-    // If not registered but we have space, auto-register as "unknown"
-    if (tag == nullptr && tagCount < MAX_RUUVI_TAGS) {
-        tag = &registeredTags[tagCount];
-        memcpy(tag->macAddress, macAddress, 6);
-        strncpy(tag->macString, macStr, sizeof(tag->macString) - 1);
-        tag->macString[sizeof(tag->macString) - 1] = '\0';
-        snprintf(tag->location, sizeof(tag->location), "tag_%d", tagCount);
-        tag->registered = false;  // Mark as auto-discovered
-        tag->hasData = false;
-        tagCount++;
+    // If not registered, behavior depends on whitelist mode:
+    // - WHITELIST mode: reject unknown tags
+    // - AUTO_DISCOVER mode: auto-register if space available
+    if (tag == nullptr) {
+        if (whitelistMode == RuuviWhitelistMode::WHITELIST) {
+            return false;  // Tag not whitelisted, ignore
+        }
+        if (tagCount < MAX_RUUVI_TAGS) {
+            tag = &registeredTags[tagCount];
+            memcpy(tag->macAddress, macAddress, 6);
+            strncpy(tag->macString, macStr, sizeof(tag->macString) - 1);
+            tag->macString[sizeof(tag->macString) - 1] = '\0';
+            snprintf(tag->location, sizeof(tag->location), "tag_%d", tagCount);
+            tag->registered = false;  // Mark as auto-discovered
+            tag->hasData = false;
+            tagCount++;
+        }
     }
     
     if (tag == nullptr) {

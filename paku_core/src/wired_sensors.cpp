@@ -9,7 +9,7 @@
 
 WiredSensors::WiredSensors() 
     : _oneWire(nullptr), _sensors(nullptr), _initialized(false), 
-      _sensorType("None"), _sensorCount(0) {
+      _sensorType("None"), _sensorCount(0), _conversionPending(false) {
 }
 
 bool WiredSensors::begin(int sda, int scl) {
@@ -37,7 +37,12 @@ bool WiredSensors::begin(int sda, int scl) {
         // Set resolution to 12-bit (0.0625°C precision)
         _sensors->setResolution(12);
         
-        Serial.println("DS18B20 sensor initialized successfully");
+        // Use non-blocking conversion mode by default.
+        // requestTemperatures() will return immediately; poll
+        // isConversionComplete() before reading the result.
+        _sensors->setWaitForConversion(false);
+        
+        Serial.println("DS18B20 sensor initialized successfully (async mode)");
         Serial.print("Resolution: ");
         Serial.print(_sensors->getResolution());
         Serial.println(" bits");
@@ -89,6 +94,50 @@ WiredSensorData WiredSensors::readSensors() {
         Serial.println("Warning: Invalid DS18B20 reading (sensor disconnected or error)");
     }
     
+    return data;
+}
+
+bool WiredSensors::requestConversion() {
+    if (!_initialized || !_sensors) {
+        return false;
+    }
+    _sensors->requestTemperatures();   // Returns immediately (async mode)
+    _conversionPending = true;
+    return true;
+}
+
+bool WiredSensors::isConversionReady() {
+    if (!_conversionPending || !_sensors) {
+        return false;
+    }
+    return _sensors->isConversionComplete();
+}
+
+WiredSensorData WiredSensors::readConversion() {
+    WiredSensorData data;
+    data.valid = false;
+    data.timestamp = millis();
+
+    if (!_initialized || !_sensors || !_conversionPending) {
+        return data;
+    }
+
+    _conversionPending = false;
+
+    float temp = _sensors->getTempCByIndex(0);
+
+    Serial.print("  DS18B20 (async): ");
+    Serial.print(temp, 2);
+    Serial.println("°C");
+
+    if (temp != DEVICE_DISCONNECTED_C && temp != 85.0 &&
+        temp >= -55.0 && temp <= 125.0) {
+        data.temperature = temp;
+        data.valid = true;
+    } else {
+        Serial.println("Warning: Invalid DS18B20 reading (sensor disconnected or error)");
+    }
+
     return data;
 }
 

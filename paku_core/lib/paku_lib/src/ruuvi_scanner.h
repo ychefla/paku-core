@@ -27,6 +27,17 @@
 #define RUUVI_STALE_TIMEOUT_MS 300000  // 5 minutes
 
 /**
+ * @brief Whitelist mode controls auto-discovery behavior
+ * 
+ * When the whitelist is empty, auto-discovery is enabled (any tag is accepted).
+ * When at least one tag is whitelisted, only whitelisted tags are accepted.
+ */
+enum class RuuviWhitelistMode : uint8_t {
+    AUTO_DISCOVER,  ///< No whitelist entries — accept all tags (default)
+    WHITELIST       ///< Only accept tags that have been explicitly registered
+};
+
+/**
  * @brief Structure to track a single RuuviTag
  */
 struct RuuviTag {
@@ -76,6 +87,30 @@ bool registerRuuviTag(const char* macAddress, const char* location);
  * @brief Clears all registered tags
  */
 void clearRegisteredTags(void);
+
+/**
+ * @brief Enables whitelist mode
+ * 
+ * When enabled, only tags registered via registerRuuviTag() are accepted.
+ * Auto-discovered tags are rejected. When the tag list is empty AND mode
+ * is AUTO_DISCOVER, any tag is accepted (backward compatible).
+ */
+void setWhitelistMode(RuuviWhitelistMode mode);
+
+/**
+ * @brief Gets the current whitelist mode
+ * 
+ * @return Current whitelist mode
+ */
+RuuviWhitelistMode getWhitelistMode(void);
+
+/**
+ * @brief Removes a registered tag by MAC address
+ * 
+ * @param macAddress MAC address as string (e.g., "AA:BB:CC:DD:EE:FF")
+ * @return true if the tag was found and removed
+ */
+bool removeRuuviTag(const char* macAddress);
 
 /**
  * @brief Gets the number of registered tags

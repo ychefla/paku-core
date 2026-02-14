@@ -50,13 +50,40 @@ public:
     bool begin(int sda, int scl);
     
     /**
-     * @brief Read data from sensors
+     * @brief Read data from sensors (blocking, ~750ms)
      * 
-     * Reads temperature from DS18B20 sensor
+     * Reads temperature from DS18B20 sensor. Blocks while waiting
+     * for conversion to complete.
      * 
      * @return WiredSensorData structure with sensor readings
      */
     WiredSensorData readSensors();
+
+    /**
+     * @brief Request a temperature conversion (non-blocking)
+     * 
+     * Starts an async temperature conversion. Call isConversionReady()
+     * to poll for completion, then readConversion() to get the result.
+     * 
+     * @return true if request was issued successfully
+     */
+    bool requestConversion();
+
+    /**
+     * @brief Check if the async conversion has completed
+     * 
+     * @return true if conversion is done and readConversion() can be called
+     */
+    bool isConversionReady();
+
+    /**
+     * @brief Read the result of a previously requested async conversion
+     * 
+     * Must only be called after isConversionReady() returns true.
+     * 
+     * @return WiredSensorData with the reading
+     */
+    WiredSensorData readConversion();
     
     /**
      * @brief Check if sensors are available
@@ -78,6 +105,7 @@ private:
     bool _initialized;
     const char* _sensorType;
     uint8_t _sensorCount;
+    bool _conversionPending;    ///< True while an async conversion is in progress
 };
 
 #endif // HAS_WIRED_SENSORS

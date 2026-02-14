@@ -49,6 +49,10 @@
 #include "wired_sensors.h"
 #endif // HAS_WIRED_SENSORS
 
+#ifdef HEATER_ENABLED
+#include "heater_addon.h"
+#endif
+
 // Display-related includes and definitions (only when display is available)
 #if HAS_DISPLAY
 #include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
@@ -303,6 +307,8 @@ void createRuuviPayloads(const char* timestamp);
 void initMoKoSensors();
 void createMoKoPayloads(const char* timestamp);
 void scanBT(void* parameter);
+void saveRuuviWhitelist();
+void loadRuuviWhitelist();
 #endif // HAS_BLE
 #if HAS_WIRED_SENSORS
 void createWiredSensorPayloads(const char* timestamp);
@@ -331,10 +337,23 @@ void ledMqttConnecting();
 void ledMqttConnected();
 void ledHeartbeat();
 void ledError();
+void ledUpdate();
 
-// LED state tracking
+// LED state tracking — fully non-blocking via millis()
 static unsigned long lastHeartbeatTime = 0;
 static const unsigned long HEARTBEAT_INTERVAL = 5000; // 5 seconds
+
+// Non-blocking LED animation state machine
+struct LedAnimation {
+  bool     active;
+  int      totalBlinks;   // total blinks requested
+  int      currentBlink;  // blink index (0..totalBlinks-1)
+  unsigned long onTime;   // ms LED stays ON per blink
+  unsigned long offTime;  // ms LED stays OFF between blinks
+  bool     ledIsOn;       // current physical state
+  unsigned long phaseStart; // when current on/off phase started
+};
+static LedAnimation ledAnim = {false, 0, 0, 0, 0, false, 0};
 
 /**
  * @brief Initialize the LED pin for status indication
@@ -345,101 +364,132 @@ void ledInit() {
 }
 
 /**
- * @brief Turn the LED on
+ * @brief Turn the LED on (immediate)
  */
 void ledOn() {
   digitalWrite(PIN_LED_BUILTIN, LED_ON);
 }
 
 /**
- * @brief Turn the LED off
+ * @brief Turn the LED off (immediate)
  */
 void ledOff() {
   digitalWrite(PIN_LED_BUILTIN, !LED_ON);
 }
 
 /**
- * @brief Blink the LED a specified number of times
+ * @brief Start a non-blocking LED blink animation
  * @param count Number of blinks
- * @param onTime Duration LED is on in milliseconds
- * @param offTime Duration LED is off in milliseconds
+ * @param onTime Duration LED is on in milliseconds per blink
+ * @param offTime Duration LED is off in milliseconds between blinks
+ * 
+ * The animation is driven by ledUpdate() which must be called from loop().
  */
-void ledBlink(int count, int onTime, int offTime) {
-  for (int i = 0; i < count; i++) {
-    ledOn();
-    delay(onTime);
-    ledOff();
-    if (i < count - 1) {
-      delay(offTime);
+void ledBlinkAsync(int count, int onTime, int offTime) {
+  ledAnim.active       = true;
+  ledAnim.totalBlinks  = count;
+  ledAnim.currentBlink = 0;
+  ledAnim.onTime       = onTime;
+  ledAnim.offTime      = offTime;
+  ledAnim.ledIsOn      = true;
+  ledAnim.phaseStart   = millis();
+  ledOn();  // Start first ON phase immediately
+}
+
+/**
+ * @brief Advance the non-blocking LED animation state machine
+ * 
+ * Call this every loop() iteration. Returns immediately if no animation
+ * is active. Transitions through ON→OFF→ON→… phases using millis().
+ */
+void ledUpdate() {
+  if (!ledAnim.active) return;
+  unsigned long now = millis();
+
+  if (ledAnim.ledIsOn) {
+    // Currently ON — wait for onTime to elapse
+    if (now - ledAnim.phaseStart >= ledAnim.onTime) {
+      ledOff();
+      ledAnim.ledIsOn = false;
+      ledAnim.phaseStart = now;
+      ledAnim.currentBlink++;
+    }
+  } else {
+    // Currently OFF — wait for offTime, then start next blink or finish
+    if (now - ledAnim.phaseStart >= ledAnim.offTime) {
+      if (ledAnim.currentBlink >= ledAnim.totalBlinks) {
+        // Animation complete
+        ledAnim.active = false;
+        return;
+      }
+      // Start next ON phase
+      ledOn();
+      ledAnim.ledIsOn = true;
+      ledAnim.phaseStart = now;
     }
   }
 }
 
 /**
- * @brief LED pattern for device startup (3 quick blinks)
+ * @brief LED pattern for device startup (3 quick blinks, blocking — only in setup)
  */
 void ledStartup() {
-  ledBlink(3, 100, 100);
+  // Blocking is acceptable here — runs once before loop()
+  for (int i = 0; i < 3; i++) {
+    ledOn();  delay(100);  ledOff();
+    if (i < 2) delay(100);
+  }
 }
 
 /**
- * @brief LED pattern while connecting to WiFi (single fast blink)
- * Call this repeatedly during WiFi connection attempts
- * Note: Uses longer flash for better visibility
+ * @brief Start non-blocking WiFi-connecting LED animation (single fast blink)
  */
 void ledWifiConnecting() {
-  ledOn();
-  delay(100);
-  ledOff();
-  delay(100);
+  if (!ledAnim.active) {
+    ledBlinkAsync(1, 100, 100);
+  }
 }
 
 /**
- * @brief LED pattern when WiFi connected (solid ON briefly)
+ * @brief Start non-blocking WiFi-connected LED animation (solid ON 500ms)
  */
 void ledWifiConnected() {
-  ledOn();
-  delay(500);
-  ledOff();
+  ledBlinkAsync(1, 500, 0);
 }
 
 /**
- * @brief LED pattern while connecting to MQTT (slow blink)
- * Call this during MQTT connection attempts
- * Note: Uses longer flash for better visibility
+ * @brief Start non-blocking MQTT-connecting LED animation (slow blink)
  */
 void ledMqttConnecting() {
-  ledOn();
-  delay(150);
-  ledOff();
-  delay(150);
+  if (!ledAnim.active) {
+    ledBlinkAsync(1, 150, 150);
+  }
 }
 
 /**
- * @brief LED pattern when MQTT connected (double blink)
+ * @brief Start non-blocking MQTT-connected LED animation (double blink)
  */
 void ledMqttConnected() {
-  ledBlink(2, 100, 100);
+  ledBlinkAsync(2, 100, 100);
 }
 
 /**
- * @brief LED heartbeat pattern (brief flash)
- * Call this periodically to indicate normal operation
+ * @brief Non-blocking LED heartbeat — brief flash every 5 seconds
+ * Called regularly from the main loop.
  */
 void ledHeartbeat() {
   unsigned long currentTime = millis();
   if (currentTime - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
-    ledBlink(1, 200, 0);  // 200ms flash for better visibility
+    ledBlinkAsync(1, 200, 0);
     lastHeartbeatTime = currentTime;
   }
 }
 
 /**
- * @brief LED error pattern (5 rapid blinks)
- * Call this to indicate an error condition
+ * @brief Start non-blocking LED error animation (5 rapid blinks)
  */
 void ledError() {
-  ledBlink(5, 100, 100);
+  ledBlinkAsync(5, 100, 100);
 }
 #endif // HAS_LED
 
@@ -550,10 +600,10 @@ void setup() {
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
     ledcSetup(0, 2000, 8);
     ledcAttachPin(PIN_LCD_BL, 0);
-    ledcWrite(0, 255);
+    ledcWrite(0, 100);   // 40% brightness (reduced from 255 to lower heat)
 #else
     ledcAttach(PIN_LCD_BL, 200, 8);
-    ledcWrite(PIN_LCD_BL, 255);
+    ledcWrite(PIN_LCD_BL, 100);  // 40% brightness (reduced from 255 to lower heat)
 #endif
 
     // Initialize the display UI system with button controls
@@ -561,8 +611,9 @@ void setup() {
     displayUI.begin(&tft);
     
     // Reduce CPU frequency to save power and reduce heat
-    // 240MHz is overkill for this application
-    setCpuFrequencyMhz(160);  // Reduce from 240MHz to 160MHz
+    // 240 MHz default is massive overkill for sensor polling + MQTT
+    // 80 MHz is the minimum that keeps WiFi + BLE working on ESP32-S3
+    setCpuFrequencyMhz(80);
     Serial.print("CPU frequency set to: ");
     Serial.print(getCpuFrequencyMhz());
     Serial.println(" MHz (power saving mode)");
@@ -571,6 +622,15 @@ void setup() {
 
     Serial.println("Setup Wifi Connection...");
     WiFi.mode(WIFI_STA);
+#ifndef ESP8266
+    // Enable WiFi modem sleep — radio powers down between DTIM beacons
+    // Saves ~80 mA when idle, with negligible latency impact for MQTT
+    WiFi.setSleep(true);
+    // Reduce TX power from default 20 dBm to 8 dBm (~6 mW vs ~100 mW)
+    // Sufficient for typical indoor range to the access point
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);
+    Serial.println("WiFi power saving: modem sleep ON, TX power 8.5 dBm");
+#endif
 #ifdef ESP8266
     // ESP8266-specific WiFi settings for improved stability
     WiFi.persistent(false);  // Don't write WiFi settings to flash
@@ -597,30 +657,13 @@ void setup() {
     Serial.println("Setup MQTT Connection...");
     
     // Configure ESP32 native time with timezone support (auto DST)
+    // NTP will sync in the background — no blocking wait.
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
     setenv("TZ", deviceConfig.timing.timezone, 1);
     tzset();
     Serial.print("Timezone configured: ");
     Serial.println(deviceConfig.timing.timezone);
-    
-    // Wait for NTP sync before proceeding (prevents epoch 0 timestamps)
-    Serial.print("Waiting for NTP time sync");
-    struct tm timeinfo;
-    int ntpAttempts = 0;
-    const int maxNtpAttempts = 30;  // 30 seconds timeout
-    while (!getLocalTime(&timeinfo) && ntpAttempts < maxNtpAttempts) {
-        Serial.print(".");
-        delay(1000);
-        ntpAttempts++;
-    }
-    if (ntpAttempts >= maxNtpAttempts) {
-        Serial.println(" TIMEOUT!");
-        Serial.println("WARNING: NTP sync failed. Timestamps may be incorrect.");
-    } else {
-        Serial.println(" SUCCESS!");
-        Serial.print("Current time: ");
-        Serial.println(getISO8601Timestamp());
-    }
+    Serial.println("NTP sync will complete in background (non-blocking)");
     
     client.setServer(mqtt_server, mqtt_port);
     client.setCallback(handleMqttMessage);  // Set MQTT message callback
@@ -696,6 +739,12 @@ void setup() {
     );
 #endif // HAS_BLE
 
+#ifdef HEATER_ENABLED
+    // Initialize hydronic heater add-on (Autoterm UART, safety, sensors)
+    heater_addon_setup();
+    Serial.println("Heater add-on initialized");
+#endif
+
     Serial.println("Setup complete.");
 
   }
@@ -760,19 +809,26 @@ void loop() {
   displayUI.update();
 #endif
 
+#ifdef HEATER_ENABLED
+  // Update heater: UART comm, sensor reads, safety checks, MQTT publish
+  heater_addon_loop();
+#endif
+
   // Phase 2: State machine-based operation
   handleSystemState();
   
 #if HAS_LED
+  // Drive non-blocking LED animations (must be called every iteration)
+  ledUpdate();
   // LED heartbeat - brief flash every 5 seconds during normal operation
   ledHeartbeat();
 #endif
   
-  // Legacy display update (can be removed if displayUI is fully adopted)
-  // updateDisplay();
-  
-  // Periodically sync time from NTP (ESP32 native time syncs automatically)\n  // No manual update needed - configTime() handles periodic sync\n  \n  // Small delay to prevent watchdog issues and reduce CPU usage
-  delay(50);  // Increased from 10ms to 50ms for better power efficiency
+  // Small delay to prevent busy-spinning the CPU.
+  // Without this the loop runs thousands of times/sec, keeping the CPU
+  // at 100% and generating significant heat.  10 ms still gives ~100 Hz
+  // responsiveness for buttons/display while dropping CPU load to ~2%.
+  delay(10);
 }
 
 void goToSleep() {
@@ -1319,6 +1375,14 @@ void connectMQTT() {
       Serial.print("Subscribed to WiFi cmd topic: ");
       Serial.println(wifiCmdTopic);
       
+#if HAS_BLE
+      // Subscribe to Ruuvi whitelist management command topic
+      String ruuviCmdTopic = String("paku/devices/") + deviceId + "/cmd/ruuvi";
+      client.subscribe(ruuviCmdTopic.c_str());
+      Serial.print("Subscribed to Ruuvi cmd topic: ");
+      Serial.println(ruuviCmdTopic);
+#endif
+      
       // Step 1: Publish device status first (announce we're online)
       publishDeviceStatus();
       
@@ -1378,22 +1442,122 @@ void initDeviceId() {
 void initRuuviTags() {
   initRuuviScanner();
   
+  // Load whitelist from NVS first (takes precedence over secrets.h)
+  loadRuuviWhitelist();
+  
+  // If NVS had entries, whitelist mode is already set.
+  // Only fall back to secrets.h if NVS was empty.
+  if (getRegisteredTagCount() == 0) {
 #if RUUVI_TAG_COUNT > 0
-  Serial.println("Registering known RuuviTags...");
-  for (int i = 0; i < RUUVI_TAG_COUNT; i++) {
-    if (registerRuuviTag(RUUVI_TAG_MACS[i], RUUVI_TAG_LOCATIONS[i])) {
-      Serial.print("  Registered: ");
-      Serial.print(RUUVI_TAG_MACS[i]);
-      Serial.print(" -> ");
-      Serial.println(RUUVI_TAG_LOCATIONS[i]);
+    Serial.println("Registering RuuviTags from secrets.h...");
+    for (int i = 0; i < RUUVI_TAG_COUNT; i++) {
+      if (registerRuuviTag(RUUVI_TAG_MACS[i], RUUVI_TAG_LOCATIONS[i])) {
+        Serial.print("  Registered: ");
+        Serial.print(RUUVI_TAG_MACS[i]);
+        Serial.print(" -> ");
+        Serial.println(RUUVI_TAG_LOCATIONS[i]);
+      }
     }
-  }
+    // Pre-configured tags act as whitelist
+    setWhitelistMode(RuuviWhitelistMode::WHITELIST);
+    Serial.println("Whitelist mode enabled (from secrets.h)");
 #else
-  Serial.println("No pre-registered RuuviTags (auto-discovery enabled)");
+    Serial.println("No pre-registered RuuviTags (auto-discovery enabled)");
+    setWhitelistMode(RuuviWhitelistMode::AUTO_DISCOVER);
 #endif
+  }
   
   Serial.print("RuuviTag scanner initialized. Registered tags: ");
-  Serial.println(getRegisteredTagCount());
+  Serial.print(getRegisteredTagCount());
+  Serial.print(", mode: ");
+  Serial.println(getWhitelistMode() == RuuviWhitelistMode::WHITELIST ? "WHITELIST" : "AUTO_DISCOVER");
+}
+
+/**
+ * @brief Save Ruuvi tag whitelist to NVS
+ * 
+ * Persists all registered tags and the whitelist mode to ESP32 Preferences.
+ * Tags are stored as indexed key-value pairs: "rtag0_mac", "rtag0_loc", etc.
+ */
+void saveRuuviWhitelist() {
+#ifndef ESP8266
+  preferences.begin("ruuvi", false);
+  
+  uint8_t count = getRegisteredTagCount();
+  preferences.putUChar("tag_count", count);
+  preferences.putUChar("wl_mode", static_cast<uint8_t>(getWhitelistMode()));
+  
+  for (uint8_t i = 0; i < count; i++) {
+    const RuuviTag* tag = getRegisteredTag(i);
+    if (tag) {
+      char macKey[12], locKey[12];
+      snprintf(macKey, sizeof(macKey), "tag%d_mac", i);
+      snprintf(locKey, sizeof(locKey), "tag%d_loc", i);
+      preferences.putString(macKey, tag->macString);
+      preferences.putString(locKey, tag->location);
+    }
+  }
+  
+  // Clear any leftover entries from a previously larger list
+  for (uint8_t i = count; i < MAX_RUUVI_TAGS; i++) {
+    char macKey[12], locKey[12];
+    snprintf(macKey, sizeof(macKey), "tag%d_mac", i);
+    snprintf(locKey, sizeof(locKey), "tag%d_loc", i);
+    preferences.remove(macKey);
+    preferences.remove(locKey);
+  }
+  
+  preferences.end();
+  Serial.print("Ruuvi whitelist saved to NVS (");
+  Serial.print(count);
+  Serial.println(" tags)");
+#endif
+}
+
+/**
+ * @brief Load Ruuvi tag whitelist from NVS
+ * 
+ * Restores registered tags and whitelist mode from ESP32 Preferences.
+ * Called during initRuuviTags() before secrets.h fallback.
+ */
+void loadRuuviWhitelist() {
+#ifndef ESP8266
+  preferences.begin("ruuvi", true);  // read-only
+  
+  if (!preferences.isKey("tag_count")) {
+    preferences.end();
+    Serial.println("No Ruuvi whitelist in NVS");
+    return;
+  }
+  
+  uint8_t count = preferences.getUChar("tag_count", 0);
+  uint8_t mode = preferences.getUChar("wl_mode", 0);
+  
+  Serial.print("Loading Ruuvi whitelist from NVS: ");
+  Serial.print(count);
+  Serial.println(" tags");
+  
+  for (uint8_t i = 0; i < count && i < MAX_RUUVI_TAGS; i++) {
+    char macKey[12], locKey[12];
+    snprintf(macKey, sizeof(macKey), "tag%d_mac", i);
+    snprintf(locKey, sizeof(locKey), "tag%d_loc", i);
+    
+    String mac = preferences.getString(macKey, "");
+    String loc = preferences.getString(locKey, "");
+    
+    if (mac.length() > 0) {
+      if (registerRuuviTag(mac.c_str(), loc.c_str())) {
+        Serial.print("  Loaded: ");
+        Serial.print(mac);
+        Serial.print(" -> ");
+        Serial.println(loc);
+      }
+    }
+  }
+  
+  setWhitelistMode(static_cast<RuuviWhitelistMode>(mode));
+  preferences.end();
+#endif
 }
 
 /**
@@ -1706,9 +1870,9 @@ void scanBT(void* parameter) {
 
     // Create a BLE scan object
     BLEScan* pBLEScan = BLEDevice::getScan();
-    pBLEScan->setActiveScan(true);  // Set active scan to get more data
-    pBLEScan->setInterval(100);     // Set scan interval
-    pBLEScan->setWindow(99);        // Set scan window
+    pBLEScan->setActiveScan(false); // Passive scan — lower power, sufficient for RuuviTag broadcasts
+    pBLEScan->setInterval(200);     // 200 × 0.625 ms = 125 ms cycle
+    pBLEScan->setWindow(100);       // 100 × 0.625 ms = 62.5 ms listen window (~50% duty)
 
     // Start scanning for 5 seconds
     BLEScanResults foundDevices = pBLEScan->start(5, false);
@@ -1927,6 +2091,24 @@ void publishDeviceConfig() {
   doc["power"]["deep_sleep_enabled"] = deviceConfig.power.deep_sleep_enabled;
   doc["power"]["light_sleep_during_wait"] = deviceConfig.power.light_sleep_during_wait;
   doc["power"]["battery_monitor_enabled"] = deviceConfig.power.battery_monitor_enabled;
+  
+#if HAS_BLE
+  // Ruuvi tag whitelist
+  doc["ruuvi"]["mode"] = (getWhitelistMode() == RuuviWhitelistMode::WHITELIST)
+                          ? "whitelist" : "auto_discover";
+  JsonArray ruuviTags = doc["ruuvi"]["tags"].to<JsonArray>();
+  uint8_t ruuviCount = getRegisteredTagCount();
+  for (uint8_t i = 0; i < ruuviCount; i++) {
+    const RuuviTag* tag = getRegisteredTag(i);
+    if (tag) {
+      JsonObject t = ruuviTags.add<JsonObject>();
+      t["mac"] = tag->macString;
+      t["location"] = tag->location;
+      t["registered"] = tag->registered;
+    }
+  }
+  doc["ruuvi"]["count"] = ruuviCount;
+#endif
   
   String output;
   serializeJson(doc, output);
@@ -2418,41 +2600,321 @@ void handleSystemState() {
     }
       
     case SYS_STATE_COLLECT_SENSORS: {
-      // Collect sensor data (WiFi OFF)
-      collectSensorData();
-      
-      // Decide if we should transmit now
-      // Transmit if: buffer is getting full OR enough time has passed
-      bool shouldTransmit = (bufferCount >= (MAX_BUFFERED_READINGS * 0.8)) ||
-                            (now - lastNetworkConnect >= (deviceConfig.timing.wake_interval_s * 1000));
-      
-      if (shouldTransmit) {
-        currentSystemState = SYS_STATE_CONNECT_NETWORK;
-        stateEnteredAt = now;
-        Serial.println("STATE: COLLECT_SENSORS -> CONNECT_NETWORK");
-      } else {
-        // Don't transmit yet, go back to idle
-        currentSystemState = SYS_STATE_IDLE;
-        stateEnteredAt = now;
-        Serial.println("STATE: COLLECT_SENSORS -> IDLE (no transmission needed)");
+      // ================================================================
+      // Non-blocking sensor collection with async DS18B20 support.
+      //
+      // Sub-phases:
+      //   COLLECT_BLE       → read cached BLE data (instant)
+      //   COLLECT_WIRED_REQ → request async DS18B20 conversion
+      //   COLLECT_WIRED_WAIT→ poll isConversionReady() each iteration
+      //   COLLECT_DONE      → finalize and decide next state
+      // ================================================================
+
+      enum CollectPhase : uint8_t {
+        COLLECT_BLE,
+        COLLECT_WIRED_REQ,
+        COLLECT_WIRED_WAIT,
+        COLLECT_DONE
+      };
+
+      static CollectPhase collectPhase = COLLECT_BLE;
+      static unsigned long collectPhaseStart = 0;
+      static String collectTimestamp;
+
+      switch (collectPhase) {
+
+        case COLLECT_BLE: {
+          Serial.println("=== Collecting Sensor Data (non-blocking) ===");
+          collectTimestamp = getISO8601Timestamp();
+#if HAS_BLE
+          if (deviceConfig.sensors.ble.enabled) {
+            Serial.println("Reading cached BLE sensors...");
+            createRuuviPayloads(collectTimestamp.c_str());
+            createMoKoPayloads(collectTimestamp.c_str());
+          }
+#endif
+          collectPhase = COLLECT_WIRED_REQ;
+          collectPhaseStart = now;
+          break;
+        }
+
+        case COLLECT_WIRED_REQ: {
+#if HAS_WIRED_SENSORS
+          if (deviceConfig.sensors.wired.enabled && wiredSensorsEnabled) {
+            unsigned long currentTime = millis();
+            if (currentTime - lastWiredSensorRead >= WIRED_SENSOR_INTERVAL_MS) {
+              if (wiredSensors.requestConversion()) {
+                Serial.println("DS18B20 async conversion requested");
+                collectPhase = COLLECT_WIRED_WAIT;
+                collectPhaseStart = now;
+                break;
+              }
+            }
+          }
+#endif
+          // No wired sensor to wait for — skip straight to done
+          collectPhase = COLLECT_DONE;
+          break;
+        }
+
+        case COLLECT_WIRED_WAIT: {
+#if HAS_WIRED_SENSORS
+          if (wiredSensors.isConversionReady()) {
+            lastWiredSensorRead = millis();
+            WiredSensorData data = wiredSensors.readConversion();
+            if (data.valid) {
+              // Build the payload inline (same as createWiredSensorPayloads)
+              JsonDocument doc;
+              doc["timestamp"] = collectTimestamp;
+              doc["device_id"] = String(deviceId) + WIRED_SENSOR_SUFFIX;
+              doc["location"] = "wired_sensor";
+              doc["sensor_type"] = wiredSensors.getSensorType();
+              JsonObject metrics = doc["metrics"].to<JsonObject>();
+              metrics["temperature_c"] = data.temperature;
+
+              String payload;
+              serializeJson(doc, payload);
+              String topic = String("paku/sensors/") + deviceId + WIRED_SENSOR_SUFFIX + "/data";
+
+              if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
+                sensorSnapshots[sensorSnapshotCount].topic = topic;
+                sensorSnapshots[sensorSnapshotCount].payload = payload;
+                sensorSnapshots[sensorSnapshotCount].transmitted = false;
+                Serial.print("Buffered DS18B20 [wired_sensor]: T=");
+                Serial.print(data.temperature, 2);
+                Serial.print("°C (buffer: ");
+                Serial.print(sensorSnapshotCount + 1);
+                Serial.println(")");
+                sensorSnapshotCount++;
+              }
+            } else {
+              Serial.println("Warning: DS18B20 async reading invalid");
+            }
+            collectPhase = COLLECT_DONE;
+          } else if (stateElapsed > 2000) {
+            // Safety timeout — DS18B20 12-bit takes ~750ms max
+            Serial.println("Warning: DS18B20 conversion timeout, skipping");
+            collectPhase = COLLECT_DONE;
+          }
+          // else: stay in COLLECT_WIRED_WAIT, return to loop
+#endif
+          break;
+        }
+
+        case COLLECT_DONE: {
+          lastSensorCollection = millis();
+          Serial.print("Sensor collection complete. Buffer size: ");
+          Serial.println(bufferCount);
+          collectPhase = COLLECT_BLE;  // reset for next cycle
+
+          // Decide if we should transmit now
+          bool shouldTransmit = (bufferCount >= (MAX_BUFFERED_READINGS * 0.8)) ||
+                                (now - lastNetworkConnect >= (deviceConfig.timing.wake_interval_s * 1000));
+
+          if (shouldTransmit) {
+            currentSystemState = SYS_STATE_CONNECT_NETWORK;
+            stateEnteredAt = now;
+            Serial.println("STATE: COLLECT_SENSORS -> CONNECT_NETWORK");
+          } else {
+            currentSystemState = SYS_STATE_IDLE;
+            stateEnteredAt = now;
+            Serial.println("STATE: COLLECT_SENSORS -> IDLE (no transmission needed)");
+          }
+          break;
+        }
       }
       break;
     }
       
     case SYS_STATE_CONNECT_NETWORK: {
-      // Turn on WiFi and connect
-      connectNetwork();
-      
-      if (client.connected()) {
-        currentSystemState = SYS_STATE_TRANSMIT;
-        stateEnteredAt = now;
-        Serial.println("STATE: CONNECT_NETWORK -> TRANSMIT");
-      } else if (stateElapsed >= (deviceConfig.timing.wifi_connect_timeout_s * 1000)) {
-        // Connection timeout, give up and go back to idle
-        Serial.println("Network connection timeout");
-        currentSystemState = SYS_STATE_DISCONNECT;
-        stateEnteredAt = now;
-        Serial.println("STATE: CONNECT_NETWORK -> DISCONNECT (timeout)");
+      // ================================================================
+      // Fully non-blocking WiFi + MQTT connection with async scan.
+      //
+      // Sub-phases tracked by static enum:
+      //   PHASE_SCAN_START  → kick off async WiFi.scanNetworks(true)
+      //   PHASE_SCAN_WAIT   → poll WiFi.scanComplete() each iteration
+      //   PHASE_WIFI_WAIT   → WiFi.begin() was called, poll status()
+      //   PHASE_MQTT_TRY    → single-attempt MQTT connect
+      //   PHASE_MQTT_SETTLE → run client.loop() for a few iterations to
+      //                       receive retained messages (no delay())
+      // ================================================================
+
+      enum ConnectPhase : uint8_t {
+        PHASE_SCAN_START,
+        PHASE_SCAN_WAIT,
+        PHASE_WIFI_WAIT,
+        PHASE_MQTT_TRY,
+        PHASE_MQTT_SETTLE
+      };
+
+      static ConnectPhase connectPhase = PHASE_SCAN_START;
+      static unsigned long phaseStartMs = 0;
+      static int           settleLoops  = 0;
+
+      switch (connectPhase) {
+
+        case PHASE_SCAN_START: {
+          WiFi.disconnect();
+          WiFi.mode(WIFI_STA);
+          // Start ASYNC scan (first param true = async)
+          WiFi.scanNetworks(true);
+          connectPhase = PHASE_SCAN_WAIT;
+          phaseStartMs = now;
+          Serial.println("Async WiFi scan started...");
+          break;
+        }
+
+        case PHASE_SCAN_WAIT: {
+          int found = WiFi.scanComplete();
+          if (found == WIFI_SCAN_RUNNING) {
+            // Still scanning — check for timeout (5 s)
+            if (now - phaseStartMs > 5000) {
+              Serial.println("WiFi scan timeout");
+              WiFi.scanDelete();
+              connectPhase = PHASE_SCAN_START;
+              currentSystemState = SYS_STATE_DISCONNECT;
+              stateEnteredAt = now;
+            }
+            break;  // yield to loop()
+          }
+          if (found <= 0) {
+            Serial.println("No networks found — skipping connect");
+            WiFi.scanDelete();
+            connectPhase = PHASE_SCAN_START;
+            currentSystemState = SYS_STATE_DISCONNECT;
+            stateEnteredAt = now;
+            break;
+          }
+
+          // Pick first configured SSID that is in range
+          extern WiFiManager wifiManager;
+          bool begun = false;
+          int nvsCount = wifiManager.getStoredNetworkCount();
+
+          for (int n = 0; n < nvsCount + WIFI_COUNT && !begun; n++) {
+            String ssid, pass;
+            if (n < nvsCount) {
+              WiFiCredential cred = wifiManager.getNetwork(n);
+              if (!cred.valid) continue;
+              ssid = String(cred.ssid);
+              pass = String(cred.password);
+            } else {
+              int fi = n - nvsCount;
+              ssid = String(WIFI_SSIDS[fi]);
+              pass = String(WIFI_PASSWORDS[fi]);
+            }
+            for (int j = 0; j < found; j++) {
+              if (WiFi.SSID(j) == ssid) {
+                Serial.printf("Trying %s...\n", ssid.c_str());
+                WiFi.begin(ssid.c_str(), pass.c_str());
+                begun = true;
+                break;
+              }
+            }
+          }
+          WiFi.scanDelete();
+
+          if (!begun) {
+            Serial.println("No configured network in range");
+            connectPhase = PHASE_SCAN_START;
+            currentSystemState = SYS_STATE_DISCONNECT;
+            stateEnteredAt = now;
+            break;
+          }
+
+          connectPhase = PHASE_WIFI_WAIT;
+          phaseStartMs = now;
+          break;
+        }
+
+        case PHASE_WIFI_WAIT: {
+          if (WiFi.status() == WL_CONNECTED) {
+            Serial.printf("WiFi connected: %s\n", WiFi.localIP().toString().c_str());
+            wifi_status = "WiFi connected (" + WiFi.localIP().toString() + ")";
+#if HAS_LED
+            ledWifiConnected();
+#endif
+            connectPhase = PHASE_MQTT_TRY;
+            phaseStartMs = now;
+          } else if (now - phaseStartMs >= (deviceConfig.timing.wifi_connect_timeout_s * 1000UL)) {
+            Serial.println("WiFi connect timeout");
+            connectPhase = PHASE_SCAN_START;
+            currentSystemState = SYS_STATE_DISCONNECT;
+            stateEnteredAt = now;
+          }
+#if HAS_LED
+          else {
+            ledWifiConnecting();
+          }
+#endif
+          break;
+        }
+
+        case PHASE_MQTT_TRY: {
+          // Single-attempt MQTT connect (PubSubClient.connect() returns immediately)
+          if (client.connect(deviceId)) {
+            Serial.println("MQTT connected");
+#if HAS_LED
+            ledMqttConnected();
+#endif
+            // Subscribe to all topics
+            client.subscribe("paku/control");
+            String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
+            client.subscribe(edgeControlTopic.c_str());
+            String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
+            client.subscribe(edgeConfigTopic.c_str());
+            String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
+            client.subscribe(otaTopic.c_str());
+            String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
+            client.subscribe(wifiCmdTopic.c_str());
+
+#if HAS_BLE
+            String ruuviCmdTopic = String("paku/devices/") + deviceId + "/cmd/ruuvi";
+            client.subscribe(ruuviCmdTopic.c_str());
+#endif
+
+#ifdef HEATER_ENABLED
+            String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
+            client.subscribe(heaterCmdTopic.c_str());
+#endif
+            // Transition to settling phase — run client.loop() a few times
+            // across successive loop() iterations to receive retained messages.
+            connectPhase = PHASE_MQTT_SETTLE;
+            settleLoops  = 0;
+            phaseStartMs = now;
+          } else {
+            Serial.printf("MQTT failed (rc=%d)\n", client.state());
+#if HAS_LED
+            ledMqttConnecting();
+#endif
+            // Retry on next loop() iteration, up to overall state timeout
+            if (stateElapsed >= (deviceConfig.timing.wifi_connect_timeout_s * 1000UL)) {
+              Serial.println("MQTT connect timeout — will retry next cycle");
+              connectPhase = PHASE_SCAN_START;
+              currentSystemState = SYS_STATE_DISCONNECT;
+              stateEnteredAt = now;
+            }
+          }
+          break;
+        }
+
+        case PHASE_MQTT_SETTLE: {
+          // Run client.loop() once per main-loop iteration (no delay!)
+          // to drain retained messages from the broker.
+          client.loop();
+          settleLoops++;
+
+          if (settleLoops >= 10) {
+            // Done settling — publish status & config, move to TRANSMIT
+            publishDeviceStatus();
+            publishDeviceConfig();
+            connectPhase = PHASE_SCAN_START;  // reset for next time
+            currentSystemState = SYS_STATE_TRANSMIT;
+            stateEnteredAt = now;
+            Serial.println("STATE: CONNECT_NETWORK -> TRANSMIT");
+          }
+          break;
+        }
       }
       break;
     }
@@ -3031,6 +3493,133 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     client.publish(responseTopic.c_str(), responsePayload.c_str());
     return;
   }
+
+#if HAS_BLE
+  // Phase 2: Check for Ruuvi whitelist commands (paku/devices/{deviceId}/cmd/ruuvi)
+  String ruuviCmdTopic = String("paku/devices/") + deviceId + "/cmd/ruuvi";
+  if (String(topic) == ruuviCmdTopic) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("Ruuvi CMD: Parse error: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    
+    const char* action = doc["action"];
+    String responseTopic = String("paku/devices/") + deviceId + "/ruuvi/status";
+    JsonDocument responseDoc;
+    responseDoc["timestamp"] = getISO8601Timestamp();
+    
+    if (!action) {
+      responseDoc["success"] = false;
+      responseDoc["error"] = "Missing action";
+    } else if (strcmp(action, "add") == 0) {
+      // Add a tag to the whitelist
+      // Payload: {"action": "add", "mac": "AA:BB:CC:DD:EE:FF", "location": "cabin"}
+      const char* mac = doc["mac"];
+      const char* location = doc["location"];
+      
+      if (!mac || strlen(mac) == 0) {
+        responseDoc["success"] = false;
+        responseDoc["error"] = "Missing or empty MAC address";
+      } else if (!location || strlen(location) == 0) {
+        responseDoc["success"] = false;
+        responseDoc["error"] = "Missing or empty location";
+      } else {
+        bool success = registerRuuviTag(mac, location);
+        if (success) {
+          // Switch to whitelist mode when first tag is explicitly added
+          setWhitelistMode(RuuviWhitelistMode::WHITELIST);
+          saveRuuviWhitelist();
+          responseDoc["success"] = true;
+          responseDoc["action"] = "add";
+          responseDoc["mac"] = mac;
+          responseDoc["location"] = location;
+          LOG_INFO("Ruuvi", "Added tag via MQTT: %s -> %s", mac, location);
+        } else {
+          responseDoc["success"] = false;
+          // Determine reason
+          if (findRegisteredTagByMac(mac) != nullptr) {
+            responseDoc["error"] = "Tag already registered";
+          } else if (getRegisteredTagCount() >= MAX_RUUVI_TAGS) {
+            responseDoc["error"] = "Whitelist full (max 8 tags)";
+          } else {
+            responseDoc["error"] = "Invalid MAC address format";
+          }
+        }
+      }
+    } else if (strcmp(action, "remove") == 0) {
+      // Remove a tag from the whitelist
+      // Payload: {"action": "remove", "mac": "AA:BB:CC:DD:EE:FF"}
+      const char* mac = doc["mac"];
+      
+      if (!mac || strlen(mac) == 0) {
+        responseDoc["success"] = false;
+        responseDoc["error"] = "Missing or empty MAC address";
+      } else {
+        bool success = removeRuuviTag(mac);
+        responseDoc["success"] = success;
+        responseDoc["action"] = "remove";
+        responseDoc["mac"] = mac;
+        if (success) {
+          // If whitelist is now empty, switch back to auto-discover
+          if (getRegisteredTagCount() == 0) {
+            setWhitelistMode(RuuviWhitelistMode::AUTO_DISCOVER);
+            Serial.println("Ruuvi whitelist empty — switching to auto-discover mode");
+          }
+          saveRuuviWhitelist();
+          LOG_INFO("Ruuvi", "Removed tag via MQTT: %s", mac);
+        } else {
+          responseDoc["error"] = "Tag not found";
+        }
+      }
+    } else if (strcmp(action, "list") == 0) {
+      // List all registered tags
+      responseDoc["success"] = true;
+      responseDoc["action"] = "list";
+      responseDoc["mode"] = (getWhitelistMode() == RuuviWhitelistMode::WHITELIST) 
+                            ? "whitelist" : "auto_discover";
+      
+      JsonArray tagsArray = responseDoc["tags"].to<JsonArray>();
+      uint8_t count = getRegisteredTagCount();
+      for (uint8_t i = 0; i < count; i++) {
+        const RuuviTag* tag = getRegisteredTag(i);
+        if (tag) {
+          JsonObject tagObj = tagsArray.add<JsonObject>();
+          tagObj["mac"] = tag->macString;
+          tagObj["location"] = tag->location;
+          tagObj["registered"] = tag->registered;
+          tagObj["has_data"] = tag->hasData;
+          if (tag->hasData) {
+            tagObj["temperature"] = tag->lastData.temperature;
+            tagObj["humidity"] = tag->lastData.humidity;
+            tagObj["fresh"] = isTagDataFresh(tag, millis());
+          }
+        }
+      }
+      responseDoc["count"] = count;
+      LOG_INFO("Ruuvi", "Listed %d tags via MQTT", count);
+    } else if (strcmp(action, "clear") == 0) {
+      // Clear all tags and switch to auto-discover
+      clearRegisteredTags();
+      setWhitelistMode(RuuviWhitelistMode::AUTO_DISCOVER);
+      saveRuuviWhitelist();
+      responseDoc["success"] = true;
+      responseDoc["action"] = "clear";
+      LOG_INFO("Ruuvi", "Cleared all tags via MQTT — auto-discover enabled");
+    } else {
+      responseDoc["success"] = false;
+      responseDoc["error"] = "Unknown action. Use: add, remove, list, clear";
+    }
+    
+    String ruuviResponsePayload;
+    serializeJson(responseDoc, ruuviResponsePayload);
+    client.publish(responseTopic.c_str(), ruuviResponsePayload.c_str());
+    return;
+  }
+#endif // HAS_BLE
 
   // Check if this is an OTA command
   String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";

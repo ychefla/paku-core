@@ -134,6 +134,7 @@ void DisplayUI::update() {
             button2Down = true;
             button2DownTime = millis();
             button2LongHandled = false;
+            Serial.printf("[BTN2] Down at %lu, screen=%d\n", button2DownTime, currentScreen);
         }
     }
     
@@ -145,14 +146,21 @@ void DisplayUI::update() {
         if (pinState == LOW && held >= LONG_PRESS_MS && !button2LongHandled) {
             // Long press detected!
             button2LongHandled = true;
+            Serial.printf("[BTN2] LONG PRESS detected (%lu ms), screen=%d, display=%d\n",
+                          held, currentScreen, displayEnabled);
 #ifdef HEATER_ENABLED
             if (displayEnabled && currentScreen == SCREEN_HEATER) {
                 toggleHeater();
                 lastUpdate = 0;  // Force immediate redraw
+            } else {
+                Serial.printf("[BTN2] Long press ignored: need SCREEN_HEATER(%d) but on %d\n",
+                              SCREEN_HEATER, currentScreen);
             }
 #endif
         } else if (pinState == HIGH) {
             // Button released
+            Serial.printf("[BTN2] Released after %lu ms (longHandled=%d)\n",
+                          held, button2LongHandled);
             if (!button2LongHandled && held < LONG_PRESS_MS) {
                 // Short press — switch screen
                 onButton2Click();
@@ -208,16 +216,17 @@ void DisplayUI::refresh() {
 void DisplayUI::displayOn() {
     displayEnabled = true;
     
-    // Turn on backlight at 70% brightness to save power
+    // Turn on backlight at 40% brightness to reduce heat and save power
+    // (TFT is easily readable at this level; increase if needed)
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5,0,0)
-    ledcWrite(0, 180);  // ~70% brightness (was 255)
+    ledcWrite(0, 100);  // ~40% brightness
 #else
-    ledcWrite(PIN_LCD_BL, 180);  // ~70% brightness (was 255)
+    ledcWrite(PIN_LCD_BL, 100);  // ~40% brightness
 #endif
     
     // Force immediate refresh
     lastUpdate = millis() - updateInterval;
-    Serial.println("Display ON (70% brightness)");
+    Serial.println("Display ON (40% brightness)");
 }
 
 void DisplayUI::displayOff() {
@@ -749,10 +758,21 @@ void DisplayUI::toggleHeater() {
          st.state == AutotermState::Running);
 
     if (heaterRunning) {
+#ifdef HEATER_EMULATE
+        // Route through command handler so emulation state is updated
+        static const char stopCmd[] = "{\"cmd\":\"stop\"}";
+        heater_addon_command(stopCmd, strlen(stopCmd));
+#else
         uart.shutdown();
+#endif
         Serial.println("[Display] Heater STOP via button");
     } else {
+#ifdef HEATER_EMULATE
+        static const char startCmd[] = "{\"cmd\":\"start\",\"power\":5}";
+        heater_addon_command(startCmd, strlen(startCmd));
+#else
         uart.start(MODE_BY_POWER, 0xFF, 5);
+#endif
         Serial.println("[Display] Heater START via button (power 5)");
     }
 }
