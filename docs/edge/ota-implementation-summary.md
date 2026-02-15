@@ -1,8 +1,8 @@
 # OTA Implementation Summary
 
-**Date:** December 8, 2025  
+**Date:** December 8, 2025 (updated February 2026)  
 **Status:** Complete ✅  
-**Version:** 1.0.0
+**Firmware Version:** Injected at build time via CI (`FIRMWARE_VERSION` build flag)
 
 ## Overview
 
