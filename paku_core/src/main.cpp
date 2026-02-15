@@ -138,6 +138,13 @@ String wifi_status = "";
 // MQTT settings
 const char* mqtt_server = MQTT_SERVER;
 const int mqtt_port = MQTT_PORT;
+#if defined(MQTT_USER) && defined(MQTT_PASSWORD)
+const char* mqtt_user = MQTT_USER;
+const char* mqtt_password = MQTT_PASSWORD;
+#else
+const char* mqtt_user = "";
+const char* mqtt_password = "";
+#endif
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -1341,7 +1348,10 @@ void connectMQTT() {
     //tft.setTextSize(2);
     //tft.println("Attempting MQTT connection...");
 
-    if (client.connect(deviceId)) {  // Use unique device ID as MQTT client ID
+    bool connected = (strlen(mqtt_user) > 0)
+        ? client.connect(deviceId, mqtt_user, mqtt_password)
+        : client.connect(deviceId);
+    if (connected) {  // Use unique device ID as MQTT client ID
       Serial.println("MQTT connected and subscribed to control topics");
 #if HAS_LED
       ledMqttConnected();  // Double blink to indicate success
@@ -2852,7 +2862,10 @@ void handleSystemState() {
 
         case PHASE_MQTT_TRY: {
           // Single-attempt MQTT connect (PubSubClient.connect() returns immediately)
-          if (client.connect(deviceId)) {
+          bool mqttOk = (strlen(mqtt_user) > 0)
+              ? client.connect(deviceId, mqtt_user, mqtt_password)
+              : client.connect(deviceId);
+          if (mqttOk) {
             Serial.println("MQTT connected");
 #if HAS_LED
             ledMqttConnected();
