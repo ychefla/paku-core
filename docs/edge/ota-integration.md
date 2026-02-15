@@ -399,16 +399,36 @@ The paku-iot backend should:
    - Display update status in UI
    - Alert on failures
 
+## Performance Characteristics
+
+**Typical Update Times (1 MB firmware):**
+
+| Phase | Duration |
+|-------|----------|
+| Download @ 1 Mbps | ~10 s |
+| Download @ 100 Kbps | ~100 s |
+| Verification (SHA256) | 2–5 s |
+| Installation | 10–20 s |
+| Reboot | 5–10 s |
+| **Total** | **30–150 s** |
+
+**Memory:** 4 KB download buffer (configurable), <2 KB static overhead, >20 KB free heap required.
+
+## Known Limitations
+
+1. **Blocking** — OTA blocks the main loop (1–5 min); sensor readings pause.
+2. **No resume** — interrupted downloads restart from scratch.
+3. **No signature verification** — relies on checksum only (planned future).
+4. **No delta updates** — full firmware image required.
+5. **SSL insecure** — currently `setInsecure()`; configure CA cert for production.
+
 ## Best Practices
 
-1. **Always verify checksums** - Don't skip checksum verification in production
-2. **Test updates** - Test new firmware on a development device first
-3. **Staged rollout** - Update devices gradually, not all at once
-4. **Version control** - Use semantic versioning for firmware
-5. **Backup firmware** - Keep previous firmware versions available
-6. **Monitor updates** - Watch serial output during first update
-7. **Document changes** - Maintain changelog for firmware versions
-8. **Handle failures** - Implement proper error handling and reporting
+1. **Always verify checksums** — don't skip in production
+2. **Test updates** — test on a development device first
+3. **Staged rollout** — update devices gradually
+4. **Semantic versioning** — use for firmware
+5. **Monitor updates** — watch serial output during first update
 
 ## Appendix: Error Codes
 

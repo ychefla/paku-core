@@ -1,131 +1,84 @@
 # Architecture
 
-This document describes the architecture of paku-core (EDGE firmware) and how it integrates with the broader Paku IoT system.
+System design of paku-core (EDGE firmware) and its integration with the Paku IoT system.
 
 ## System Overview
 
-The Paku system consists of two main components:
-
-1. **paku-core (EDGE)** - ESP32 firmware that runs on edge devices, collecting sensor data and communicating via MQTT
-2. **paku-iot (HOST)** - Host-side services for data collection, storage, and visualization
-
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Paku IoT System                                │
-└─────────────────────────────────────────────────────────────────────────────┘
-
     ┌──────────────────────┐           MQTT            ┌──────────────────────┐
     │   paku-core (EDGE)   │◄─────────────────────────►│   paku-iot (HOST)    │
-    │   ESP32 Firmware     │         Broker            │   Backend Services   │
+    │   ESP32 Firmware     │        Mosquitto           │   Backend Services   │
     └──────────────────────┘                           └──────────────────────┘
-              │                                                   │
               │                                                   │
     ┌─────────┴─────────┐                             ┌──────────┴──────────┐
     │     Sensors       │                             │   Data Storage &    │
-    │   - Temperature   │                             │   Visualization     │
-    │   - Humidity      │                             │   - InfluxDB        │
-    │   - Flow          │                             │   - Grafana         │
-    │   - Ruuvi Tags    │                             │   - Home Assistant  │
-    └───────────────────┘                             └─────────────────────┘
+    │  - RuuviTag (BLE) │                             │   Visualization     │
+    │  - DS18B20 (1-W)  │                             │   - PostgreSQL      │
+    │  - Flow (pulse)   │                             │   - Grafana         │
+    │  - Voltage (ADC)  │                             └─────────────────────┘
+    └───────────────────┘
 ```
 
-## paku-core Component Architecture
+- **paku-core (EDGE)** — ESP32 firmware: sensor collection, MQTT publishing
+- **paku-iot (HOST)** — Collector, PostgreSQL, Grafana, OTA service (Docker Compose)
+
+## EDGE Component Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           paku-core (ESP32)                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
-│   │    WiFi      │  │    MQTT      │  │     BLE      │  │   Display    │   │
-│   │   Manager    │  │   Client     │  │   Scanner    │  │   Driver     │   │
-│   └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘   │
-│          │                 │                 │                 │           │
-│          └─────────────────┴─────────────────┴─────────────────┘           │
-│                                    │                                       │
-│                          ┌─────────┴─────────┐                             │
-│                          │    Main Loop      │                             │
-│                          │   (FreeRTOS)      │                             │
-│                          └─────────┬─────────┘                             │
-│                                    │                                       │
-│   ┌────────────────────────────────┴────────────────────────────────────┐  │
-│   │                        Sensor Abstraction                           │  │
-│   ├────────────┬────────────┬────────────┬────────────┬────────────────┤  │
-│   │   Flow     │   Temp     │  Humidity  │   Ruuvi    │   Voltage      │  │
-│   │  Sensor    │  Sensors   │  Sensors   │   Tags     │   Sensors      │  │
-│   └────────────┴────────────┴────────────┴────────────┴────────────────┘  │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-                │                                                   │
-                ▼                                                   ▼
-         ┌──────────────┐                                   ┌──────────────┐
-         │  Hardware    │                                   │   Network    │
-         │  Interfaces  │                                   │   Stack      │
-         └──────────────┘                                   └──────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                       paku-core (ESP32)                      │
+├──────────┬──────────┬──────────┬──────────┬────────────────┤
+│   WiFi   │   MQTT   │   BLE    │ Display  │  OTA Client    │
+│  Manager │  Client  │ Scanner  │  Driver  │  (HTTP pull)   │
+├──────────┴──────────┴──────────┴──────────┴────────────────┤
+│                       Main Loop                             │
+│                  (Interval Manager)                          │
+├────────────┬────────────┬────────────┬─────────────────────┤
+│   Flow     │  DS18B20   │   Ruuvi    │   Voltage / Status  │
+│  Sensor    │  (1-Wire)  │   Tags     │   Sensors           │
+└────────────┴────────────┴────────────┴─────────────────────┘
 ```
 
-## Data Flow
+## MQTT Topic Structure
 
-### Sensor Data Collection
+The firmware uses multiple topic namespaces. The canonical schema is documented
+in paku-iot's [mqtt_schema.md](https://github.com/ychefla/paku-iot/blob/main/docs/mqtt_schema.md).
 
-```
-┌───────────┐    ┌─────────────┐    ┌────────────┐    ┌──────────────┐
-│  Sensor   │───►│  Process    │───►│  Create    │───►│   Payload    │
-│  Reading  │    │  Data       │    │  Payload   │    │   Queue      │
-└───────────┘    └─────────────┘    └────────────┘    └──────┬───────┘
-                                                              │
-                                                              ▼
-┌───────────┐    ┌─────────────┐    ┌────────────┐    ┌──────────────┐
-│  paku-iot │◄───│   MQTT      │◄───│   Batch    │◄───│   Timer      │
-│  Backend  │    │   Publish   │    │   Send     │    │   Interval   │
-└───────────┘    └─────────────┘    └────────────┘    └──────────────┘
-```
+### Sensor Data (collector consumes `+/+/+/data`)
 
-### MQTT Topic Structure
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `paku/sensors/{sensor_id}/data` | EDGE → HOST | RuuviTag / wired sensor JSON |
+| `paku/devices/{device_id}/telemetry/{type}/{location}` | EDGE → HOST | Per-metric legacy topics |
 
-The MQTT topic hierarchy is designed for multi-device support and extensibility.
+### Edge Status & Config (`+/edge/+/status`, `+/edge/+/config`)
 
-#### Topic Prefix
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `paku/edge/{device_id}/status` | EDGE → HOST | Device status (retained) |
+| `paku/edge/{device_id}/config/report` | EDGE → HOST | Current config (retained) |
+| `paku/edge/{device_id}/config/set` | HOST → EDGE | Push config changes |
+| `paku/edge/{device_id}/control` | HOST → EDGE | Control commands |
 
-All topics use the prefix: `paku/devices/{device_id}/`
+### OTA (`+/edge/+/ota/+`)
 
-Where `{device_id}` is derived from the ESP32 MAC address (e.g., `paku-AABBCC`).
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `paku/edge/{device_id}/cmd/ota` | HOST → EDGE | OTA command (firmware URL) |
+| `paku/edge/{device_id}/ota/status` | EDGE → HOST | OTA started / acknowledged |
+| `paku/edge/{device_id}/ota/progress` | EDGE → HOST | Download progress % |
+| `paku/edge/{device_id}/ota/result` | EDGE → HOST | Success / failure |
 
-#### Topic Hierarchy
+### Other Commands
 
-| Topic Pattern | Direction | Description |
-|---------------|-----------|-------------|
-| `paku/devices/{device_id}/state` | EDGE → IOT | Device online/offline status (retained) |
-| `paku/devices/{device_id}/telemetry` | EDGE → IOT | Periodic metrics and sensor data |
-| `paku/devices/{device_id}/cmd` | IOT → EDGE | Inbound commands (JSON) |
-| `paku/devices/{device_id}/lwt` | Broker | Last Will and Testament (offline on disconnect) |
-
-#### Telemetry Sub-topics
-
-Sensor data is published under the telemetry namespace:
-
-| Topic Pattern | Data Type | Description |
-|---------------|-----------|-------------|
-| `.../telemetry/temperature/{location}` | float (°C) | Temperature readings |
-| `.../telemetry/humidity/{location}` | float (%) | Humidity readings |
-| `.../telemetry/flow/{type}` | float (L/min) | Flow measurements |
-| `.../telemetry/power/{type}` | float (W) | Power metrics |
-| `.../telemetry/voltage/{source}` | float (V) | Voltage readings |
-| `.../telemetry/status/{component}` | int | Component status (0/1) |
-
-> **Note**: The current implementation uses a legacy `paku/{type}/{sensor}/{location}` format. 
-> See [INTEGRATION.md](INTEGRATION.md) for migration guidance.
-
-#### Expansion Points
-
-New sensors and devices can be added by:
-- Adding new `{location}` values under existing topic types
-- Adding new topic types under `telemetry/`
-- Registering additional `{device_id}` prefixes for new EDGE devices
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `paku/devices/{device_id}/cmd/wifi` | HOST → EDGE | WiFi scan command |
+| `paku/devices/{device_id}/cmd/ruuvi` | HOST → EDGE | Ruuvi scan command |
+| `paku/heater/{device_id}/cmd` | HOST → EDGE | Heater control |
+| `paku/control` | HOST → EDGE | Legacy broadcast control |
 
 ### Payload Format
-
-All sensor data is published as JSON with a consistent format:
 
 ```json
 {
@@ -135,115 +88,37 @@ All sensor data is published as JSON with a consistent format:
 }
 ```
 
-System telemetry includes additional metadata:
+## Timing & Power Management
 
-```json
-{
-  "uptime_s": 3600,
-  "rssi": -65,
-  "heap_free": 45000,
-  "fw_version": "1.0.0",
-  "device_id": "paku-AABBCC"
-}
-```
+| Mode | Sensor Interval | MQTT Interval |
+|------|-----------------|---------------|
+| Active (heater on, first hour) | 5 s | 10 s |
+| Active (after 1 hour) | 60 s | 1 h |
+| Idle | 60 s | 1 h |
+
+Sleep cycle: 30 s awake → 15 s deep sleep → timer wake → reconnect.
+
+## Hardware
+
+- **Board**: LilyGo T-Display S3 (ESP32-S3)
+- **Display**: ST7789V TFT via SPI
+- **Pin config**: `src/pin_config.h`
+- **Board definitions**: `boards/`
 
 ## Key Components
 
-### WiFi Manager
-
-Handles network connectivity with multi-SSID support:
-
-- **Priority-based connection**: Tries networks in configured order (HOME, IPHONE, PAKU)
-- **Auto-reconnect**: Monitors connection state and reconnects on failure
-- **Visual feedback**: Displays connection status on TFT screen
-
-### MQTT Client
-
-Manages communication with the MQTT broker:
-
-- **Connection handling**: Auto-connect and reconnect with retry logic
-- **Topic subscription**: Listens on `paku/control` for commands
-- **Batched publishing**: Collects payloads and sends at configured intervals
-
-### BLE Scanner
-
-Discovers and reads data from Bluetooth Low Energy sensors:
-
-- **Background scanning**: Runs as a FreeRTOS task
-- **Device discovery**: Scans for Ruuvi tags and compatible BLE sensors
-- **Data extraction**: Parses manufacturer data for temperature/humidity
-
-### Display Driver
-
-Manages the onboard TFT display:
-
-- **Status display**: Shows current readings and connection state
-- **Boot logo**: Displays Paku logo on startup
-- **Low-power mode**: Supports display dimming during sleep
-
-### Interval Manager
-
-Controls data collection and transmission timing:
-
-- **Fast mode**: 5s sensor / 10s MQTT when heater is active
-- **Slow mode**: 60s sensor / 1h MQTT when idle
-- **Power management**: Coordinates with deep sleep
-
-## Timing and Power Management
-
-### Operational Modes
-
-| Mode | Sensor Interval | MQTT Interval | Duration |
-|------|-----------------|---------------|----------|
-| Active (heater on, first hour) | 5 seconds | 10 seconds | 1 hour |
-| Active (heater on, after 1 hour) | 60 seconds | 1 hour | Until heater off |
-| Idle | 60 seconds | 1 hour | Until heater on |
-
-### Sleep Cycle
-
-The device follows a duty cycle to conserve power:
-
-1. **Awake period**: 30 seconds of active data collection
-2. **Deep sleep**: 15 seconds of low-power state
-3. **Wake**: Timer-triggered wake from deep sleep
-4. **Resume**: Reconnect WiFi/MQTT and continue
-
-## Hardware Abstraction
-
-### Pin Configuration
-
-Hardware-specific pin mappings are defined in `src/pin_config.h`:
-
-- **Display pins**: SPI interface for ST7789V TFT
-- **Sensor pins**: GPIO for flow sensor interrupts
-- **Power control**: Backlight and power management
-
-### Board Support
-
-Currently supported boards:
-
-- **LilyGo T-Display S3** (ESP32-S3) - Primary development target
-
-Custom board definitions are stored in `boards/` directory.
-
-## Future Architecture Considerations
-
-### Planned Improvements
-
-1. **Module extraction**: Refactor components into separate libraries
-2. **Configuration system**: Runtime configuration via MQTT or NVS
-3. **OTA updates**: Over-the-air firmware updates
-4. **Enhanced BLE**: Ruuvi tag parsing and additional sensor support
-
-### Extension Points
-
-- **New sensors**: Add to sensor abstraction layer
-- **Additional MQTT topics**: Extend topic structure
-- **Custom displays**: Implement alternative display drivers
-- **Command handlers**: Add new control commands
+| Component | Responsibility |
+|-----------|---------------|
+| WiFi Manager | Multi-SSID with fallback, auto-reconnect |
+| MQTT Client | Connect, subscribe, batched publish |
+| BLE Scanner | FreeRTOS task, Ruuvi & MoKo parsing |
+| Display Driver | Status screen, boot logo |
+| OTA Client | HTTP firmware download, progress reporting |
+| Interval Manager | Fast/slow mode switching |
 
 ## Related Documents
 
-- [Integration Guide](INTEGRATION.md) - Connecting to paku-iot
-- [Configuration Reference](edge/config.md) - Configuration options
-- [Requirements](requirements.md) - System requirements
+- [Quickstart](edge/quickstart.md) — Build and flash
+- [Integration Guide](INTEGRATION.md) — Connecting to paku-iot
+- [Logging](edge/logging.md) — Debug output configuration
+- [OTA](edge/ota-integration.md) — OTA firmware update guide

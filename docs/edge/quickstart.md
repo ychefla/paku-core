@@ -1,47 +1,48 @@
-# EDGE quickstart (ESP32 + PlatformIO)
+# EDGE Quickstart
 
-## Development Modes
+## Supported Devices
 
-This project supports both **container** and **local** development:
+| Environment | Board | Features |
+|------------|-------|----------|
+| `lilygo-t-display-s3` | LilyGo T-Display S3 (ESP32-S3) | Display, touch, BLE (Ruuvi) |
+| `esp32-ch340c-30pin` | Generic ESP32 DevKit 30-pin | BLE (Ruuvi), headless |
+| `esp8266-wired-sensors` | ESP8266 NodeMCU v2 | DS18B20 temp sensor, no BLE |
 
-- **Container**: Isolated, reproducible environment (use "Reopen in Container" in VS Code)
-- **Local**: Direct USB access for flashing physical devices
-
-For embedded development with USB flashing, **local development is recommended** for reliable device access. See [development-modes.md](../development-modes.md) for details.
+See [wiring.md](wiring.md) for pin assignments and wiring diagrams.
 
 ## Requirements
 - VS Code + PlatformIO extension, or PlatformIO CLI
-- LilyGo T-Display S3 (ESP32-S3) board
 - USB cable
+- Your target board (see table above)
+- For ESP8266: DS18B20 sensor + 4.7kΩ pull-up resistor ([wiring](wiring.md#esp8266--ds18b20-temperature-sensor))
 
-## Configuration
-Before building, you must set up your secrets file:
+## Setup
 
-1. Copy the template:
+1. **Select your device** — set `default_envs` in `platformio.ini`:
+   ```ini
+   [platformio]
+   default_envs = lilygo-t-display-s3  ; or esp32-ch340c-30pin / esp8266-wired-sensors
+   ```
+
+2. **Configure secrets**:
    ```bash
    cp paku_core/include/secrets.h.template paku_core/include/secrets.h
    ```
+   Edit `secrets.h` with your WiFi and MQTT credentials. See [config.md](config.md) for all options.
 
-2. Edit `paku_core/include/secrets.h` with your WiFi and MQTT credentials.
+3. **Build & flash**:
+   ```bash
+   cd paku_core
+   pio run            # Build
+   pio run -t upload  # Upload to device
+   pio device monitor # Serial monitor (115200 baud)
+   ```
+   Or use the PlatformIO panel in VS Code (Build → Upload → Monitor).
 
-See [config.md](config.md) for detailed configuration options.
-
-## Build & flash (VS Code)
-1. Open the `paku_core` folder in VS Code.
-2. Install the PlatformIO extension (if not installed).
-3. Connect the ESP32 via USB.
-4. In the PlatformIO panel:
-   - **Build** (checkmark icon)
-   - **Upload** (arrow icon)
-   - **Monitor** (plug icon, optional)
-
-## Build & flash (CLI)
-```bash
-cd paku_core
-pio run            # Build
-pio run -t upload  # Upload to device
-pio device monitor # Serial monitor (optional)
-```
+   To target a specific environment without changing `platformio.ini`:
+   ```bash
+   pio run -e esp8266-wired-sensors -t upload
+   ```
 
 ## Next Steps
 
@@ -116,4 +117,4 @@ For local development and testing:
    #define PAKU_IOT_USE_TLS              false
    ```
 
-See [paku-iot-integration.md](paku-iot-integration.md) for complete protocol documentation.
+See [Integration Guide](../INTEGRATION.md) for complete protocol documentation.
