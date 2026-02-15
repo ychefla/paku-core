@@ -2,6 +2,7 @@
 #include <ESP8266WiFi.h>
 #else
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #endif
 
 #include <PubSubClient.h>
@@ -146,8 +147,17 @@ const char* mqtt_user = "";
 const char* mqtt_password = "";
 #endif
 
+// MQTT TLS: use WiFiClientSecure on port 8883, plain WiFiClient on 1883
+#if MQTT_PORT == 8883 && !defined(ESP8266)
+  #ifndef MQTT_CA_CERT
+    #error "MQTT_CA_CERT must be defined in secrets.h when using MQTT_PORT 8883 (TLS)"
+  #endif
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+#else
 WiFiClient espClient;
 PubSubClient client(espClient);
+#endif
 // ESP32 native time functions will be used instead of NTPClient for automatic DST support
 
 // WiFi credentials manager with NVS persistence
@@ -663,6 +673,14 @@ void setup() {
 
     Serial.println("Setup MQTT Connection...");
     
+    // Configure MQTT TLS if using secure port
+#if MQTT_PORT == 8883 && !defined(ESP8266)
+    espClient.setCACert(MQTT_CA_CERT);
+    Serial.println("MQTT TLS enabled (port 8883)");
+#else
+    Serial.println("MQTT plain TCP (port 1883)");
+#endif
+
     // Configure ESP32 native time with timezone support (auto DST)
     // NTP will sync in the background — no blocking wait.
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
