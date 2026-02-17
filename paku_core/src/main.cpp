@@ -736,7 +736,8 @@ void setup() {
     }
 
     // >>> DEBUG: dump compiled-in MQTT secrets for OTA vs USB comparison <<<
-    Serial.println("========== MQTT SECRETS DEBUG ==========");
+    // (temporary — remove after verifying OTA secrets are correctly injected)
+    Serial.println("========== MQTT SECRETS DEBUG v2 ==========");
     Serial.printf("  MQTT_LOCAL:          [%s]\n", MQTT_LOCAL);
     Serial.printf("  MQTT_LOCAL_PORT:     [%d]\n", MQTT_LOCAL_PORT);
     Serial.printf("  MQTT_LOCAL_USER:     [%s]\n", MQTT_LOCAL_USER);
