@@ -168,18 +168,14 @@ const char* mqtt_password = "";
   #define MQTT_FALLBACK_USE_TLS 0
 #endif
 
-// MQTT TLS: use WiFiClientSecure when either broker needs TLS, plain WiFiClient otherwise
-#if (MQTT_PORT == 8883 || MQTT_FALLBACK_USE_TLS) && !defined(ESP8266)
-  #ifndef MQTT_CA_CERT
-    // CA cert is optional — cloud broker may use publicly trusted CA
-    #define MQTT_CA_CERT nullptr
-  #endif
-WiFiClientSecure espClient;
-PubSubClient client(espClient);
-#else
-WiFiClient espClient;
-PubSubClient client(espClient);
+// CA cert for TLS brokers (optional — cloud broker may use publicly trusted CA)
+#ifndef MQTT_CA_CERT
+  #define MQTT_CA_CERT nullptr
 #endif
+
+// PubSubClient — transport (WiFiClient vs WiFiClientSecure) is managed
+// by MqttManager internally, switching per-broker as needed.
+PubSubClient client;
 // ESP32 native time functions will be used instead of NTPClient for automatic DST support
 
 // MQTT broker failover manager
@@ -738,7 +734,9 @@ void setup() {
     client.setBufferSize(1024);  // Increase from default 256 bytes to handle larger config messages
     
     // Initialize MQTT broker failover manager
-    mqttMgr.begin(client, espClient, deviceId, primaryBroker, fallbackBroker, onMqttConnect);
+    // MqttManager owns WiFiClient (plain) and WiFiClientSecure (TLS) internally,
+    // switching PubSubClient's transport automatically per broker.
+    mqttMgr.begin(client, deviceId, primaryBroker, fallbackBroker, onMqttConnect);
 
 #ifndef ESP8266
     // Initialize mDNS for local broker resolution (homeassistant.local)
@@ -3109,7 +3107,30 @@ void processOtaUpdate() {
   }
 
   Serial.println("OTA: Processing pending update...");
-  
+
+#if HAS_DISPLAY
+  // Show OTA start screen on display
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(3);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setCursor(0, 0);
+  tft.println(" OTA Update");
+  tft.drawLine(0, 28, 320, 28, TFT_CYAN);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(10, 45);
+  tft.printf("Version: %s", pendingOtaVersion.c_str());
+  tft.setCursor(10, 70);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.println("Downloading...");
+  // Draw empty progress bar
+  tft.drawRect(10, 100, 300, 25, TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.setCursor(130, 105);
+  tft.println("0%");
+#endif
+
   // Configure OTA update
   OtaConfig config;
   config.firmwareUrl = pendingOtaUrl.c_str();
@@ -3146,16 +3167,32 @@ void processOtaUpdate() {
 
   if (result == OtaResult::SUCCESS) {
     Serial.println("OTA: Update successful! Rebooting in 3 seconds...");
-    // Short delay to allow MQTT message to be sent, then reboot
+#if HAS_DISPLAY
+    tft.fillRect(10, 65, 300, 25, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(10, 70);
+    tft.println("Update OK! Rebooting...");
+#endif
     unsigned long rebootTime = millis();
     while (millis() - rebootTime < 3000) {
-      client.loop();  // Allow MQTT to process messages
+      client.loop();
       delay(100);
     }
     ESP.restart();
   } else {
     Serial.print("OTA: Update failed: ");
     Serial.println(otaClient.getLastError());
+#if HAS_DISPLAY
+    tft.fillRect(10, 65, 300, 95, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.setCursor(10, 70);
+    tft.println("Update FAILED!");
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.setCursor(10, 95);
+    tft.println(otaClient.getLastError());
+#endif
   }
 }
 
@@ -3766,6 +3803,30 @@ void otaProgressCallback(const OtaProgress& progress) {
   Serial.print(progress.progressPercent);
   Serial.print("% - ");
   Serial.println(OtaClient::stateToString(progress.state));
+
+#if HAS_DISPLAY
+  // Update progress bar on TFT display
+  int barWidth = (int)(progress.progressPercent * 296.0 / 100.0);
+  tft.fillRect(12, 102, barWidth, 21, TFT_GREEN);
+  // Update percentage text
+  tft.fillRect(100, 105, 120, 18, (barWidth > 100) ? TFT_GREEN : TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setTextColor((barWidth > 100) ? TFT_BLACK : TFT_WHITE,
+                   (barWidth > 100) ? TFT_GREEN : TFT_BLACK);
+  tft.setCursor(120, 105);
+  tft.printf("%d%%", progress.progressPercent);
+  // Show downloaded/total below the bar
+  tft.fillRect(10, 135, 300, 20, TFT_BLACK);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.setCursor(10, 138);
+  if (progress.totalBytes > 0) {
+    tft.printf("%dKB / %dKB  %ds",
+              progress.downloadedBytes / 1024,
+              progress.totalBytes / 1024,
+              progress.elapsedMs / 1000);
+  }
+#endif
 
   // Publish progress to MQTT
   String progressTopic = String("paku/edge/") + deviceId + "/ota/progress";

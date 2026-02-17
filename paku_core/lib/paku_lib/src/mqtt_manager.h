@@ -18,8 +18,14 @@
  * reaches both HA and the cloud backend regardless of which broker the
  * ESP32 is connected to.
  *
- * @note This class does NOT own the PubSubClient or WiFiClient instances.
- *       The caller must create and pass them in via begin().
+ * TLS handling:
+ *   The manager owns both a WiFiClient (plain) and WiFiClientSecure (TLS).
+ *   PubSubClient is re-pointed to the correct transport when switching
+ *   brokers, so a plain-TCP local broker and a TLS cloud broker work
+ *   seamlessly without the caller needing to manage two client objects.
+ *
+ * @note This class does NOT own the PubSubClient instance.
+ *       The caller must create and pass it in via begin().
  */
 
 #ifndef ESP8266
@@ -41,6 +47,10 @@ static constexpr uint8_t  MAX_CONNECT_FAILURES = 3;
 /// @brief How often to re-probe the primary broker while on fallback (ms).
 static constexpr unsigned long PRIMARY_RETRY_INTERVAL_MS = 60000;
 
+/// @brief Minimum delay between individual connection attempts (ms).
+///        Prevents hammering the broker in a tight loop.
+static constexpr unsigned long CONNECT_RETRY_DELAY_MS = 2000;
+
 /// @brief Which broker the manager is currently targeting.
 enum class MqttBroker : uint8_t {
     PRIMARY_LOCAL,    ///< RPi Mosquitto (homeassistant.local / hardcoded IP)
@@ -60,10 +70,14 @@ struct MqttBrokerConfig {
 /**
  * @brief Manages MQTT connection with automatic failover between local and cloud brokers.
  *
+ * Owns its own WiFiClient (plain) and WiFiClientSecure (TLS) instances.
+ * PubSubClient is re-pointed to the correct transport automatically.
+ *
  * Usage:
  * @code
+ *   PubSubClient client;
  *   MqttManager mqttMgr;
- *   mqttMgr.begin(client, espClient, deviceId, primaryCfg, fallbackCfg, onConnect);
+ *   mqttMgr.begin(client, deviceId, primaryCfg, fallbackCfg, onConnect);
  *   // In loop():
  *   mqttMgr.maintain();
  * @endcode
@@ -78,14 +92,12 @@ public:
      * @brief Initialize the manager with broker configurations.
      *
      * @param client       Reference to PubSubClient (caller-owned)
-     * @param netClient    Reference to WiFiClient or WiFiClientSecure (caller-owned)
      * @param deviceId     MQTT client ID (must remain valid for lifetime)
      * @param primary      Local broker configuration (RPi)
      * @param fallback     Cloud broker configuration
      * @param onConnect    Callback invoked on successful connection
      */
     void begin(PubSubClient& client,
-               Client& netClient,
                const char* deviceId,
                const MqttBrokerConfig& primary,
                const MqttBrokerConfig& fallback,
@@ -105,7 +117,7 @@ public:
      * @brief Perform a single MQTT connect attempt to the currently targeted broker.
      *
      * This is the non-blocking equivalent used by the Phase 2 state machine.
-     * Returns the result of a single PubSubClient::connect() call.
+     * Throttled by CONNECT_RETRY_DELAY_MS to prevent hammering.
      *
      * @return true if connected
      */
@@ -134,22 +146,13 @@ public:
 
     /**
      * @brief Probe local broker reachability via TCP connect.
-     *
-     * Uses a short timeout (LOCAL_PROBE_TIMEOUT_MS) to avoid blocking
-     * when the RPi is on a different network or offline.
-     *
      * @return true if local broker responded to TCP connect
      */
     bool isLocalReachable();
 
     /**
      * @brief Resolve the local broker hostname via mDNS.
-     *
-     * Attempts mDNS resolution of the configured primary host.
-     * Falls back to the hardcoded IP if mDNS fails.
-     * ESP8266 does not support mDNS resolution — always uses hardcoded host.
-     *
-     * @return Resolved IP address
+     * @return Resolved IP address (INADDR_NONE on failure)
      */
     IPAddress resolveLocalBroker();
 
@@ -158,7 +161,6 @@ private:
     void switchBroker();
 
     PubSubClient*      _client      = nullptr;
-    Client*            _netClient   = nullptr;
     const char*        _deviceId    = nullptr;
 
     MqttBrokerConfig   _primary     = {};
@@ -167,7 +169,14 @@ private:
     MqttBroker         _activeBroker     = MqttBroker::PRIMARY_LOCAL;
     uint8_t            _failCount        = 0;
     unsigned long      _lastPrimaryRetry = 0;
+    unsigned long      _lastConnectAttempt = 0;
     bool               _initialProbed    = false;
 
     OnConnectCallback  _onConnect   = nullptr;
+
+    // --- Transport clients (owned by this class) ---
+    WiFiClient         _plainClient;
+#ifndef ESP8266
+    WiFiClientSecure   _secureClient;
+#endif
 };

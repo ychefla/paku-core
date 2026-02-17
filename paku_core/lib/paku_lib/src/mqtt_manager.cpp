@@ -2,8 +2,10 @@
  * @file mqtt_manager.cpp
  * @brief MQTT broker failover manager implementation.
  *
- * Implements local-preferred, cloud-synced MQTT broker selection
- * with automatic failover and return-to-primary logic.
+ * Key design: owns both a WiFiClient (plain TCP) and WiFiClientSecure (TLS).
+ * PubSubClient is re-pointed to the correct transport via setClient() each
+ * time the active broker changes, so a plain-TCP local broker and a TLS
+ * cloud broker coexist without the caller managing two client objects.
  *
  * @see mqtt_manager.h for architecture overview.
  */
@@ -16,7 +18,7 @@
   #include "logging.h"
 #else
   #define LOG_INFO(cat, fmt, ...)      Serial.printf("[INFO] [%s] " fmt "\n", cat, ##__VA_ARGS__)
-  #define LOG_DEBUG_MQTT(fmt, ...)     do {} while(0)  // Disabled without logging.h
+  #define LOG_DEBUG_MQTT(fmt, ...)     do {} while(0)
 #endif
 
 #ifndef ESP8266
@@ -28,22 +30,24 @@
 // ============================================================================
 
 void MqttManager::begin(PubSubClient& client,
-                        Client& netClient,
                         const char* deviceId,
                         const MqttBrokerConfig& primary,
                         const MqttBrokerConfig& fallback,
                         OnConnectCallback onConnect) {
     _client     = &client;
-    _netClient  = &netClient;
     _deviceId   = deviceId;
     _primary    = primary;
     _fallback   = fallback;
     _onConnect  = onConnect;
 
-    _activeBroker     = MqttBroker::PRIMARY_LOCAL;
-    _failCount        = 0;
-    _lastPrimaryRetry = 0;
-    _initialProbed    = false;
+    _activeBroker      = MqttBroker::PRIMARY_LOCAL;
+    _failCount         = 0;
+    _lastPrimaryRetry  = 0;
+    _lastConnectAttempt = 0;
+    _initialProbed     = false;
+
+    // Apply initial broker config (sets server + transport client)
+    applyBrokerConfig(_primary);
 }
 
 bool MqttManager::maintain() {
@@ -58,11 +62,12 @@ bool MqttManager::maintain() {
         if (isLocalReachable()) {
             LOG_INFO("MqttMgr", "Local broker reachable — using PRIMARY");
             _activeBroker = MqttBroker::PRIMARY_LOCAL;
+            applyBrokerConfig(_primary);
         } else {
             LOG_INFO("MqttMgr", "Local broker unreachable — using CLOUD fallback");
             _activeBroker = MqttBroker::FALLBACK_CLOUD;
+            applyBrokerConfig(_fallback);
         }
-        applyBrokerConfig(_activeBroker == MqttBroker::PRIMARY_LOCAL ? _primary : _fallback);
     }
 
     // --- Already connected ---
@@ -79,8 +84,7 @@ bool MqttManager::maintain() {
                 _activeBroker = MqttBroker::PRIMARY_LOCAL;
                 applyBrokerConfig(_primary);
                 _failCount = 0;
-                // Will reconnect on next maintain() call
-                return false;
+                return false;  // Will reconnect on next maintain()
             } else {
                 LOG_DEBUG_MQTT("Primary still unreachable, staying on cloud");
             }
@@ -88,15 +92,32 @@ bool MqttManager::maintain() {
         return true;
     }
 
-    // --- Not connected — attempt connection ---
+    // --- Not connected — attempt connection (throttled) ---
     return tryConnectOnce();
 }
 
 bool MqttManager::tryConnectOnce() {
     if (!_client) return false;
 
+    // Throttle: don't retry faster than CONNECT_RETRY_DELAY_MS
+    unsigned long now = millis();
+    if (_lastConnectAttempt != 0 &&
+        (now - _lastConnectAttempt) < CONNECT_RETRY_DELAY_MS) {
+        return false;
+    }
+    _lastConnectAttempt = now;
+
     const MqttBrokerConfig& cfg =
         (_activeBroker == MqttBroker::PRIMARY_LOCAL) ? _primary : _fallback;
+
+    // Skip if broker host is empty/unconfigured
+    if (!cfg.host || strlen(cfg.host) == 0) {
+        LOG_INFO("MqttMgr", "%s broker not configured — skipping",
+                 activeBrokerName());
+        _failCount = MAX_CONNECT_FAILURES;  // Force switch
+        switchBroker();
+        return false;
+    }
 
     applyBrokerConfig(cfg);
 
@@ -107,11 +128,11 @@ bool MqttManager::tryConnectOnce() {
     String lwtTopic = String("paku/edge/") + _deviceId + "/status";
 
     bool connected;
-    if (strlen(cfg.user) > 0) {
+    if (cfg.user && strlen(cfg.user) > 0) {
         connected = _client->connect(
             _deviceId,
             cfg.user, cfg.pass,
-            lwtTopic.c_str(), 1, true,  // QoS 1, retained
+            lwtTopic.c_str(), 1, true,
             "{\"online\":false}"
         );
     } else {
@@ -128,7 +149,6 @@ bool MqttManager::tryConnectOnce() {
         LOG_INFO("MqttMgr", "Connected to %s broker %s:%d",
                  activeBrokerName(), cfg.host, cfg.port);
 
-        // Invoke callback so caller can subscribe to topics
         if (_onConnect) {
             _onConnect(*_client, _activeBroker);
         }
@@ -176,7 +196,6 @@ bool MqttManager::isLocalReachable() {
     LOG_DEBUG_MQTT("TCP probe %s:%d (timeout %d ms)...",
                    _primary.host, _primary.port, LOCAL_PROBE_TIMEOUT_MS);
 
-    // Try mDNS-resolved IP first, fall back to hostname
     IPAddress resolved = resolveLocalBroker();
     bool ok = probe.connect(resolved, _primary.port, LOCAL_PROBE_TIMEOUT_MS);
     probe.stop();
@@ -187,8 +206,6 @@ bool MqttManager::isLocalReachable() {
 
 IPAddress MqttManager::resolveLocalBroker() {
 #ifndef ESP8266
-    // Try mDNS first (e.g., "homeassistant.local" → 192.168.x.x)
-    // Strip ".local" suffix if present for MDNS.queryHost()
     String host(_primary.host);
     if (host.endsWith(".local")) {
         String mdnsName = host.substring(0, host.length() - 6);
@@ -202,14 +219,10 @@ IPAddress MqttManager::resolveLocalBroker() {
     }
 #endif
 
-    // Fall back to direct IP parsing or DNS
     IPAddress ip;
     if (ip.fromString(_primary.host)) {
-        return ip;  // Already an IP address
+        return ip;
     }
-
-    // Let WiFiClient handle DNS resolution via hostname
-    // Return INADDR_NONE — caller will use hostname string directly
     return INADDR_NONE;
 }
 
@@ -218,16 +231,26 @@ IPAddress MqttManager::resolveLocalBroker() {
 // ============================================================================
 
 void MqttManager::applyBrokerConfig(const MqttBrokerConfig& cfg) {
-    _client->setServer(cfg.host, cfg.port);
-
+    // Select the correct transport client based on TLS requirement
 #ifndef ESP8266
-    // Apply TLS certificate if this broker uses TLS
-    if (cfg.useTls && cfg.caCert) {
-        WiFiClientSecure* secClient = static_cast<WiFiClientSecure*>(_netClient);
-        secClient->setCACert(cfg.caCert);
-        LOG_DEBUG_MQTT("TLS CA cert applied for %s", cfg.host);
+    if (cfg.useTls) {
+        if (cfg.caCert) {
+            _secureClient.setCACert(cfg.caCert);
+        } else {
+            _secureClient.setInsecure();  // Accept any cert (not ideal, but functional)
+        }
+        _client->setClient(_secureClient);
+        LOG_DEBUG_MQTT("Using WiFiClientSecure (TLS) for %s:%d", cfg.host, cfg.port);
+    } else {
+        _client->setClient(_plainClient);
+        LOG_DEBUG_MQTT("Using WiFiClient (plain TCP) for %s:%d", cfg.host, cfg.port);
     }
+#else
+    // ESP8266 doesn't support WiFiClientSecure in the same way
+    _client->setClient(_plainClient);
 #endif
+
+    _client->setServer(cfg.host, cfg.port);
 }
 
 void MqttManager::switchBroker() {
@@ -235,7 +258,7 @@ void MqttManager::switchBroker() {
 
     if (_activeBroker == MqttBroker::PRIMARY_LOCAL) {
         _activeBroker = MqttBroker::FALLBACK_CLOUD;
-        _lastPrimaryRetry = millis();  // Start retry timer
+        _lastPrimaryRetry = millis();
         LOG_INFO("MqttMgr", ">>> Switching to CLOUD fallback broker (%s:%d)",
                  _fallback.host, _fallback.port);
     } else {
