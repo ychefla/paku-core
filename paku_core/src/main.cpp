@@ -140,32 +140,36 @@ bool generatePlaceholderData = false;
 String wifi_status = "";
 
 
-// MQTT settings — primary (local) and fallback (cloud) broker configs
-const char* mqtt_server = MQTT_SERVER;
-const int mqtt_port = MQTT_PORT;
-#if defined(MQTT_USER) && defined(MQTT_PASSWORD)
-const char* mqtt_user = MQTT_USER;
-const char* mqtt_password = MQTT_PASSWORD;
-#else
-const char* mqtt_user = "";
-const char* mqtt_password = "";
+// MQTT settings — cloud (MQTT_SERVER) and local HA (MQTT_LOCAL) broker configs
+// Cloud broker defaults (used as fallback when local HA is unreachable)
+#ifndef MQTT_SERVER
+  #define MQTT_SERVER ""
+#endif
+#ifndef MQTT_PORT
+  #define MQTT_PORT 8883
+#endif
+#ifndef MQTT_USER
+  #define MQTT_USER ""
+#endif
+#ifndef MQTT_PASSWORD
+  #define MQTT_PASSWORD ""
+#endif
+#ifndef MQTT_USE_TLS
+  #define MQTT_USE_TLS 0
 #endif
 
-// Fallback cloud broker settings (defaults if not defined in secrets.h)
-#ifndef MQTT_FALLBACK_SERVER
-  #define MQTT_FALLBACK_SERVER ""
+// Local HA broker defaults (tried first — fast, works offline)
+#ifndef MQTT_LOCAL
+  #define MQTT_LOCAL "homeassistant.local"
 #endif
-#ifndef MQTT_FALLBACK_PORT
-  #define MQTT_FALLBACK_PORT 8883
+#ifndef MQTT_LOCAL_PORT
+  #define MQTT_LOCAL_PORT 1883
 #endif
-#ifndef MQTT_FALLBACK_USER
-  #define MQTT_FALLBACK_USER ""
+#ifndef MQTT_LOCAL_USER
+  #define MQTT_LOCAL_USER ""
 #endif
-#ifndef MQTT_FALLBACK_PASSWORD
-  #define MQTT_FALLBACK_PASSWORD ""
-#endif
-#ifndef MQTT_FALLBACK_USE_TLS
-  #define MQTT_FALLBACK_USE_TLS 0
+#ifndef MQTT_LOCAL_PASSWORD
+  #define MQTT_LOCAL_PASSWORD ""
 #endif
 
 // CA cert for TLS brokers (optional — cloud broker may use publicly trusted CA)
@@ -696,13 +700,14 @@ void setup() {
     Serial.println("Setup MQTT Connection...");
     
     // Configure broker configs for failover manager
+    // Primary = local HA (MQTT_LOCAL), Fallback = cloud (MQTT_SERVER)
     static const MqttBrokerConfig primaryBroker = {
-        MQTT_SERVER,                              // host (homeassistant.local)
-        static_cast<uint16_t>(MQTT_PORT),         // port (1883)
-        mqtt_user,                                // user
-        mqtt_password,                            // password
-        (MQTT_PORT == 8883),                      // useTls
-#if MQTT_PORT == 8883 && !defined(ESP8266)
+        MQTT_LOCAL,                               // host (homeassistant.local)
+        static_cast<uint16_t>(MQTT_LOCAL_PORT),   // port (1883)
+        MQTT_LOCAL_USER,                          // user
+        MQTT_LOCAL_PASSWORD,                      // password
+        (MQTT_LOCAL_PORT == 8883),                // useTls
+#if MQTT_LOCAL_PORT == 8883 && !defined(ESP8266)
         MQTT_CA_CERT                              // caCert
 #else
         nullptr                                   // caCert (no TLS)
@@ -710,13 +715,13 @@ void setup() {
     };
     
     static const MqttBrokerConfig fallbackBroker = {
-        MQTT_FALLBACK_SERVER,                     // host (cloud)
-        static_cast<uint16_t>(MQTT_FALLBACK_PORT),// port (8883)
-        MQTT_FALLBACK_USER,                       // user
-        MQTT_FALLBACK_PASSWORD,                   // password
-        (MQTT_FALLBACK_USE_TLS != 0),             // useTls
-#if MQTT_FALLBACK_USE_TLS && !defined(ESP8266)
-        MQTT_CA_CERT                              // caCert (shared with primary)
+        MQTT_SERVER,                              // host (cloud)
+        static_cast<uint16_t>(MQTT_PORT),         // port (8883)
+        MQTT_USER,                                // user
+        MQTT_PASSWORD,                            // password
+        (MQTT_USE_TLS != 0),                      // useTls
+#if MQTT_USE_TLS && !defined(ESP8266)
+        MQTT_CA_CERT                              // caCert
 #else
         nullptr                                   // caCert
 #endif
@@ -724,7 +729,7 @@ void setup() {
 
     // Log broker configuration
     Serial.printf("  Primary broker: %s:%d\n", primaryBroker.host, primaryBroker.port);
-    if (strlen(MQTT_FALLBACK_SERVER) > 0) {
+    if (strlen(MQTT_SERVER) > 0) {
         Serial.printf("  Fallback broker: %s:%d\n", fallbackBroker.host, fallbackBroker.port);
     } else {
         Serial.println("  Fallback broker: not configured");
