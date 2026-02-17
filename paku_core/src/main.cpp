@@ -25,6 +25,10 @@
 #include "sensor_placeholders.h"
 #include "OtaClient.h"
 #include "wifi_manager.h"       // WiFi credentials manager with NVS persistence
+#include "mqtt_manager.h"       // MQTT broker failover (local-preferred, cloud-synced)
+#ifndef ESP8266
+#include <ESPmDNS.h>            // mDNS for resolving homeassistant.local
+#endif
 #include <string>
 
 // Firmware version
@@ -136,7 +140,7 @@ bool generatePlaceholderData = false;
 String wifi_status = "";
 
 
-// MQTT settings
+// MQTT settings — primary (local) and fallback (cloud) broker configs
 const char* mqtt_server = MQTT_SERVER;
 const int mqtt_port = MQTT_PORT;
 #if defined(MQTT_USER) && defined(MQTT_PASSWORD)
@@ -147,10 +151,28 @@ const char* mqtt_user = "";
 const char* mqtt_password = "";
 #endif
 
-// MQTT TLS: use WiFiClientSecure on port 8883, plain WiFiClient on 1883
-#if MQTT_PORT == 8883 && !defined(ESP8266)
+// Fallback cloud broker settings (defaults if not defined in secrets.h)
+#ifndef MQTT_FALLBACK_SERVER
+  #define MQTT_FALLBACK_SERVER ""
+#endif
+#ifndef MQTT_FALLBACK_PORT
+  #define MQTT_FALLBACK_PORT 8883
+#endif
+#ifndef MQTT_FALLBACK_USER
+  #define MQTT_FALLBACK_USER ""
+#endif
+#ifndef MQTT_FALLBACK_PASSWORD
+  #define MQTT_FALLBACK_PASSWORD ""
+#endif
+#ifndef MQTT_FALLBACK_USE_TLS
+  #define MQTT_FALLBACK_USE_TLS 0
+#endif
+
+// MQTT TLS: use WiFiClientSecure when either broker needs TLS, plain WiFiClient otherwise
+#if (MQTT_PORT == 8883 || MQTT_FALLBACK_USE_TLS) && !defined(ESP8266)
   #ifndef MQTT_CA_CERT
-    #error "MQTT_CA_CERT must be defined in secrets.h when using MQTT_PORT 8883 (TLS)"
+    // CA cert is optional — cloud broker may use publicly trusted CA
+    #define MQTT_CA_CERT nullptr
   #endif
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
@@ -159,6 +181,9 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 #endif
 // ESP32 native time functions will be used instead of NTPClient for automatic DST support
+
+// MQTT broker failover manager
+MqttManager mqttMgr;
 
 // WiFi credentials manager with NVS persistence
 WiFiManager wifiManager;
@@ -305,6 +330,7 @@ void processData();
 void processRuuviData();
 void publishDeviceStatus();
 void publishDeviceConfig();
+void onMqttConnect(PubSubClient& client, MqttBroker broker);
 
 // Phase 2: New function declarations
 void printConfig(const char* context);
@@ -673,12 +699,54 @@ void setup() {
 
     Serial.println("Setup MQTT Connection...");
     
-    // Configure MQTT TLS if using secure port
+    // Configure broker configs for failover manager
+    static const MqttBrokerConfig primaryBroker = {
+        MQTT_SERVER,                              // host (homeassistant.local)
+        static_cast<uint16_t>(MQTT_PORT),         // port (1883)
+        mqtt_user,                                // user
+        mqtt_password,                            // password
+        (MQTT_PORT == 8883),                      // useTls
 #if MQTT_PORT == 8883 && !defined(ESP8266)
-    espClient.setCACert(MQTT_CA_CERT);
-    Serial.println("MQTT TLS enabled (port 8883)");
+        MQTT_CA_CERT                              // caCert
 #else
-    Serial.println("MQTT plain TCP (port 1883)");
+        nullptr                                   // caCert (no TLS)
+#endif
+    };
+    
+    static const MqttBrokerConfig fallbackBroker = {
+        MQTT_FALLBACK_SERVER,                     // host (cloud)
+        static_cast<uint16_t>(MQTT_FALLBACK_PORT),// port (8883)
+        MQTT_FALLBACK_USER,                       // user
+        MQTT_FALLBACK_PASSWORD,                   // password
+        (MQTT_FALLBACK_USE_TLS != 0),             // useTls
+#if MQTT_FALLBACK_USE_TLS && !defined(ESP8266)
+        MQTT_CA_CERT                              // caCert (shared with primary)
+#else
+        nullptr                                   // caCert
+#endif
+    };
+
+    // Log broker configuration
+    Serial.printf("  Primary broker: %s:%d\n", primaryBroker.host, primaryBroker.port);
+    if (strlen(MQTT_FALLBACK_SERVER) > 0) {
+        Serial.printf("  Fallback broker: %s:%d\n", fallbackBroker.host, fallbackBroker.port);
+    } else {
+        Serial.println("  Fallback broker: not configured");
+    }
+
+    client.setCallback(handleMqttMessage);  // Set MQTT message callback
+    client.setBufferSize(1024);  // Increase from default 256 bytes to handle larger config messages
+    
+    // Initialize MQTT broker failover manager
+    mqttMgr.begin(client, espClient, deviceId, primaryBroker, fallbackBroker, onMqttConnect);
+
+#ifndef ESP8266
+    // Initialize mDNS for local broker resolution (homeassistant.local)
+    if (!MDNS.begin("paku-edge")) {
+        Serial.println("  mDNS responder failed to start");
+    } else {
+        Serial.println("  mDNS responder started (paku-edge.local)");
+    }
 #endif
 
     // Configure ESP32 native time with timezone support (auto DST)
@@ -689,10 +757,6 @@ void setup() {
     Serial.print("Timezone configured: ");
     Serial.println(deviceConfig.timing.timezone);
     Serial.println("NTP sync will complete in background (non-blocking)");
-    
-    client.setServer(mqtt_server, mqtt_port);
-    client.setCallback(handleMqttMessage);  // Set MQTT message callback
-    client.setBufferSize(1024);  // Increase from default 256 bytes to handle larger config messages
 
     // Initialize paku-iot HTTP client if enabled
     initPakuIot();
@@ -1346,93 +1410,88 @@ void connect_wifi() {
 }
 
 /**
+ * @brief Callback invoked by MqttManager after successful broker connection.
+ *
+ * Subscribes to all required MQTT topics and publishes initial status.
+ * Called for both local (RPi) and cloud (fallback) broker connections.
+ *
+ * @param mqttClient  Reference to the connected PubSubClient
+ * @param broker      Which broker was connected (PRIMARY_LOCAL or FALLBACK_CLOUD)
+ */
+void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
+    LOG_INFO("MQTT", "Connected to %s broker — subscribing to topics",
+             (broker == MqttBroker::PRIMARY_LOCAL) ? "LOCAL" : "CLOUD");
+
+    // Subscribe to legacy control topic (backward compatibility)
+    mqttClient.subscribe("paku/control");
+    
+    // Subscribe to new edge device control topic (schema-compliant)
+    String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
+    mqttClient.subscribe(edgeControlTopic.c_str());
+    
+    // Phase 2: Subscribe to config/set topic
+    String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
+    mqttClient.subscribe(edgeConfigTopic.c_str());
+    
+    // Subscribe to OTA command topic
+    String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
+    mqttClient.subscribe(otaTopic.c_str());
+    
+    // Subscribe to WiFi management command topic
+    String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
+    mqttClient.subscribe(wifiCmdTopic.c_str());
+
+#if HAS_BLE
+    // Subscribe to Ruuvi whitelist management command topic
+    String ruuviCmdTopic = String("paku/devices/") + deviceId + "/cmd/ruuvi";
+    mqttClient.subscribe(ruuviCmdTopic.c_str());
+#endif
+
+#ifdef HEATER_ENABLED
+    String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
+    mqttClient.subscribe(heaterCmdTopic.c_str());
+#endif
+
+    // Publish device status (announce we're online)
+    publishDeviceStatus();
+}
+
+/**
  * @brief Attempts to establish a connection to the MQTT broker.
  * 
- * This function continuously tries to connect to the MQTT broker until a connection is established.
- * If the connection is successful, it subscribes to the "paku/control" topic.
- * If the connection fails, it prints the failure reason and retries after a 5-second delay.
+ * Uses MqttManager for automatic broker failover between local RPi and cloud.
+ * This function continuously calls mqttMgr.maintain() until connected.
  * 
  * @note This function blocks execution until a connection is established.
+ * @note Prefer the non-blocking Phase 2 state machine (PHASE_MQTT_TRY) for
+ *       new code paths.
  */
 void connectMQTT() {
   while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
 #if HAS_LED
     ledMqttConnecting();  // Slow blink while connecting
 #endif
-    //tft.fillScreen(TFT_BLACK);
-    //tft.setCursor(0, 0);
-    //tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    //tft.setTextSize(2);
-    //tft.println("Attempting MQTT connection...");
 
-    bool connected = (strlen(mqtt_user) > 0)
-        ? client.connect(deviceId, mqtt_user, mqtt_password)
-        : client.connect(deviceId);
-    if (connected) {  // Use unique device ID as MQTT client ID
-      Serial.println("MQTT connected and subscribed to control topics");
+    if (mqttMgr.maintain()) {
+      // Connected — onMqttConnect callback already handled subscriptions
 #if HAS_LED
       ledMqttConnected();  // Double blink to indicate success
 #endif
-      //tft.println("MQTT connected and subscribed to 'paku/control'");
-      
-      // Subscribe to legacy control topic (backward compatibility)
-      client.subscribe("paku/control");
-      
-      // Subscribe to new edge device control topic (schema-compliant)
-      String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
-      client.subscribe(edgeControlTopic.c_str());
-      Serial.print("Subscribed to edge control topic: ");
-      Serial.println(edgeControlTopic);
-      
-      // Phase 2: Subscribe to config/set topic (for receiving configuration commands)
-      String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
-      client.subscribe(edgeConfigTopic.c_str());
-      Serial.print("Subscribed to config/set topic: ");
-      Serial.println(edgeConfigTopic);
-      
-      // Subscribe to OTA command topic (edge structure)
-      String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
-      client.subscribe(otaTopic.c_str());
-      Serial.print("Subscribed to OTA topic: ");
-      Serial.println(otaTopic);
-      
-      // Subscribe to WiFi management command topic
-      String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
-      client.subscribe(wifiCmdTopic.c_str());
-      Serial.print("Subscribed to WiFi cmd topic: ");
-      Serial.println(wifiCmdTopic);
-      
-#if HAS_BLE
-      // Subscribe to Ruuvi whitelist management command topic
-      String ruuviCmdTopic = String("paku/devices/") + deviceId + "/cmd/ruuvi";
-      client.subscribe(ruuviCmdTopic.c_str());
-      Serial.print("Subscribed to Ruuvi cmd topic: ");
-      Serial.println(ruuviCmdTopic);
-#endif
-      
-      // Step 1: Publish device status first (announce we're online)
-      publishDeviceStatus();
-      
-      // Step 2 & 3: Process any retained config/set messages and apply them
+      // Process any retained config/set messages
       Serial.println("Processing retained messages...");
       for (int i = 0; i < 10; i++) {
         client.loop();
         delay(10);
       }
       
-      // Step 4: Report current config (includes any updates from config/set)
+      // Report current config (includes any updates from config/set)
       publishDeviceConfig();
     } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
+      Serial.printf("MQTT connect attempt failed (broker: %s), retrying in 5s...\n",
+                     mqttMgr.activeHost());
 #if HAS_LED
       ledError();  // Error blink for failed connection
 #endif
-      //tft.print("failed, rc=");
-      //tft.print(client.state());
-      //tft.println(" try again in 5 seconds");
       delay(5000);
     }
   }
@@ -2057,6 +2116,10 @@ void publishDeviceStatus() {
   #endif
   doc["state"] = (currentState == STATE_CONTINUOUS ? "continuous" : "unknown");
   doc["heater_status"] = heaterStatus;
+  
+  // MQTT broker failover status
+  doc["mqtt_broker"] = mqttMgr.activeBrokerName();
+  doc["mqtt_host"] = mqttMgr.activeHost();
   
   // Add active scenario info
   if (deviceConfig.timing.wake_interval_s == 10) {
@@ -2879,42 +2942,22 @@ void handleSystemState() {
         }
 
         case PHASE_MQTT_TRY: {
-          // Single-attempt MQTT connect (PubSubClient.connect() returns immediately)
-          bool mqttOk = (strlen(mqtt_user) > 0)
-              ? client.connect(deviceId, mqtt_user, mqtt_password)
-              : client.connect(deviceId);
-          if (mqttOk) {
-            Serial.println("MQTT connected");
+          // Single-attempt MQTT connect via failover manager
+          // (probes local broker, falls back to cloud automatically)
+          if (mqttMgr.tryConnectOnce()) {
+            Serial.printf("MQTT connected to %s broker\n", mqttMgr.activeBrokerName());
 #if HAS_LED
             ledMqttConnected();
 #endif
-            // Subscribe to all topics
-            client.subscribe("paku/control");
-            String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
-            client.subscribe(edgeControlTopic.c_str());
-            String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
-            client.subscribe(edgeConfigTopic.c_str());
-            String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
-            client.subscribe(otaTopic.c_str());
-            String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
-            client.subscribe(wifiCmdTopic.c_str());
-
-#if HAS_BLE
-            String ruuviCmdTopic = String("paku/devices/") + deviceId + "/cmd/ruuvi";
-            client.subscribe(ruuviCmdTopic.c_str());
-#endif
-
-#ifdef HEATER_ENABLED
-            String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
-            client.subscribe(heaterCmdTopic.c_str());
-#endif
+            // onMqttConnect callback already handled topic subscriptions
             // Transition to settling phase — run client.loop() a few times
             // across successive loop() iterations to receive retained messages.
             connectPhase = PHASE_MQTT_SETTLE;
             settleLoops  = 0;
             phaseStartMs = now;
           } else {
-            Serial.printf("MQTT failed (rc=%d)\n", client.state());
+            Serial.printf("MQTT attempt failed on %s broker (rc=%d)\n",
+                          mqttMgr.activeBrokerName(), client.state());
 #if HAS_LED
             ledMqttConnecting();
 #endif
@@ -3651,6 +3694,16 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 #endif // HAS_BLE
+
+#ifdef HEATER_ENABLED
+  // Route heater commands to the HeaterAddon
+  String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
+  if (String(topic) == heaterCmdTopic) {
+    LOG_INFO("MQTT", "Heater command received: %s", message.c_str());
+    heater_addon_command(message.c_str(), message.length());
+    return;
+  }
+#endif // HEATER_ENABLED
 
   // Check if this is an OTA command
   String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
