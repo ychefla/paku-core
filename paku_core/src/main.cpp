@@ -735,6 +735,21 @@ void setup() {
         Serial.println("  Fallback broker: not configured");
     }
 
+    // >>> DEBUG: dump compiled-in MQTT secrets for OTA vs USB comparison <<<
+    Serial.println("========== MQTT SECRETS DEBUG ==========");
+    Serial.printf("  MQTT_LOCAL:          [%s]\n", MQTT_LOCAL);
+    Serial.printf("  MQTT_LOCAL_PORT:     [%d]\n", MQTT_LOCAL_PORT);
+    Serial.printf("  MQTT_LOCAL_USER:     [%s]\n", MQTT_LOCAL_USER);
+    Serial.printf("  MQTT_LOCAL_PASSWORD: [%s]\n", MQTT_LOCAL_PASSWORD);
+    Serial.printf("  MQTT_SERVER:         [%s]\n", MQTT_SERVER);
+    Serial.printf("  MQTT_PORT:           [%d]\n", MQTT_PORT);
+    Serial.printf("  MQTT_USER:           [%s]\n", MQTT_USER);
+    Serial.printf("  MQTT_PASSWORD:       [%s]\n", MQTT_PASSWORD);
+    Serial.printf("  MQTT_USE_TLS:        [%d]\n", MQTT_USE_TLS);
+    Serial.printf("  MQTT_CA_CERT:        [%s]\n", MQTT_CA_CERT ? "SET" : "NULL");
+    Serial.printf("  FIRMWARE_VERSION:    [%s]\n", FIRMWARE_VERSION);
+    Serial.println("========================================");
+
     client.setCallback(handleMqttMessage);  // Set MQTT message callback
     client.setBufferSize(1024);  // Increase from default 256 bytes to handle larger config messages
     
