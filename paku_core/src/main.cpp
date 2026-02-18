@@ -1485,9 +1485,11 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
 #endif
 
 #if HAS_MILIGHT
-    String lightCmdTopic = String("paku/edge/") + deviceId + "/cmd/light";
-    mqttClient.subscribe(lightCmdTopic.c_str());
-    Serial.printf("  Subscribed to %s\n", lightCmdTopic.c_str());
+    for (int ch = 1; ch <= 4; ch++) {
+      String lightCmdTopic = String("paku/edge/") + deviceId + "/cmd/light/" + ch;
+      mqttClient.subscribe(lightCmdTopic.c_str());
+      Serial.printf("  Subscribed to %s\n", lightCmdTopic.c_str());
+    }
 #endif
 
     // Publish device status (announce we're online)
@@ -3873,9 +3875,16 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 #endif // HAS_FAN_IR
 
 #if HAS_MILIGHT
-  // Handle MiLight/MIBO light commands
-  String lightCmdTopic = String("paku/edge/") + deviceId + "/cmd/light";
-  if (String(topic) == lightCmdTopic) {
+  // Handle MiLight/MIBO light commands — per-zone topics: cmd/light/{1-4}
+  String lightCmdPrefix = String("paku/edge/") + deviceId + "/cmd/light/";
+  if (String(topic).startsWith(lightCmdPrefix)) {
+    // Extract channel from topic suffix
+    uint8_t channel = String(topic).substring(lightCmdPrefix.length()).toInt();
+    if (channel < 1 || channel > 4) {
+      Serial.printf("[MILIGHT] Invalid channel in topic: %s\n", topic);
+      return;
+    }
+
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
     
@@ -3885,20 +3894,13 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       return;
     }
     
-    // Get channel (default to 1)
-    uint8_t channel = doc["channel"] | 1;
-    if (channel < 1 || channel > 4) {
-      channel = 1;
-    }
-    
     // Get current state
     MiLightState state = milight_get_state(channel);
     bool state_changed = false;
     
     // Check for special commands
-    if (doc.containsKey("cmd")) {
-      const char* cmd = doc["cmd"];
-      
+    const char* cmd = doc["cmd"] | (const char*)nullptr;
+    if (cmd) {
       if (strcmp(cmd, "pair") == 0) {
         const char* protocol_str = doc["protocol"] | "cct";
         MiLightProtocol protocol = milight_protocol_from_string(protocol_str);
@@ -3906,8 +3908,6 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         
         if (milight_pair(channel, protocol, device_id)) {
           Serial.printf("[MILIGHT] Paired channel %d with protocol %s\n", channel, protocol_str);
-          
-          // Update state
           state.protocol = protocol;
           if (device_id != 0) {
             state.device_id = device_id;
@@ -3931,22 +3931,22 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       }
     }
     
-    // Handle state commands
-    if (doc.containsKey("state")) {
+    // Handle state commands (HA json schema: {"state":"ON"/"OFF"})
+    if (doc["state"].is<const char*>()) {
       const char* state_str = doc["state"];
-      if (strcmp(state_str, "on") == 0) {
+      if (strcasecmp(state_str, "on") == 0) {
         state.on = true;
         state_changed = true;
-      } else if (strcmp(state_str, "off") == 0) {
+      } else if (strcasecmp(state_str, "off") == 0) {
         state.on = false;
         state_changed = true;
-      } else if (strcmp(state_str, "toggle") == 0) {
+      } else if (strcasecmp(state_str, "toggle") == 0) {
         state.on = !state.on;
         state_changed = true;
       }
     }
     
-    if (doc.containsKey("brightness")) {
+    if (doc["brightness"].is<int>()) {
       uint8_t brightness = doc["brightness"];
       if (brightness <= 100) {
         state.brightness = brightness;
@@ -3954,7 +3954,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       }
     }
     
-    if (doc.containsKey("color_temp")) {
+    if (doc["color_temp"].is<int>()) {
       uint16_t color_temp = doc["color_temp"];
       if (color_temp >= 153 && color_temp <= 500) {
         state.color_temp = color_temp;
@@ -3965,13 +3965,13 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     // Send state if changed
     if (state_changed) {
       if (milight_send_state(state)) {
-        Serial.printf("[MILIGHT] State updated - ch:%d on:%d bright:%d temp:%d\n",
+        Serial.printf("[MILIGHT] Zone %d updated - on:%d bright:%d temp:%d\n",
                      channel, state.on, state.brightness, state.color_temp);
         
-        // Publish status
-        String statusTopic = String("paku/edge/") + deviceId + "/status/light";
+        // Publish status to per-zone topic
+        String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + channel;
         JsonDocument statusDoc;
-        statusDoc["state"] = state.on ? "on" : "off";
+        statusDoc["state"] = state.on ? "ON" : "OFF";
         statusDoc["brightness"] = state.brightness;
         statusDoc["color_temp"] = state.color_temp;
         statusDoc["channel"] = channel;

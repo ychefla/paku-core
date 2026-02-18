@@ -955,12 +955,15 @@ namespace LightScreenLayout {
     constexpr int Y_HINT = 150;
 }
 
+// Zone names for the 4 MiLight channels
+static const char* LIGHT_ZONE_NAMES[] = { nullptr, "Ceiling", "Counter", "Drawers", "Under Bed" };
+static uint8_t displayLightZone = 1; // Currently displayed zone (1-4)
+
 void DisplayUI::renderLightScreen() {
     clearScreen();
-    drawHeader("Light");
+    drawHeader(LIGHT_ZONE_NAMES[displayLightZone]);
     
-    // Get current light state for channel 1 (default)
-    MiLightState& state = milight_get_state(1);
+    MiLightState& state = milight_get_state(displayLightZone);
     
     tft->setTextSize(2);
     
@@ -1003,12 +1006,12 @@ void DisplayUI::renderLightScreen() {
     tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
     tft->printf("%dK\n", kelvin);
     
-    // --- Row 4: Channel ---
+    // --- Row 4: Zone indicator (1/4, 2/4, ...) ---
     tft->setCursor(5, LightScreenLayout::Y_CHANNEL);
     tft->setTextColor(TFT_WHITE, TFT_BLACK);
-    tft->print("Channel: ");
+    tft->print("Zone: ");
     tft->setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft->printf("%d\n", state.channel);
+    tft->printf("%d/4\n", displayLightZone);
     
     // --- Row 5: Protocol ---
     tft->setCursor(5, LightScreenLayout::Y_PROTOCOL);
@@ -1040,16 +1043,21 @@ void DisplayUI::renderLightScreen() {
 }
 
 void DisplayUI::toggleLight() {
-    // Toggle light on channel 1 (default)
-    MiLightState& state = milight_get_state(1);
+    // Toggle the currently displayed zone
+    MiLightState& state = milight_get_state(displayLightZone);
     state.on = !state.on;
     
     if (milight_send_state(state)) {
-        Serial.printf("[Display] Light %s via button (ch %d)\n", 
-                     state.on ? "ON" : "OFF", state.channel);
+        Serial.printf("[Display] %s %s via button (zone %d)\n",
+                     LIGHT_ZONE_NAMES[displayLightZone],
+                     state.on ? "ON" : "OFF", displayLightZone);
     } else {
         Serial.println("[Display] ERROR: Failed to send light command");
     }
+
+    // Advance to next zone for next press
+    displayLightZone = (displayLightZone % 4) + 1;
+    refresh();
 }
 
 #endif // HAS_MILIGHT

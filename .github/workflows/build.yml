@@ -32,13 +32,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio
 
-      - name: Copy config templates
-        run: |
-          cp paku_core/include/secrets.h.template paku_core/include/secrets.h
-          cp paku_core/src/device_config.h.template paku_core/src/device_config.h
-
-      - name: Copy device config template
-        run: cp paku_core/src/device_config.h.template paku_core/src/device_config.h
+      - name: Copy secrets template
+        run: cp paku_core/include/secrets.h.template paku_core/include/secrets.h
 
       - name: Build
         run: |

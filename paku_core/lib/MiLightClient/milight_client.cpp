@@ -7,6 +7,9 @@
  */
 
 #include "milight_client.h"
+
+#ifdef MILIGHT_ENABLED
+
 #include <RF24.h>
 #include <SPI.h>
 
@@ -464,3 +467,5 @@ const char* milight_protocol_to_string(MiLightProtocol protocol) {
             return "cct";
     }
 }
+
+#endif // MILIGHT_ENABLED
