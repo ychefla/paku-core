@@ -33,6 +33,9 @@ enum DisplayScreen {
 #ifdef HEATER_ENABLED
     SCREEN_HEATER,          // Hydronic heater status + control
 #endif
+#if HAS_MILIGHT
+    SCREEN_LIGHT,           // MiLight/MIBO light control
+#endif
     SCREEN_COUNT            // Total number of screens
 };
 
@@ -150,6 +153,10 @@ private:
 #ifdef HEATER_ENABLED
     void renderHeaterScreen();
     void toggleHeater();  ///< Start or stop heater (called on long-press)
+#endif
+#if HAS_MILIGHT
+    void renderLightScreen();
+    void toggleLight();   ///< Toggle light on/off (called on long-press)
 #endif
     
     // Helper functions

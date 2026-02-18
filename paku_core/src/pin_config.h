@@ -51,3 +51,10 @@
 #define PIN_SD_CMD                   13
 #define PIN_SD_CLK                   11
 #define PIN_SD_D0                    12
+
+/* NRF24L01+ for MiLight/MIBO control (reuses former SD card pins) */
+#define PIN_NRF24_CE                 1   // Chip Enable
+#define PIN_NRF24_CSN                2   // SPI Chip Select
+#define PIN_NRF24_SCK                11  // SPI Clock (former SD_CLK)
+#define PIN_NRF24_MOSI               13  // SPI MOSI (former SD_CMD)
+#define PIN_NRF24_MISO               12  // SPI MISO (former SD_D0)

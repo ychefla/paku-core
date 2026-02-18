@@ -58,6 +58,10 @@
 #include "heater_addon.h"
 #endif
 
+#if HAS_MILIGHT
+#include "milight_client.h"
+#endif
+
 // Display-related includes and definitions (only when display is available)
 #if HAS_DISPLAY
 #include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
@@ -795,6 +799,16 @@ void setup() {
     // TODO: Enable flow sensor when ready (see lib/paku_lib/src/flow_sensor.h)
     Serial.println("Flow Sensor: DISABLED (future development)");
     
+#if HAS_MILIGHT
+    // Initialize MiLight/MIBO light controller (NRF24L01+)
+    Serial.println("Setup MiLight Light Controller...");
+    if (milight_init(PIN_NRF24_CE, PIN_NRF24_CSN, PIN_NRF24_SCK, PIN_NRF24_MOSI, PIN_NRF24_MISO)) {
+        Serial.println("  MiLight controller initialized");
+    } else {
+        Serial.println("  Warning: MiLight initialization failed");
+    }
+#endif // HAS_MILIGHT
+    
     // Apply scenario based on heater status (Phase 1: maintain existing behavior)
     if (heaterStatus == 1) {
         deviceConfig.applyScenario("heater_active");
@@ -1453,6 +1467,12 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
 #ifdef HEATER_ENABLED
     String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
     mqttClient.subscribe(heaterCmdTopic.c_str());
+#endif
+
+#if HAS_MILIGHT
+    String lightCmdTopic = String("paku/edge/") + deviceId + "/cmd/light";
+    mqttClient.subscribe(lightCmdTopic.c_str());
+    Serial.printf("  Subscribed to %s\n", lightCmdTopic.c_str());
 #endif
 
     // Publish device status (announce we're online)
@@ -3758,6 +3778,125 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 #endif // HEATER_ENABLED
+
+#if HAS_MILIGHT
+  // Handle MiLight/MIBO light commands
+  String lightCmdTopic = String("paku/edge/") + deviceId + "/cmd/light";
+  if (String(topic) == lightCmdTopic) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("[MILIGHT] CMD Parse error: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    
+    // Get channel (default to 1)
+    uint8_t channel = doc["channel"] | 1;
+    if (channel < 1 || channel > 4) {
+      channel = 1;
+    }
+    
+    // Get current state
+    MiLightState state = milight_get_state(channel);
+    bool state_changed = false;
+    
+    // Check for special commands
+    if (doc.containsKey("cmd")) {
+      const char* cmd = doc["cmd"];
+      
+      if (strcmp(cmd, "pair") == 0) {
+        const char* protocol_str = doc["protocol"] | "cct";
+        MiLightProtocol protocol = milight_protocol_from_string(protocol_str);
+        uint16_t device_id = doc["device_id"] | 0;
+        
+        if (milight_pair(channel, protocol, device_id)) {
+          Serial.printf("[MILIGHT] Paired channel %d with protocol %s\n", channel, protocol_str);
+          
+          // Update state
+          state.protocol = protocol;
+          if (device_id != 0) {
+            state.device_id = device_id;
+          }
+          state_changed = true;
+        }
+      } else if (strcmp(cmd, "unpair") == 0) {
+        const char* protocol_str = doc["protocol"] | "cct";
+        MiLightProtocol protocol = milight_protocol_from_string(protocol_str);
+        
+        if (milight_unpair(channel, protocol)) {
+          Serial.printf("[MILIGHT] Unpaired channel %d\n", channel);
+        }
+      } else if (strcmp(cmd, "set_protocol") == 0) {
+        const char* protocol_str = doc["protocol"];
+        if (protocol_str) {
+          state.protocol = milight_protocol_from_string(protocol_str);
+          state_changed = true;
+          Serial.printf("[MILIGHT] Protocol set to %s\n", protocol_str);
+        }
+      }
+    }
+    
+    // Handle state commands
+    if (doc.containsKey("state")) {
+      const char* state_str = doc["state"];
+      if (strcmp(state_str, "on") == 0) {
+        state.on = true;
+        state_changed = true;
+      } else if (strcmp(state_str, "off") == 0) {
+        state.on = false;
+        state_changed = true;
+      } else if (strcmp(state_str, "toggle") == 0) {
+        state.on = !state.on;
+        state_changed = true;
+      }
+    }
+    
+    if (doc.containsKey("brightness")) {
+      uint8_t brightness = doc["brightness"];
+      if (brightness <= 100) {
+        state.brightness = brightness;
+        state_changed = true;
+      }
+    }
+    
+    if (doc.containsKey("color_temp")) {
+      uint16_t color_temp = doc["color_temp"];
+      if (color_temp >= 153 && color_temp <= 500) {
+        state.color_temp = color_temp;
+        state_changed = true;
+      }
+    }
+    
+    // Send state if changed
+    if (state_changed) {
+      if (milight_send_state(state)) {
+        Serial.printf("[MILIGHT] State updated - ch:%d on:%d bright:%d temp:%d\n",
+                     channel, state.on, state.brightness, state.color_temp);
+        
+        // Publish status
+        String statusTopic = String("paku/edge/") + deviceId + "/status/light";
+        JsonDocument statusDoc;
+        statusDoc["state"] = state.on ? "on" : "off";
+        statusDoc["brightness"] = state.brightness;
+        statusDoc["color_temp"] = state.color_temp;
+        statusDoc["channel"] = channel;
+        statusDoc["protocol"] = milight_protocol_to_string(state.protocol);
+        statusDoc["device_id"] = state.device_id;
+        statusDoc["timestamp"] = getISO8601Timestamp();
+        
+        String statusPayload;
+        serializeJson(statusDoc, statusPayload);
+        client.publish(statusTopic.c_str(), statusPayload.c_str());
+      } else {
+        Serial.println("[MILIGHT] ERROR: Failed to send state");
+      }
+    }
+    
+    return;
+  }
+#endif // HAS_MILIGHT
 
   // Check if this is an OTA command
   String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";

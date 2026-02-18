@@ -56,6 +56,13 @@
     #define LED_ON HIGH         // LED is active HIGH
     #define HAS_RGB_LED 1       // Addressable RGB LED (WS2812 style)
     // Note: For RGB LED control, use a NeoPixel or FastLED library
+    
+    // MiLight/MIBO light controller support (controlled by build flag)
+    #ifdef MILIGHT_ENABLED
+    #define HAS_MILIGHT 1
+    #else
+    #define HAS_MILIGHT 0
+    #endif
 
 // =============================================================================
 // Device Configuration: ESP32 CH340C 30PIN (ESP32, not S3)
@@ -125,6 +132,10 @@
 
 #ifndef HAS_WIRED_SENSORS
 #define HAS_WIRED_SENSORS 0
+#endif
+
+#ifndef HAS_MILIGHT
+#define HAS_MILIGHT 0
 #endif
 
 // =============================================================================
