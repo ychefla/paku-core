@@ -8,12 +8,14 @@
 #if HAS_DISPLAY
 
 #include "PubSubClient.h"
+#include <ArduinoJson.h>
 #include <WiFi.h>
 
 // External references from main.cpp
 extern char deviceId[];  // Array, not pointer
 extern PubSubClient client;
 extern String wifi_status;
+extern String getISO8601Timestamp();
 
 #if HAS_BLE
 #include "ruuvi_scanner.h"  // Includes ruuvi.h and provides RuuviTag, MAX_RUUVI_TAGS, getFreshTags
@@ -1059,6 +1061,29 @@ void DisplayUI::toggleLight() {
         Serial.printf("[Display] %s %s via button (zone %d)\n",
                      LIGHT_ZONE_NAMES[displayLightZone],
                      state.on ? "ON" : "OFF", displayLightZone);
+        
+        // Publish MQTT status so HA stays in sync
+        if (client.connected()) {
+            String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + displayLightZone;
+            JsonDocument statusDoc;
+            statusDoc["state"] = state.on ? "ON" : "OFF";
+            statusDoc["brightness"] = state.brightness;
+            statusDoc["color_temp"] = state.color_temp;
+            statusDoc["channel"] = displayLightZone;
+            statusDoc["protocol"] = milight_protocol_to_string(state.protocol);
+            statusDoc["device_id"] = state.device_id;
+            String ts = getISO8601Timestamp();
+            if (ts.length() > 0) {
+                statusDoc["timestamp"] = ts;
+            }
+            
+            String statusPayload;
+            serializeJson(statusDoc, statusPayload);
+            client.publish(statusTopic.c_str(), statusPayload.c_str());
+            Serial.printf("[Display] MQTT published to %s\n", statusTopic.c_str());
+        } else {
+            Serial.println("[Display] MQTT not connected — status not published");
+        }
     } else {
         Serial.println("[Display] ERROR: Failed to send light command");
     }
