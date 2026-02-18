@@ -735,22 +735,6 @@ void setup() {
         Serial.println("  Fallback broker: not configured");
     }
 
-    // >>> DEBUG: dump compiled-in MQTT secrets for OTA vs USB comparison <<<
-    // (temporary — remove after verifying OTA secrets are correctly injected)
-    Serial.println("========== MQTT SECRETS DEBUG v2 ==========");
-    Serial.printf("  MQTT_LOCAL:          [%s]\n", MQTT_LOCAL);
-    Serial.printf("  MQTT_LOCAL_PORT:     [%d]\n", MQTT_LOCAL_PORT);
-    Serial.printf("  MQTT_LOCAL_USER:     [%s]\n", MQTT_LOCAL_USER);
-    Serial.printf("  MQTT_LOCAL_PASSWORD: [%s]\n", MQTT_LOCAL_PASSWORD);
-    Serial.printf("  MQTT_SERVER:         [%s]\n", MQTT_SERVER);
-    Serial.printf("  MQTT_PORT:           [%d]\n", MQTT_PORT);
-    Serial.printf("  MQTT_USER:           [%s]\n", MQTT_USER);
-    Serial.printf("  MQTT_PASSWORD:       [%s]\n", MQTT_PASSWORD);
-    Serial.printf("  MQTT_USE_TLS:        [%d]\n", MQTT_USE_TLS);
-    Serial.printf("  MQTT_CA_CERT:        [%s]\n", MQTT_CA_CERT ? "SET" : "NULL");
-    Serial.printf("  FIRMWARE_VERSION:    [%s]\n", FIRMWARE_VERSION);
-    Serial.println("========================================");
-
     client.setCallback(handleMqttMessage);  // Set MQTT message callback
     client.setBufferSize(1024);  // Increase from default 256 bytes to handle larger config messages
     
@@ -2974,19 +2958,23 @@ void handleSystemState() {
             connectPhase = PHASE_MQTT_SETTLE;
             settleLoops  = 0;
             phaseStartMs = now;
-          } else {
+          } else if (mqttMgr.didAttempt()) {
+            // A real connection attempt was made and failed
             Serial.printf("MQTT attempt failed on %s broker (rc=%d)\n",
                           mqttMgr.activeBrokerName(), client.state());
 #if HAS_LED
             ledMqttConnecting();
 #endif
-            // Retry on next loop() iteration, up to overall state timeout
-            if (stateElapsed >= (deviceConfig.timing.wifi_connect_timeout_s * 1000UL)) {
-              Serial.println("MQTT connect timeout — will retry next cycle");
-              connectPhase = PHASE_SCAN_START;
-              currentSystemState = SYS_STATE_DISCONNECT;
-              stateEnteredAt = now;
-            }
+          }
+          // else: throttled — no-op, wait for next real attempt
+
+          // Overall MQTT timeout
+          if (!client.connected() &&
+              stateElapsed >= (deviceConfig.timing.mqtt_connect_timeout_s * 1000UL)) {
+            Serial.println("MQTT connect timeout — will retry next cycle");
+            connectPhase = PHASE_SCAN_START;
+            currentSystemState = SYS_STATE_DISCONNECT;
+            stateEnteredAt = now;
           }
           break;
         }
@@ -3143,13 +3131,11 @@ void processOtaUpdate() {
   tft.printf("Version: %s", pendingOtaVersion.c_str());
   tft.setCursor(10, 70);
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.println("Downloading...");
-  // Draw empty progress bar
-  tft.drawRect(10, 100, 300, 25, TFT_WHITE);
-  tft.setTextSize(2);
-  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.setCursor(130, 105);
+  tft.print("Downloading...  ");
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.println("0%");
+  // Draw empty progress bar (bar only — no text inside)
+  tft.drawRect(10, 100, 300, 25, TFT_WHITE);
 #endif
 
   // Configure OTA update
@@ -3826,21 +3812,22 @@ void otaProgressCallback(const OtaProgress& progress) {
   Serial.println(OtaClient::stateToString(progress.state));
 
 #if HAS_DISPLAY
-  // Update progress bar on TFT display
+  // Update percentage text above the bar (same line as "Downloading...")
+  tft.fillRect(220, 70, 100, 18, TFT_BLACK);  // Clear previous percentage
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(220, 70);
+  tft.printf("%d%%", progress.progressPercent);
+
+  // Fill progress bar (no text inside — clean bar)
   int barWidth = (int)(progress.progressPercent * 296.0 / 100.0);
   tft.fillRect(12, 102, barWidth, 21, TFT_GREEN);
-  // Update percentage text
-  tft.fillRect(100, 105, 120, 18, (barWidth > 100) ? TFT_GREEN : TFT_BLACK);
-  tft.setTextSize(2);
-  tft.setTextColor((barWidth > 100) ? TFT_BLACK : TFT_WHITE,
-                   (barWidth > 100) ? TFT_GREEN : TFT_BLACK);
-  tft.setCursor(120, 105);
-  tft.printf("%d%%", progress.progressPercent);
-  // Show downloaded/total below the bar
-  tft.fillRect(10, 135, 300, 20, TFT_BLACK);
+
+  // Show downloaded/total and elapsed time below the bar
+  tft.fillRect(10, 130, 300, 20, TFT_BLACK);
   tft.setTextSize(1);
   tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.setCursor(10, 138);
+  tft.setCursor(10, 133);
   if (progress.totalBytes > 0) {
     tft.printf("%dKB / %dKB  %ds",
               progress.downloadedBytes / 1024,

@@ -103,9 +103,11 @@ bool MqttManager::tryConnectOnce() {
     unsigned long now = millis();
     if (_lastConnectAttempt != 0 &&
         (now - _lastConnectAttempt) < CONNECT_RETRY_DELAY_MS) {
+        _lastAttemptWasReal = false;
         return false;
     }
     _lastConnectAttempt = now;
+    _lastAttemptWasReal = true;
 
     const MqttBrokerConfig& cfg =
         (_activeBroker == MqttBroker::PRIMARY_LOCAL) ? _primary : _fallback;

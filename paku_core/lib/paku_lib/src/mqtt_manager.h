@@ -144,6 +144,10 @@ public:
     /// @brief Get consecutive failure count.
     uint8_t failCount() const { return _failCount; }
 
+    /// @brief True if the last tryConnectOnce() actually attempted a connection
+    ///        (vs. returning early due to throttle).
+    bool didAttempt() const { return _lastAttemptWasReal; }
+
     /**
      * @brief Probe local broker reachability via TCP connect.
      * @return true if local broker responded to TCP connect
@@ -171,6 +175,7 @@ private:
     unsigned long      _lastPrimaryRetry = 0;
     unsigned long      _lastConnectAttempt = 0;
     bool               _initialProbed    = false;
+    bool               _lastAttemptWasReal = false;  ///< True when tryConnectOnce() actually tried
 
     OnConnectCallback  _onConnect   = nullptr;
 
