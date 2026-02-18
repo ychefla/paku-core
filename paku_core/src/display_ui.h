@@ -36,6 +36,9 @@ enum DisplayScreen {
 #if HAS_FAN_IR
     SCREEN_FAN,             // MaxxFan IR control
 #endif
+#if HAS_MILIGHT
+    SCREEN_LIGHT,           // MiLight/MIBO light control
+#endif
     SCREEN_COUNT            // Total number of screens
 };
 
@@ -157,6 +160,10 @@ private:
 #if HAS_FAN_IR
     void renderFanScreen();
     void toggleFan();     ///< Toggle fan power (called on long-press)
+#endif
+#if HAS_MILIGHT
+    void renderLightScreen();
+    void toggleLight();   ///< Toggle light on/off (called on long-press)
 #endif
     
     // Helper functions

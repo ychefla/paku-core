@@ -33,6 +33,10 @@ extern bool wiredSensorsEnabled;
 #include "maxxfan_ir.h"
 #endif
 
+#if HAS_MILIGHT
+#include "milight_client.h"
+#endif
+
 // Static member initialization
 DisplayUI* DisplayUI::instance = nullptr;
 DisplayUI displayUI;
@@ -167,6 +171,12 @@ void DisplayUI::update() {
                 lastUpdate = 0;  // Force immediate redraw
             }
 #endif
+#if HAS_MILIGHT
+            if (displayEnabled && currentScreen == SCREEN_LIGHT) {
+                toggleLight();
+                lastUpdate = 0;  // Force immediate redraw
+            }
+#endif
         } else if (pinState == HIGH) {
             // Button released
             Serial.printf("[BTN2] Released after %lu ms (longHandled=%d)\n",
@@ -219,6 +229,11 @@ void DisplayUI::refresh() {
 #if HAS_FAN_IR
         case SCREEN_FAN:
             renderFanScreen();
+            break;
+#endif
+#if HAS_MILIGHT
+        case SCREEN_LIGHT:
+            renderLightScreen();
             break;
 #endif
         default:
@@ -828,6 +843,7 @@ void DisplayUI::renderFanScreen() {
         tft->println("OFF");
     }
     
+
     // --- Row 2: Speed ---
     y += FAN_SCREEN_ROW_HEIGHT;
     tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
@@ -921,5 +937,121 @@ void DisplayUI::toggleFan() {
 }
 
 #endif // HAS_FAN_IR
+
+// ===========================================================================
+// Light screen (only when compiled with -D MILIGHT_ENABLED)
+// ===========================================================================
+#if HAS_MILIGHT
+
+// Named layout constants for y-coordinates (for future display upgrade)
+namespace LightScreenLayout {
+    constexpr int Y_HEADER = 0;
+    constexpr int Y_STATE = 32;
+    constexpr int Y_BRIGHTNESS = 52;
+    constexpr int Y_COLOR_TEMP = 72;
+    constexpr int Y_CHANNEL = 92;
+    constexpr int Y_PROTOCOL = 112;
+    constexpr int Y_FOOTER = 145;
+    constexpr int Y_HINT = 150;
+}
+
+void DisplayUI::renderLightScreen() {
+    clearScreen();
+    drawHeader("Light");
+    
+    // Get current light state for channel 1 (default)
+    MiLightState& state = milight_get_state(1);
+    
+    tft->setTextSize(2);
+    
+    // --- Row 1: Light state (ON/OFF) ---
+    tft->setCursor(5, LightScreenLayout::Y_STATE);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Light: ");
+    if (state.on) {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        tft->println("ON");
+    } else {
+        tft->setTextColor(TFT_RED, TFT_BLACK);
+        tft->println("OFF");
+    }
+    
+    // --- Row 2: Brightness ---
+    tft->setCursor(5, LightScreenLayout::Y_BRIGHTNESS);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Bright: ");
+    tft->setTextColor(TFT_CYAN, TFT_BLACK);
+    tft->printf("%d%%\n", state.brightness);
+    
+    // --- Row 3: Color temperature indicator ---
+    tft->setCursor(5, LightScreenLayout::Y_COLOR_TEMP);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Temp: ");
+    
+    // Show warm/neutral/cool indicator with Kelvin conversion
+    uint16_t kelvin = 1000000 / state.color_temp;
+    if (state.color_temp < 250) {
+        tft->setTextColor(TFT_CYAN, TFT_BLACK);
+        tft->print("Cool ");
+    } else if (state.color_temp > 450) {
+        tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+        tft->print("Warm ");
+    } else {
+        tft->setTextColor(TFT_WHITE, TFT_BLACK);
+        tft->print("Neutral ");
+    }
+    tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft->printf("%dK\n", kelvin);
+    
+    // --- Row 4: Channel ---
+    tft->setCursor(5, LightScreenLayout::Y_CHANNEL);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Channel: ");
+    tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft->printf("%d\n", state.channel);
+    
+    // --- Row 5: Protocol ---
+    tft->setCursor(5, LightScreenLayout::Y_PROTOCOL);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Protocol: ");
+    tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+    if (state.protocol == PROTOCOL_CCT) {
+        tft->println("CCT");
+    } else {
+        tft->println("FUT091");
+    }
+    
+    // --- Footer with long-press hint ---
+    tft->drawLine(0, LightScreenLayout::Y_FOOTER, 320, LightScreenLayout::Y_FOOTER, TFT_DARKGREY);
+    tft->setTextSize(2);
+    tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft->setCursor(5, LightScreenLayout::Y_HINT);
+    tft->printf("[%d/%d]", currentScreen + 1, SCREEN_COUNT);
+    
+    // Right-aligned hint
+    tft->setCursor(150, LightScreenLayout::Y_HINT);
+    if (state.on) {
+        tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+        tft->print("Hold:OFF");
+    } else {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        tft->print("Hold:ON");
+    }
+}
+
+void DisplayUI::toggleLight() {
+    // Toggle light on channel 1 (default)
+    MiLightState& state = milight_get_state(1);
+    state.on = !state.on;
+    
+    if (milight_send_state(state)) {
+        Serial.printf("[Display] Light %s via button (ch %d)\n", 
+                     state.on ? "ON" : "OFF", state.channel);
+    } else {
+        Serial.println("[Display] ERROR: Failed to send light command");
+    }
+}
+
+#endif // HAS_MILIGHT
 
 #endif // HAS_DISPLAY
