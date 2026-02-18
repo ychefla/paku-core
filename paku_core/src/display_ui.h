@@ -163,7 +163,8 @@ private:
 #endif
 #if HAS_MILIGHT
     void renderLightScreen();
-    void toggleLight();   ///< Toggle light on/off (called on long-press)
+    void toggleLight();    ///< Toggle light on/off (called on long-press)
+    void nextLightZone();  ///< Cycle to next zone (called on short-press)
 #endif
     
     // Helper functions

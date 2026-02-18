@@ -84,6 +84,14 @@ void DisplayUI::onButton2Click() {
             static unsigned long lastSwitch = 0;
             unsigned long now = millis();
             if (now - lastSwitch > 300) {
+#if HAS_MILIGHT
+                // On Light screen: short press cycles zones before moving to next screen
+                if (instance->currentScreen == SCREEN_LIGHT) {
+                    instance->nextLightZone();
+                    lastSwitch = now;
+                    return;
+                }
+#endif
                 instance->nextScreen();
                 lastSwitch = now;
             } else {
@@ -1031,8 +1039,8 @@ void DisplayUI::renderLightScreen() {
     tft->setCursor(5, LightScreenLayout::Y_HINT);
     tft->printf("[%d/%d]", currentScreen + 1, SCREEN_COUNT);
     
-    // Right-aligned hint
-    tft->setCursor(150, LightScreenLayout::Y_HINT);
+    // Right-aligned hint: show current action
+    tft->setCursor(110, LightScreenLayout::Y_HINT);
     if (state.on) {
         tft->setTextColor(TFT_ORANGE, TFT_BLACK);
         tft->print("Hold:OFF");
@@ -1043,7 +1051,7 @@ void DisplayUI::renderLightScreen() {
 }
 
 void DisplayUI::toggleLight() {
-    // Toggle the currently displayed zone
+    // Toggle the currently displayed zone (long press action)
     MiLightState& state = milight_get_state(displayLightZone);
     state.on = !state.on;
     
@@ -1055,9 +1063,21 @@ void DisplayUI::toggleLight() {
         Serial.println("[Display] ERROR: Failed to send light command");
     }
 
-    // Advance to next zone for next press
-    displayLightZone = (displayLightZone % 4) + 1;
     refresh();
+}
+
+void DisplayUI::nextLightZone() {
+    // Short press on Light screen: cycle through zones, then advance to next screen
+    if (displayLightZone < 4) {
+        displayLightZone++;
+        Serial.printf("[Display] Light zone -> %d (%s)\n",
+                     displayLightZone, LIGHT_ZONE_NAMES[displayLightZone]);
+        lastUpdate = 0;  // Force immediate redraw
+    } else {
+        // Was on zone 4 — reset to zone 1 and move to next screen
+        displayLightZone = 1;
+        nextScreen();
+    }
 }
 
 #endif // HAS_MILIGHT
