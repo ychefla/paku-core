@@ -51,3 +51,6 @@
 #define PIN_SD_CMD                   13
 #define PIN_SD_CLK                   11
 #define PIN_SD_D0                    12
+
+/* MaxxFan IR LED */
+#define PIN_IR_LED                   3    // GPIO 3 - free on T-Display S3

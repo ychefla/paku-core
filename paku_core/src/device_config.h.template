@@ -127,6 +127,13 @@
 #define HAS_WIRED_SENSORS 0
 #endif
 
+// MaxxFan IR control (enabled via FAN_IR_ENABLED build flag)
+#ifdef FAN_IR_ENABLED
+#define HAS_FAN_IR 1
+#else
+#define HAS_FAN_IR 0
+#endif
+
 // =============================================================================
 // LED Status Indicator Patterns (for HAS_LED devices)
 // =============================================================================

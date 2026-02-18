@@ -58,6 +58,10 @@
 #include "heater_addon.h"
 #endif
 
+#if HAS_FAN_IR
+#include "maxxfan_ir.h"
+#endif
+
 // Display-related includes and definitions (only when display is available)
 #if HAS_DISPLAY
 #include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
@@ -837,6 +841,12 @@ void setup() {
     Serial.println("Heater add-on initialized");
 #endif
 
+#if HAS_FAN_IR
+    // Initialize MaxxFan IR transmitter
+    maxxfan_ir_init(PIN_IR_LED);
+    Serial.println("MaxxFan IR initialized");
+#endif
+
     Serial.println("Setup complete.");
 
   }
@@ -1453,6 +1463,11 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
 #ifdef HEATER_ENABLED
     String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
     mqttClient.subscribe(heaterCmdTopic.c_str());
+#endif
+
+#if HAS_FAN_IR
+    String fanCmdTopic = String("paku/edge/") + deviceId + "/cmd/fan";
+    mqttClient.subscribe(fanCmdTopic.c_str());
 #endif
 
     // Publish device status (announce we're online)
@@ -3758,6 +3773,84 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 #endif // HEATER_ENABLED
+
+#if HAS_FAN_IR
+  // Route fan commands to the MaxxFan IR controller
+  String fanCmdTopic = String("paku/edge/") + deviceId + "/cmd/fan";
+  if (String(topic) == fanCmdTopic) {
+    LOG_INFO("MQTT", "Fan command received: %s", message.c_str());
+    
+    // Parse JSON command
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("Fan CMD: Parse error: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    
+    // Get current state and update with command fields
+    MaxxFanState& state = maxxfan_ir_get_state();
+    
+    // Update only provided fields
+    if (doc.containsKey("power")) {
+      state.fan_on = doc["power"].as<bool>();
+    }
+    if (doc.containsKey("speed")) {
+      state.speed = doc["speed"].as<uint8_t>();
+      // Clamp to valid range
+      if (state.speed > 100) state.speed = 100;
+    }
+    if (doc.containsKey("direction")) {
+      const char* dir = doc["direction"];
+      if (strcmp(dir, "exhaust") == 0) {
+        state.exhaust = true;
+      } else if (strcmp(dir, "intake") == 0) {
+        state.exhaust = false;
+      }
+    }
+    if (doc.containsKey("lid")) {
+      const char* lid = doc["lid"];
+      if (strcmp(lid, "open") == 0) {
+        state.lid_open = true;
+      } else if (strcmp(lid, "closed") == 0) {
+        state.lid_open = false;
+      }
+    }
+    if (doc.containsKey("mode")) {
+      const char* mode = doc["mode"];
+      if (strcmp(mode, "auto") == 0) {
+        state.auto_mode = true;
+      } else if (strcmp(mode, "manual") == 0) {
+        state.auto_mode = false;
+      }
+    }
+    if (doc.containsKey("auto_temp_f")) {
+      state.auto_temp_f = doc["auto_temp_f"].as<uint8_t>();
+    }
+    
+    // Send IR command
+    maxxfan_ir_send(state);
+    
+    // Publish updated state
+    String statusTopic = String("paku/edge/") + deviceId + "/status/fan";
+    JsonDocument statusDoc;
+    statusDoc["power"] = state.fan_on;
+    statusDoc["speed"] = state.speed;
+    statusDoc["direction"] = state.exhaust ? "exhaust" : "intake";
+    statusDoc["lid"] = state.lid_open ? "open" : "closed";
+    statusDoc["mode"] = state.auto_mode ? "auto" : "manual";
+    statusDoc["auto_temp_f"] = state.auto_temp_f;
+    statusDoc["timestamp"] = getISO8601Timestamp();
+    
+    String statusPayload;
+    serializeJson(statusDoc, statusPayload);
+    client.publish(statusTopic.c_str(), statusPayload.c_str());
+    
+    return;
+  }
+#endif // HAS_FAN_IR
 
   // Check if this is an OTA command
   String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";

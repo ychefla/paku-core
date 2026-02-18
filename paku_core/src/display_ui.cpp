@@ -29,6 +29,10 @@ extern bool wiredSensorsEnabled;
 #include "heater_addon.h"
 #endif
 
+#if HAS_FAN_IR
+#include "maxxfan_ir.h"
+#endif
+
 // Static member initialization
 DisplayUI* DisplayUI::instance = nullptr;
 DisplayUI displayUI;
@@ -157,6 +161,12 @@ void DisplayUI::update() {
                               SCREEN_HEATER, currentScreen);
             }
 #endif
+#if HAS_FAN_IR
+            if (displayEnabled && currentScreen == SCREEN_FAN) {
+                toggleFan();
+                lastUpdate = 0;  // Force immediate redraw
+            }
+#endif
         } else if (pinState == HIGH) {
             // Button released
             Serial.printf("[BTN2] Released after %lu ms (longHandled=%d)\n",
@@ -204,6 +214,11 @@ void DisplayUI::refresh() {
 #ifdef HEATER_ENABLED
         case SCREEN_HEATER:
             renderHeaterScreen();
+            break;
+#endif
+#if HAS_FAN_IR
+        case SCREEN_FAN:
+            renderFanScreen();
             break;
 #endif
         default:
@@ -778,5 +793,133 @@ void DisplayUI::toggleHeater() {
 }
 
 #endif // HEATER_ENABLED
+
+// ===========================================================================
+// Fan IR screen (only when compiled with -D FAN_IR_ENABLED)
+// ===========================================================================
+#if HAS_FAN_IR
+
+// Layout constants for fan screen (for future display upgrade)
+static const int FAN_SCREEN_HEADER_HEIGHT = 32;
+static const int FAN_SCREEN_ROW_HEIGHT = 20;
+static const int FAN_SCREEN_LEFT_MARGIN = 5;
+static const int FAN_SCREEN_FOOTER_Y = 145;
+static const int FAN_SCREEN_FOOTER_HEIGHT = 150;
+
+void DisplayUI::renderFanScreen() {
+    clearScreen();
+    drawHeader("MaxxFan");
+    
+    const MaxxFanState& fan = maxxfan_ir_get_state();
+    
+    tft->setTextSize(2);
+    int y = FAN_SCREEN_HEADER_HEIGHT;
+    
+    // --- Row 1: Fan power state (large, colored) ---
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Fan: ");
+    
+    if (fan.fan_on) {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        tft->println("ON");
+    } else {
+        tft->setTextColor(TFT_RED, TFT_BLACK);
+        tft->println("OFF");
+    }
+    
+    // --- Row 2: Speed ---
+    y += FAN_SCREEN_ROW_HEIGHT;
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Speed: ");
+    
+    if (fan.fan_on) {
+        if (fan.speed >= 80) {
+            tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+        } else if (fan.speed >= 50) {
+            tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        } else {
+            tft->setTextColor(TFT_CYAN, TFT_BLACK);
+        }
+        tft->printf("%d%%\n", fan.speed);
+    } else {
+        tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+        tft->println("---");
+    }
+    
+    // --- Row 3: Direction ---
+    y += FAN_SCREEN_ROW_HEIGHT;
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Dir: ");
+    
+    if (fan.exhaust) {
+        tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+        tft->println("EXHAUST");
+    } else {
+        tft->setTextColor(TFT_CYAN, TFT_BLACK);
+        tft->println("INTAKE");
+    }
+    
+    // --- Row 4: Lid state ---
+    y += FAN_SCREEN_ROW_HEIGHT;
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Lid: ");
+    
+    if (fan.lid_open) {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        tft->println("OPEN");
+    } else {
+        tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft->println("CLOSED");
+    }
+    
+    // --- Row 5: Mode ---
+    y += FAN_SCREEN_ROW_HEIGHT;
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Mode: ");
+    
+    if (fan.auto_mode) {
+        tft->setTextColor(TFT_CYAN, TFT_BLACK);
+        tft->printf("AUTO %dF\n", fan.auto_temp_f);
+    } else {
+        tft->setTextColor(TFT_WHITE, TFT_BLACK);
+        tft->println("MANUAL");
+    }
+    
+    // --- Footer: show long-press hint on this screen ---
+    tft->drawLine(0, FAN_SCREEN_FOOTER_Y, 320, FAN_SCREEN_FOOTER_Y, TFT_DARKGREY);
+    tft->setTextSize(2);
+    tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, FAN_SCREEN_FOOTER_HEIGHT);
+    tft->printf("[%d/%d]", currentScreen + 1, SCREEN_COUNT);
+    
+    // Right-aligned hint
+    tft->setCursor(150, FAN_SCREEN_FOOTER_HEIGHT);
+    if (fan.fan_on) {
+        tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+        tft->print("Hold:OFF");
+    } else {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        tft->print("Hold:ON");
+    }
+}
+
+void DisplayUI::toggleFan() {
+    MaxxFanState& fan = maxxfan_ir_get_state();
+    
+    // Toggle power state
+    fan.fan_on = !fan.fan_on;
+    
+    Serial.printf("[Display] Fan toggle: %s\n", fan.fan_on ? "ON" : "OFF");
+    
+    // Send IR command
+    maxxfan_ir_send(fan);
+}
+
+#endif // HAS_FAN_IR
 
 #endif // HAS_DISPLAY
