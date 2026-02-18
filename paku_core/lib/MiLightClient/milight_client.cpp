@@ -10,6 +10,12 @@
 #include <RF24.h>
 #include <SPI.h>
 
+#ifdef ESP8266
+#include <ESP8266WiFi.h>
+#else
+#include <WiFi.h>
+#endif
+
 // DRY_RUN_LIGHT mode - log packets instead of transmitting
 #ifdef DRY_RUN_LIGHT
 #define MILIGHT_DRY_RUN 1
