@@ -3125,17 +3125,27 @@ void processOtaUpdate() {
   tft.setCursor(0, 0);
   tft.println(" OTA Update");
   tft.drawLine(0, 28, 320, 28, TFT_CYAN);
+
+  // Version — truncate to fit on one line (max ~18 chars at textSize 2)
   tft.setTextSize(2);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setCursor(10, 45);
-  tft.printf("Version: %s", pendingOtaVersion.c_str());
-  tft.setCursor(10, 70);
+  tft.setCursor(10, 40);
+  {
+    String ver = pendingOtaVersion;
+    if (ver.length() > 18) ver = ver.substring(0, 18) + "..";
+    tft.printf("Ver: %s", ver.c_str());
+  }
+
+  // "Downloading" label (left) and percentage placeholder (right)
+  tft.setCursor(10, 65);
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.print("Downloading...  ");
+  tft.print("Downloading");
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.println("0%");
-  // Draw empty progress bar (bar only — no text inside)
-  tft.drawRect(10, 100, 300, 25, TFT_WHITE);
+  tft.setCursor(260, 65);
+  tft.print("  0%");
+
+  // Draw empty progress bar
+  tft.drawRect(10, 95, 300, 25, TFT_WHITE);
 #endif
 
   // Configure OTA update
@@ -3812,22 +3822,27 @@ void otaProgressCallback(const OtaProgress& progress) {
   Serial.println(OtaClient::stateToString(progress.state));
 
 #if HAS_DISPLAY
-  // Update percentage text above the bar (same line as "Downloading...")
-  tft.fillRect(220, 70, 100, 18, TFT_BLACK);  // Clear previous percentage
+  // Update percentage text (right-aligned on the "Downloading" line)
+  tft.fillRect(248, 65, 72, 18, TFT_BLACK);  // Clear previous percentage
   tft.setTextSize(2);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setCursor(220, 70);
+  // Right-align: 3 chars max ("100%") → start at x=260 for <= 99%, x=248 for 100%
+  if (progress.progressPercent >= 100) {
+    tft.setCursor(248, 65);
+  } else {
+    tft.setCursor(260, 65);
+  }
   tft.printf("%d%%", progress.progressPercent);
 
-  // Fill progress bar (no text inside — clean bar)
+  // Fill progress bar
   int barWidth = (int)(progress.progressPercent * 296.0 / 100.0);
-  tft.fillRect(12, 102, barWidth, 21, TFT_GREEN);
+  tft.fillRect(12, 97, barWidth, 21, TFT_GREEN);
 
   // Show downloaded/total and elapsed time below the bar
-  tft.fillRect(10, 130, 300, 20, TFT_BLACK);
+  tft.fillRect(10, 125, 300, 20, TFT_BLACK);
   tft.setTextSize(1);
   tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.setCursor(10, 133);
+  tft.setCursor(10, 128);
   if (progress.totalBytes > 0) {
     tft.printf("%dKB / %dKB  %ds",
               progress.downloadedBytes / 1024,

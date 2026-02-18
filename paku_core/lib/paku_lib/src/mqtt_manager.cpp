@@ -109,6 +109,21 @@ bool MqttManager::tryConnectOnce() {
     _lastConnectAttempt = now;
     _lastAttemptWasReal = true;
 
+    // --- Return-to-primary check ---
+    // If currently on CLOUD and enough time has passed, probe LOCAL first.
+    // This handles the Phase 2 state machine which disconnects WiFi between
+    // cycles and never calls maintain()'s connected-state probe path.
+    if (isOnFallback() &&
+        (now - _lastPrimaryRetry >= PRIMARY_RETRY_INTERVAL_MS)) {
+        _lastPrimaryRetry = now;
+        if (_primary.host && strlen(_primary.host) > 0 && isLocalReachable()) {
+            LOG_INFO("MqttMgr", "Primary broker reachable again — switching back from CLOUD");
+            _activeBroker = MqttBroker::PRIMARY_LOCAL;
+            _failCount = 0;
+            applyBrokerConfig(_primary);
+        }
+    }
+
     const MqttBrokerConfig& cfg =
         (_activeBroker == MqttBroker::PRIMARY_LOCAL) ? _primary : _fallback;
 
