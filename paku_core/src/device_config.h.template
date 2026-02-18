@@ -31,9 +31,9 @@
 //   DEVICE_ESP32_CH340C_30PIN     - ESP32 (not S3), Generic 30-pin board, no display
 //   DEVICE_ESP8266_WIRED_SENSORS  - ESP8266, NodeMCU or generic board with DS18B20 sensor
 //
-// #define DEVICE_LILYGO_T_DISPLAY_S3
+#define DEVICE_LILYGO_T_DISPLAY_S3
 // #define DEVICE_ESP32_CH340C_30PIN
-#define DEVICE_ESP8266_WIRED_SENSORS
+// #define DEVICE_ESP8266_WIRED_SENSORS
 
 // =============================================================================
 // Device Configuration: LilyGo T-Display S3 (ESP32-S3)
@@ -136,6 +136,13 @@
 
 #ifndef HAS_MILIGHT
 #define HAS_MILIGHT 0
+#endif
+
+// MaxxFan IR control (enabled via FAN_IR_ENABLED build flag)
+#ifdef FAN_IR_ENABLED
+#define HAS_FAN_IR 1
+#else
+#define HAS_FAN_IR 0
 #endif
 
 // =============================================================================

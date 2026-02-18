@@ -52,6 +52,9 @@
 #define PIN_SD_CLK                   11
 #define PIN_SD_D0                    12
 
+/* MaxxFan IR LED */
+#define PIN_IR_LED                   3    // GPIO 3 - free on T-Display S3
+
 /* NRF24L01+ for MiLight/MIBO control (reuses former SD card pins) */
 #define PIN_NRF24_CE                 1   // Chip Enable
 #define PIN_NRF24_CSN                2   // SPI Chip Select

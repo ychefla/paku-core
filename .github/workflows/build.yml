@@ -37,6 +37,9 @@ jobs:
           cp paku_core/include/secrets.h.template paku_core/include/secrets.h
           cp paku_core/src/device_config.h.template paku_core/src/device_config.h
 
+      - name: Copy device config template
+        run: cp paku_core/src/device_config.h.template paku_core/src/device_config.h
+
       - name: Build
         run: |
           cd paku_core

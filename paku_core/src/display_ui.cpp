@@ -29,6 +29,10 @@ extern bool wiredSensorsEnabled;
 #include "heater_addon.h"
 #endif
 
+#if HAS_FAN_IR
+#include "maxxfan_ir.h"
+#endif
+
 #if HAS_MILIGHT
 #include "milight_client.h"
 #endif
@@ -161,6 +165,12 @@ void DisplayUI::update() {
                               SCREEN_HEATER, currentScreen);
             }
 #endif
+#if HAS_FAN_IR
+            if (displayEnabled && currentScreen == SCREEN_FAN) {
+                toggleFan();
+                lastUpdate = 0;  // Force immediate redraw
+            }
+#endif
 #if HAS_MILIGHT
             if (displayEnabled && currentScreen == SCREEN_LIGHT) {
                 toggleLight();
@@ -214,6 +224,11 @@ void DisplayUI::refresh() {
 #ifdef HEATER_ENABLED
         case SCREEN_HEATER:
             renderHeaterScreen();
+            break;
+#endif
+#if HAS_FAN_IR
+        case SCREEN_FAN:
+            renderFanScreen();
             break;
 #endif
 #if HAS_MILIGHT
@@ -795,6 +810,135 @@ void DisplayUI::toggleHeater() {
 #endif // HEATER_ENABLED
 
 // ===========================================================================
+// Fan IR screen (only when compiled with -D FAN_IR_ENABLED)
+// ===========================================================================
+#if HAS_FAN_IR
+
+// Layout constants for fan screen (for future display upgrade)
+static const int FAN_SCREEN_HEADER_HEIGHT = 32;
+static const int FAN_SCREEN_ROW_HEIGHT = 20;
+static const int FAN_SCREEN_LEFT_MARGIN = 5;
+static const int FAN_SCREEN_FOOTER_Y = 145;
+static const int FAN_SCREEN_FOOTER_HEIGHT = 150;
+
+void DisplayUI::renderFanScreen() {
+    clearScreen();
+    drawHeader("MaxxFan");
+    
+    const MaxxFanState& fan = maxxfan_ir_get_state();
+    
+    tft->setTextSize(2);
+    int y = FAN_SCREEN_HEADER_HEIGHT;
+    
+    // --- Row 1: Fan power state (large, colored) ---
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Fan: ");
+    
+    if (fan.fan_on) {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        tft->println("ON");
+    } else {
+        tft->setTextColor(TFT_RED, TFT_BLACK);
+        tft->println("OFF");
+    }
+    
+
+    // --- Row 2: Speed ---
+    y += FAN_SCREEN_ROW_HEIGHT;
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Speed: ");
+    
+    if (fan.fan_on) {
+        if (fan.speed >= 80) {
+            tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+        } else if (fan.speed >= 50) {
+            tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        } else {
+            tft->setTextColor(TFT_CYAN, TFT_BLACK);
+        }
+        tft->printf("%d%%\n", fan.speed);
+    } else {
+        tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+        tft->println("---");
+    }
+    
+    // --- Row 3: Direction ---
+    y += FAN_SCREEN_ROW_HEIGHT;
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Dir: ");
+    
+    if (fan.exhaust) {
+        tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+        tft->println("EXHAUST");
+    } else {
+        tft->setTextColor(TFT_CYAN, TFT_BLACK);
+        tft->println("INTAKE");
+    }
+    
+    // --- Row 4: Lid state ---
+    y += FAN_SCREEN_ROW_HEIGHT;
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Lid: ");
+    
+    if (fan.lid_open) {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        tft->println("OPEN");
+    } else {
+        tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft->println("CLOSED");
+    }
+    
+    // --- Row 5: Mode ---
+    y += FAN_SCREEN_ROW_HEIGHT;
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, y);
+    tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    tft->print("Mode: ");
+    
+    if (fan.auto_mode) {
+        tft->setTextColor(TFT_CYAN, TFT_BLACK);
+        tft->printf("AUTO %dF\n", fan.auto_temp_f);
+    } else {
+        tft->setTextColor(TFT_WHITE, TFT_BLACK);
+        tft->println("MANUAL");
+    }
+    
+    // --- Footer: show long-press hint on this screen ---
+    tft->drawLine(0, FAN_SCREEN_FOOTER_Y, 320, FAN_SCREEN_FOOTER_Y, TFT_DARKGREY);
+    tft->setTextSize(2);
+    tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft->setCursor(FAN_SCREEN_LEFT_MARGIN, FAN_SCREEN_FOOTER_HEIGHT);
+    tft->printf("[%d/%d]", currentScreen + 1, SCREEN_COUNT);
+    
+    // Right-aligned hint
+    tft->setCursor(150, FAN_SCREEN_FOOTER_HEIGHT);
+    if (fan.fan_on) {
+        tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+        tft->print("Hold:OFF");
+    } else {
+        tft->setTextColor(TFT_GREEN, TFT_BLACK);
+        tft->print("Hold:ON");
+    }
+}
+
+void DisplayUI::toggleFan() {
+    MaxxFanState& fan = maxxfan_ir_get_state();
+    
+    // Toggle power state
+    fan.fan_on = !fan.fan_on;
+    
+    Serial.printf("[Display] Fan toggle: %s\n", fan.fan_on ? "ON" : "OFF");
+    
+    // Send IR command
+    maxxfan_ir_send(fan);
+}
+
+#endif // HAS_FAN_IR
+
+// ===========================================================================
 // Light screen (only when compiled with -D MILIGHT_ENABLED)
 // ===========================================================================
 #if HAS_MILIGHT
@@ -816,7 +960,6 @@ void DisplayUI::renderLightScreen() {
     drawHeader("Light");
     
     // Get current light state for channel 1 (default)
-    extern MiLightState& milight_get_state(uint8_t channel);
     MiLightState& state = milight_get_state(1);
     
     tft->setTextSize(2);
@@ -845,7 +988,8 @@ void DisplayUI::renderLightScreen() {
     tft->setTextColor(TFT_WHITE, TFT_BLACK);
     tft->print("Temp: ");
     
-    // Show warm/neutral/cool indicator
+    // Show warm/neutral/cool indicator with Kelvin conversion
+    uint16_t kelvin = 1000000 / state.color_temp;
     if (state.color_temp < 250) {
         tft->setTextColor(TFT_CYAN, TFT_BLACK);
         tft->print("Cool ");
@@ -857,7 +1001,7 @@ void DisplayUI::renderLightScreen() {
         tft->print("Neutral ");
     }
     tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
-    tft->printf("%dK\n", state.color_temp);
+    tft->printf("%dK\n", kelvin);
     
     // --- Row 4: Channel ---
     tft->setCursor(5, LightScreenLayout::Y_CHANNEL);
@@ -896,9 +1040,6 @@ void DisplayUI::renderLightScreen() {
 }
 
 void DisplayUI::toggleLight() {
-    extern MiLightState& milight_get_state(uint8_t channel);
-    extern bool milight_send_state(const MiLightState& state);
-    
     // Toggle light on channel 1 (default)
     MiLightState& state = milight_get_state(1);
     state.on = !state.on;
@@ -909,9 +1050,6 @@ void DisplayUI::toggleLight() {
     } else {
         Serial.println("[Display] ERROR: Failed to send light command");
     }
-    
-    // Force refresh to show new state
-    refresh();
 }
 
 #endif // HAS_MILIGHT

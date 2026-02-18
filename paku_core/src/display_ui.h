@@ -33,6 +33,9 @@ enum DisplayScreen {
 #ifdef HEATER_ENABLED
     SCREEN_HEATER,          // Hydronic heater status + control
 #endif
+#if HAS_FAN_IR
+    SCREEN_FAN,             // MaxxFan IR control
+#endif
 #if HAS_MILIGHT
     SCREEN_LIGHT,           // MiLight/MIBO light control
 #endif
@@ -153,6 +156,10 @@ private:
 #ifdef HEATER_ENABLED
     void renderHeaterScreen();
     void toggleHeater();  ///< Start or stop heater (called on long-press)
+#endif
+#if HAS_FAN_IR
+    void renderFanScreen();
+    void toggleFan();     ///< Toggle fan power (called on long-press)
 #endif
 #if HAS_MILIGHT
     void renderLightScreen();
