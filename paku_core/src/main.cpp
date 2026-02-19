@@ -2721,6 +2721,11 @@ void handleSystemState() {
   switch (currentSystemState) {
     
     case SYS_STATE_IDLE: {
+      // Keep processing MQTT messages while connected (local broker stay-alive)
+      if (client.connected()) {
+        client.loop();
+      }
+
       // Wait for sensor collection interval
       if (now - lastSensorCollection >= (deviceConfig.timing.wake_interval_s * 1000)) {
         currentSystemState = SYS_STATE_COLLECT_SENSORS;
@@ -2740,6 +2745,11 @@ void handleSystemState() {
       //   COLLECT_WIRED_WAIT→ poll isConversionReady() each iteration
       //   COLLECT_DONE      → finalize and decide next state
       // ================================================================
+
+      // Keep MQTT alive during sensor collection (local broker stay-alive)
+      if (client.connected()) {
+        client.loop();
+      }
 
       enum CollectPhase : uint8_t {
         COLLECT_BLE,
@@ -2843,9 +2853,16 @@ void handleSystemState() {
                                 (now - lastNetworkConnect >= (deviceConfig.timing.wake_interval_s * 1000));
 
           if (shouldTransmit) {
-            currentSystemState = SYS_STATE_CONNECT_NETWORK;
-            stateEnteredAt = now;
-            Serial.println("STATE: COLLECT_SENSORS -> CONNECT_NETWORK");
+            // If already connected (local stay-alive), skip network setup
+            if (client.connected()) {
+              currentSystemState = SYS_STATE_TRANSMIT;
+              stateEnteredAt = now;
+              Serial.println("STATE: COLLECT_SENSORS -> TRANSMIT (already connected)");
+            } else {
+              currentSystemState = SYS_STATE_CONNECT_NETWORK;
+              stateEnteredAt = now;
+              Serial.println("STATE: COLLECT_SENSORS -> CONNECT_NETWORK");
+            }
           } else {
             currentSystemState = SYS_STATE_IDLE;
             stateEnteredAt = now;
@@ -3057,9 +3074,18 @@ void handleSystemState() {
       
       if (transmissionComplete && connectionTimeout) {
         transmissionStarted = false;
-        currentSystemState = SYS_STATE_DISCONNECT;
-        stateEnteredAt = now;
-        Serial.println("STATE: TRANSMIT -> DISCONNECT");
+        
+        // When on local broker (same network as HA), stay connected
+        // for real-time command responsiveness. Only disconnect on cloud.
+        if (mqttMgr.isOnFallback()) {
+          currentSystemState = SYS_STATE_DISCONNECT;
+          stateEnteredAt = now;
+          Serial.println("STATE: TRANSMIT -> DISCONNECT (cloud broker)");
+        } else {
+          currentSystemState = SYS_STATE_IDLE;
+          stateEnteredAt = now;
+          Serial.println("STATE: TRANSMIT -> IDLE (staying connected to local broker)");
+        }
       }
       
       // Handle pending OTA updates
@@ -3973,6 +3999,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         JsonDocument statusDoc;
         statusDoc["state"] = state.on ? "ON" : "OFF";
         statusDoc["brightness"] = state.brightness;
+        statusDoc["color_mode"] = "color_temp";
         statusDoc["color_temp"] = state.color_temp;
         statusDoc["channel"] = channel;
         statusDoc["protocol"] = milight_protocol_to_string(state.protocol);
