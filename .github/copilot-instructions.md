@@ -2,6 +2,13 @@
 
 This repository contains ESP32-based edge firmware for the Paku IoT system. Below are guidelines to help Copilot understand the project and provide effective assistance.
 
+## Communication Style
+
+- **Never present assumptions, guesses, or generated logic as verified facts.**
+- If something is uncertain, say so explicitly using phrases like "I assume", "I'm not sure", "this is my best guess", or "I don't have a verified source for this".
+- When generating protocol implementations, hardware interfaces, or integration code, always state whether the implementation is based on verified documentation or inference.
+- Prefer "I don't know" over a confident-sounding but unverified answer.
+
 ## Project Overview
 
 **paku-core (EDGE)** is ESP32 firmware that:
