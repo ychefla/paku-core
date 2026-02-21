@@ -145,3 +145,43 @@ When working on this codebase:
 4. Test builds locally with `pio run` before committing
 5. Document new functions with Doxygen comments
 6. Update relevant documentation if adding features
+
+## Commit Message Convention (MANDATORY)
+
+All commits MUST use [Conventional Commits](https://www.conventionalcommits.org/) format.
+This is enforced by `.githooks/commit-msg` and drives automatic version tagging in CI.
+
+```
+<type>(<scope>): <description>
+```
+
+| Type | When | Version effect |
+|------|------|----------------|
+| `feat` | New feature | Minor bump: 1.4.2 → 1.5.0 |
+| `fix` | Bug fix | Patch bump: 1.4.2 → 1.4.3 |
+| `feat!` | Breaking change | Major bump: 1.4.2 → 2.0.0 |
+| `chore` | Maintenance, deps, CI | No bump |
+| `docs` | Documentation only | No bump |
+| `refactor` | Code restructure, no behavior change | Patch bump |
+| `perf` | Performance improvement | Patch bump |
+| `build` | Build system changes | Patch bump |
+| `ci` | CI/CD workflow changes | No bump |
+| `test` | Tests only | No bump |
+| `style` | Formatting / whitespace | No bump |
+
+**Scopes** (optional): `mqtt`, `ble`, `display`, `heater`, `wifi`, `lights`, `sensors`, `config`, `ota`
+
+**Examples:**
+```
+fix(mqtt): correct heater command topic routing
+feat(lights): add MiLight color temperature support
+feat(mqtt)!: restructure MQTT topic hierarchy
+chore: update ArduinoJson to v7
+docs: document TLS setup for MQTT bridge
+refactor(wifi): extract connection retry into helper function
+```
+
+**Never edit `FIRMWARE_VERSION` manually.** The version is derived at build time
+from git tags (`scripts/pre_build_version.py`). New tags are created automatically
+by `build.yml` on push to `main` based on these commit prefixes.
+

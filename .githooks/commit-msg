@@ -1,0 +1,42 @@
+#!/bin/bash
+# Enforce Conventional Commits format on every commit message.
+# See: https://www.conventionalcommits.org/
+
+MSG=$(cat "$1")
+
+# Allow merge, revert and fixup commits
+if echo "$MSG" | grep -qE "^(Merge|Revert|fixup!|squash!)"; then
+    exit 0
+fi
+
+PATTERN="^(feat|fix|chore|docs|refactor|perf|build|ci|test|style)(\(.+\))?(!)?: .{1,}"
+
+if ! echo "$MSG" | grep -qE "$PATTERN"; then
+    echo ""
+    echo "  ❌  Commit rejected: message does not follow Conventional Commits."
+    echo ""
+    echo "  Format:  <type>(<scope>): <description>"
+    echo ""
+    echo "  Types:"
+    echo "    feat      New feature           → minor version bump"
+    echo "    fix       Bug fix               → patch version bump"
+    echo "    feat!     Breaking change       → major version bump"
+    echo "    chore     Maintenance           → no version bump"
+    echo "    docs      Documentation         → no version bump"
+    echo "    refactor  Code restructure      → patch version bump"
+    echo "    perf      Performance           → patch version bump"
+    echo "    build     Build system          → patch version bump"
+    echo "    ci        CI/CD changes         → no version bump"
+    echo "    test      Tests                 → no version bump"
+    echo "    style     Formatting/whitespace → no version bump"
+    echo ""
+    echo "  Examples:"
+    echo "    fix(mqtt): correct heater command topic routing"
+    echo "    feat(lights): add color temperature support"
+    echo "    feat(mqtt)!: restructure topic hierarchy"
+    echo "    chore: update dependencies"
+    echo ""
+    exit 1
+fi
+
+exit 0

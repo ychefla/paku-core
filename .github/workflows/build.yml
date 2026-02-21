@@ -5,22 +5,26 @@ on:
     branches: [main, dev]
     paths:
       - 'paku_core/**'
+      - 'scripts/**'
       - '.github/workflows/build.yml'
   pull_request:
     branches: [main, dev]
     paths:
       - 'paku_core/**'
+      - 'scripts/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write  # needed to push version tags on main
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so git describe and version_bump.py work
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -32,6 +36,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio
 
+      # Auto-bump version and create tag on main branch only.
+      # Uses conventional commit prefixes to determine bump type.
+      # On PRs and dev branch: dry-run only (prints what would happen).
+      - name: Auto version bump
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python scripts/version_bump.py --apply && git push --tags || echo "No version bump needed."
+
+      - name: Show version (dry-run on PRs/dev)
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
+        run: python scripts/version_bump.py
+
       - name: Copy secrets template
         run: cp paku_core/include/secrets.h.template paku_core/include/secrets.h
 
@@ -40,10 +58,14 @@ jobs:
           cd paku_core
           pio run
 
+      - name: Get firmware version
+        id: version
+        run: echo "version=$(python scripts/version_bump.py --check)" >> $GITHUB_OUTPUT
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: firmware
+          name: firmware-${{ steps.version.outputs.version }}
           path: paku_core/.pio/build/lilygo-t-display-s3/*.bin
-          retention-days: 7
+          retention-days: 30
