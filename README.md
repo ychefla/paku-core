@@ -1,16 +1,35 @@
 # paku-core (EDGE)
 
-ESP32-based edge firmware for the Paku IoT system.
+ESP32/ESP8266-based edge firmware for the Paku IoT system.
 
 ## Hardware
 
+### Supported Platforms
+
+#### ESP32-S3 (LilyGo T-Display S3)
 - **Board**: LilyGo T-Display S3 (ESP32-S3)
 - **Display**: ST7789V 170x320 TFT
 - **Connectivity**: WiFi, Bluetooth Low Energy (BLE)
-- **Sensors**: Flow sensors, temperature sensors, Ruuvi tags (via BLE)
+- **Sensors**: Flow sensors, Ruuvi tags (via BLE), optional wired I2C sensors
+
+#### ESP32 (Generic/CH340C)
+- **Board**: Generic ESP32 development board
+- **Connectivity**: WiFi, Bluetooth Low Energy (BLE)
+- **Sensors**: Flow sensors, Ruuvi tags (via BLE), optional wired I2C sensors
+
+#### ESP8266 (NodeMCU/Generic) **NEW**
+- **Board**: NodeMCU v2/v3 or generic ESP8266 development board
+- **Connectivity**: WiFi only (no BLE)
+- **Sensors**: Wired I2C sensors (BME280 for temperature, humidity, pressure)
 
 ## Features
 
+- **Multi-screen Display UI** (LilyGo T-Display S3)
+  - 5 information screens: Status, BLE Sensors, Wired Sensors, System Info, Network
+  - Button 1 (GPIO 0): Toggle display on/off for power saving
+  - Button 2 (GPIO 14): Switch between screens
+  - Real-time sensor data visualization
+  - See [Display UI Guide](docs/DISPLAY_UI_GUIDE.md) for details
 - Heater control and monitoring
   - Measuring heater temperatures
   - Measuring coolant flows
@@ -18,7 +37,12 @@ ESP32-based edge firmware for the Paku IoT system.
   - Controlling extra pump for floor heating
 - Environmental monitoring
   - Room temperatures and humidities (Cabin, Kitchen, Lounge, Dryer)
-- BLE sensor integration (Ruuvi tags or equivalent)
+- **BLE sensor integration** (ESP32 only)
+  - Ruuvi tags (RAWv2 format)
+  - **MoKo sensors (H2/H3/H4 series)** - NEW!
+- **Wired I2C sensor integration** (ESP8266 and ESP32)
+  - BME280: Temperature, humidity, and atmospheric pressure
+  - Expandable to other I2C sensors
 - Car battery monitoring
 - Data processing and forwarding to cloud via MQTT
 
@@ -46,7 +70,15 @@ git clone https://github.com/ychefla/paku-core.git
 cd paku-core
 ```
 
-### Step 2: Configure Secrets
+### Step 2: Configure Device and Secrets
+
+**Important**: Create your device configuration file from the template:
+
+```bash
+cp paku_core/src/device_config.h.template paku_core/src/device_config.h
+```
+
+The template defaults to ESP8266 with wired sensors. For other devices, edit the file and uncomment the appropriate device definition.
 
 Create your secrets file from the template:
 
@@ -69,13 +101,33 @@ static const size_t WIFI_COUNT = sizeof(WIFI_SSIDS) / sizeof(WIFI_SSIDS[0]);
 #define MQTT_PORT                     1883
 ```
 
-### Step 3: Build & Flash
+### Step 3: Select Your Hardware Platform
+
+Edit `paku_core/src/device_config.h` (copy from `device_config.h.template` if needed):
+
+```cpp
+// Uncomment ONE of these based on your hardware:
+#define DEVICE_LILYGO_T_DISPLAY_S3    // ESP32-S3 with display and BLE
+// #define DEVICE_ESP32_CH340C_30PIN   // ESP32 headless with BLE
+// #define DEVICE_ESP8266_WIRED_SENSORS // ESP8266 with wired I2C sensors
+```
+
+And set the matching environment in `paku_core/platformio.ini`:
+
+```ini
+[platformio]
+default_envs = lilygo-t-display-s3         # For ESP32-S3 with display
+# default_envs = esp32-ch340c-30pin        # For ESP32 headless
+# default_envs = esp8266-wired-sensors     # For ESP8266 with wired sensors
+```
+
+### Step 4: Build & Flash
 
 #### Using VS Code + PlatformIO
 
 1. Open the `paku_core` folder in VS Code
 2. Install the PlatformIO extension (if not installed)
-3. Connect the ESP32 via USB
+3. Connect your device via USB
 4. Use the PlatformIO panel to:
    - **Build** (checkmark icon)
    - **Upload** (arrow icon)
@@ -90,10 +142,10 @@ pio run -t upload  # Upload to device
 pio device monitor # Serial monitor (optional)
 ```
 
-### Step 4: Verify
+### Step 5: Verify
 
 Once flashed, the device will:
-1. Display the Paku logo on the TFT screen
+1. (ESP32-S3 only) Display the Paku logo on the TFT screen
 2. Connect to WiFi (cycling through configured networks)
 3. Connect to the MQTT broker
 4. Start publishing telemetry data
@@ -102,6 +154,56 @@ Monitor the serial output to verify connections:
 ```bash
 pio device monitor -b 115200
 ```
+
+## ESP8266 Wired Sensor Setup
+
+The ESP8266 platform is ideal for locations where Bluetooth is unreliable or unnecessary, and a wired, stable connection is preferred.
+
+### Hardware Requirements
+
+- ESP8266 development board (NodeMCU v2/v3 recommended)
+- BME280 sensor module (I2C interface)
+- Jumper wires for I2C connections
+
+### Wiring (for NodeMCU)
+
+Connect BME280 to NodeMCU:
+- **VCC** → 3.3V
+- **GND** → GND
+- **SDA** → D2 (GPIO4)
+- **SCL** → D1 (GPIO5)
+
+### Configuration
+
+1. Set device type in `paku_core/src/device_config.h`:
+   ```cpp
+   #define DEVICE_ESP8266_WIRED_SENSORS
+   ```
+
+2. Set PlatformIO environment in `paku_core/platformio.ini`:
+   ```ini
+   [platformio]
+   default_envs = esp8266-wired-sensors
+   ```
+
+3. Configure WiFi and MQTT in `paku_core/include/secrets.h` (same as ESP32)
+
+### Features
+
+- **Temperature**: Accurate temperature readings (-40°C to +85°C)
+- **Humidity**: Relative humidity (0-100%)
+- **Pressure**: Atmospheric pressure (300-1100 hPa)
+- **MQTT Publishing**: Data sent to `paku/sensors/{device_id}_wired/data`
+- **Low Power**: ESP8266 consumes less power than ESP32
+- **Stable**: Wired I2C connection is more reliable than BLE in noisy environments
+
+### Troubleshooting
+
+If the BME280 sensor is not detected:
+1. Check I2C wiring (SDA and SCL connections)
+2. Verify sensor I2C address (default 0x76, some use 0x77)
+3. Monitor serial output for initialization messages
+4. Test I2C bus with an I2C scanner sketch
 
 ### Smoke Test
 
@@ -115,12 +217,14 @@ pio run            # Should compile without errors
 
 The firmware uses the following libraries (managed via PlatformIO):
 
-| Library | Version | Purpose |
-|---------|---------|---------|
-| PubSubClient | ^2.8 | MQTT client |
-| ArduinoJson | ^7.2.0 | JSON serialization |
-| NTPClient | ^3.2.1 | Time synchronization |
-| TFT_eSPI | (bundled) | Display driver |
+| Library | Version | Purpose | Platforms |
+|---------|---------|---------|-----------|
+| PubSubClient | ^2.8 | MQTT client | All |
+| ArduinoJson | ^7.2.0 | JSON serialization | All |
+| NTPClient | ^3.2.1 | Time synchronization | All |
+| Adafruit BME280 Library | ^2.2.4 | Wired sensor driver | All |
+| Adafruit Unified Sensor | ^1.1.14 | Sensor abstraction | All |
+| TFT_eSPI | (bundled) | Display driver | ESP32-S3 only |
 
 ## Documentation
 
@@ -128,6 +232,10 @@ The firmware uses the following libraries (managed via PlatformIO):
 - [Integration Guide](docs/INTEGRATION.md) - Connecting paku-core to paku-iot
 - [Development Modes](docs/development-modes.md) - Container vs. local development
 - [Quickstart Guide](docs/edge/quickstart.md) - Detailed setup instructions
+- [ESP8266 Quickstart](docs/edge/esp8266-quickstart.md) - Setup guide for ESP8266 with wired sensors
+- [RuuviTag Integration](docs/edge/ruuvi-integration.md) - RuuviTag BLE sensor setup
+- [**MoKo Sensor Integration**](docs/edge/moko-integration.md) - **NEW** MoKo H2/H3/H4 sensor setup
+- [MoKo Quick Start](docs/edge/moko-quick-start.md) - **NEW** 5-minute MoKo setup guide
 - [Configuration Reference](docs/edge/config.md) - Configuration options
 - [Naming Conventions](docs/naming.md) - Terminology and naming
 - [Requirements](docs/requirements.md) - Functional and non-functional requirements

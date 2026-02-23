@@ -1,22 +1,61 @@
+#ifdef ESP8266
+#include <ESP8266WiFi.h>
+#else
 #include <WiFi.h>
+#endif
+
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
-#include "BLEDevice.h"
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
+#include <time.h>  // ESP32 native time functions
+
+// Preferences for persistent storage
+#ifdef ESP8266
+#include <EEPROM.h>
+#else
+#include <Preferences.h>
+#endif
+
 #include "Arduino.h"
-#include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
-#include "img_logo.h"
+#include "logging.h"            // Flexible logging system
+#include "device_config.h"      // Device selection and feature detection
 #include "pin_config.h"
+#include "timing_config.h"      // Timing and power management configuration
 #include "PakuIotClient.h"
+#include "sensor_placeholders.h"
+#include "OtaClient.h"
+#include "wifi_manager.h"       // WiFi credentials manager with NVS persistence
+#include <string>
+
+// Firmware version
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "1.4.2"
+#endif
+
+// BLE support (ESP32 only)
+#if HAS_BLE
+#include "BLEDevice.h"
 #include "ruuvi.h"
 #include "ruuvi_scanner.h"
+#include "moko.h"
+#include "moko_scanner.h"
 #include "frezzer.h"
 #include "frezzer_controller.h"
-#include "sensor_placeholders.h"
-#include <string>
+#ifndef ESP8266
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif // ESP8266
+#endif // HAS_BLE
+
+// Analog sensor support (ESP8266 and ESP32)
+#if HAS_WIRED_SENSORS
+#include "wired_sensors.h"
+#endif // HAS_WIRED_SENSORS
+
+// Display-related includes and definitions (only when display is available)
+#if HAS_DISPLAY
+#include "TFT_eSPI.h" /* Please use the TFT library provided in the library. */
+#include "img_logo.h"
+#include "display_ui.h"  // Multi-screen UI with button controls
 
 /* The product now has two screens, and the initialization code needs a small change in the new version. The LCD_MODULE_CMD_1 is used to define the
  * switch macro. */
@@ -50,15 +89,28 @@ lcd_cmd_t lcd_st7789v[] = {
     {0xE1, {0XF0, 0X08, 0X0C, 0X0B, 0X09, 0X24, 0X2B, 0X22, 0X43, 0X38, 0X15, 0X16, 0X2F, 0X37}, 14},
 };
 #endif
+#endif // HAS_DISPLAY
 
-// BT settings
+// BLE settings (ESP32 only)
+#if HAS_BLE
 bool scanBT_enabled = true;
-
 // BLE scan interval in milliseconds between scan cycles
 #define BLE_SCAN_INTERVAL_MS 10000
+#endif // HAS_BLE
+
+// Analog sensor settings (ESP8266 and ESP32)
+#if HAS_WIRED_SENSORS
+WiredSensors wiredSensors;
+bool wiredSensorsEnabled = true;
+unsigned long lastWiredSensorRead = 0;
+#define WIRED_SENSOR_INTERVAL_MS 10000  // Read every 10 seconds (was 60000)
+#endif // HAS_WIRED_SENSORS
 
 // Maximum number of telemetry readings per HTTP batch
 #define MAX_TELEMETRY_READINGS 20
+
+// Maximum number of MQTT payloads that can be queued
+#define MAX_MQTT_PAYLOADS 30
 
 // Ruuvi tag configuration - placeholder MAC addresses for known tags
 // These should be configured in secrets.h for production deployments
@@ -70,18 +122,18 @@ bool scanBT_enabled = true;
 // static const char* RUUVI_TAG_MACS[] = {"AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02", "AA:BB:CC:DD:EE:03", "AA:BB:CC:DD:EE:04"};
 // static const char* RUUVI_TAG_LOCATIONS[] = {"cabin", "kitchen", "lounge", "dryer"};
 
-// Frezzer compressor fridge configuration
-// These should be configured in secrets.h for production deployments
+// Frezzer PRO compressor fridge configuration (Alpicool OEM, BLE name "WT-0001")
+// Configure in secrets.h; 0 = auto-discovery during BLE scan
 #ifndef FREZZER_COUNT
 #define FREZZER_COUNT 0
 #endif
-// Example: In secrets.h, define known Frezzer fridges like:
+// Example: In secrets.h:
 // #define FREZZER_COUNT 1
 // static const char* FREZZER_MACS[] = {"AA:BB:CC:DD:EE:FF"};
 // static const char* FREZZER_LOCATIONS[] = {"van_fridge"};
 
 // Device ID buffer (derived from MAC address)
-static char deviceId[20] = "";
+char deviceId[20] = "";  // Not static - needs external linkage for display_ui.cpp
 
 // Enable placeholder sensor data generation for testing
 // Set to false by default - only enable for local testing
@@ -97,8 +149,10 @@ const int mqtt_port = MQTT_PORT;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);  // GMT, update interval 1 minute
+// ESP32 native time functions will be used instead of NTPClient for automatic DST support
+
+// WiFi credentials manager with NVS persistence
+WiFiManager wifiManager;
 
 // paku-iot HTTP client (enabled via PAKU_IOT_ENABLED in secrets.h)
 PakuIotClient pakuIotClient;
@@ -108,8 +162,64 @@ PakuIotClient pakuIotClient;
 unsigned long lastTime_pakuIot = 0;
 unsigned long pakuIotInterval = 60000;  // 1 minute interval for HTTP transport
 
-#define PIN 2
+// OTA update client
+OtaClient otaClient;
+bool otaUpdatePending = false;
+String pendingOtaUrl = "";
+String pendingOtaChecksum = "";
+String pendingOtaVersion = "";
 
+// ============================================================================
+// Timing Configuration and State Management
+// ============================================================================
+
+// Device configuration structure (replaces individual timing variables)
+DeviceConfig deviceConfig;
+
+// Current operational state
+DeviceState currentState = STATE_INIT;
+
+// ============================================================================
+// Phase 2: State Machine and Sensor Buffer
+// ============================================================================
+
+// System state machine
+enum SystemState {
+  SYS_STATE_IDLE,
+  SYS_STATE_COLLECT_SENSORS,
+  SYS_STATE_CONNECT_NETWORK,
+  SYS_STATE_TRANSMIT,
+  SYS_STATE_DISCONNECT
+};
+
+SystemState currentSystemState = SYS_STATE_IDLE;
+unsigned long stateEnteredAt = 0;
+unsigned long lastSensorCollection = 0;
+unsigned long lastNetworkConnect = 0;
+
+// Sensor reading buffer
+struct SensorReading {
+  char timestamp[32];
+  char sensor_id[32];
+  char metric[32];
+  float value;
+  bool transmitted;
+};
+
+#define MAX_BUFFERED_READINGS 50
+SensorReading sensorBuffer[MAX_BUFFERED_READINGS];
+int bufferCount = 0;
+
+// Preferences for config persistence
+#ifndef ESP8266
+Preferences preferences;
+#endif
+
+// ============================================================================
+// End Phase 2 Additions
+// ============================================================================
+
+// Legacy timing variables (maintained for backward compatibility during Phase 1)
 unsigned long lastTime_sensor = 0;
 unsigned long lastTime_mqtt = 0;
 unsigned long mqttFastInterval = 10000;  // 10 second interval in ms
@@ -119,22 +229,59 @@ unsigned long sensorSlowInterval = 60000;  // 1 minute interval in ms
 unsigned long mqttInterval;
 unsigned long sensorInterval;
 
-volatile unsigned int count = 0;
-float flowRate;
-float calibrationFactor = 6.6;
-float requiredDeltaT;
-const float heaterPower = 5000;
-bool testMode = true;  // Set to true to simulate flow data
+// ============================================================================
+// Flow Sensor (DISABLED - Future Development)
+// ============================================================================
+// Flow sensor functionality has been moved to lib/paku_lib/src/flow_sensor.h
+// Awaiting hardware integration and calibration before production use.
+// TODO: Re-enable when hardware is installed and calibrated
 
-// Default heater status to 1 (on)
+#define FLOW_SENSOR_ENABLED false  // Set to true when ready for production
+
+// Default heater status to 1 (on) for testing - use fast mode by default
+// Controlled via MQTT paku/control topic: {"heater": 1} on, {"heater": 0} off
 int heaterStatus = 1;
+
+// ============================================================================
+// MQTT Payload Buffer
+// ============================================================================
+
 struct Payload {
   String topic;
   String data;
 };
 
-Payload payloads[30];
+Payload payloads[MAX_MQTT_PAYLOADS];
 int payloadIndex = 0;
+
+// Sensor Snapshot Buffer (for consolidated multi-metric payloads from BLE, wired, etc.)
+#define MAX_SENSOR_SNAPSHOTS 10
+struct SensorSnapshot {
+  String topic;
+  String payload;
+  bool transmitted;
+};
+
+SensorSnapshot sensorSnapshots[MAX_SENSOR_SNAPSHOTS];
+int sensorSnapshotCount = 0;
+
+// Edge device friendly name lookup
+const char* getEdgeDeviceFriendlyName() {
+#ifdef EDGE_DEVICE_COUNT
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  
+  for (size_t i = 0; i < EDGE_DEVICE_COUNT; i++) {
+    if (strcmp(macStr, EDGE_DEVICE_MACS[i]) == 0) {
+      return EDGE_DEVICE_NAMES[i];
+    }
+  }
+#endif
+  return nullptr;  // No friendly name configured
+}
 
 // ISR function declaration moved up
 void IRAM_ATTR countRisingEdges();
@@ -147,78 +294,217 @@ void sendToPakuIot();
 void initPakuIot();
 void processData();
 void processRuuviData();
+void publishDeviceStatus();
+void publishDeviceConfig();
+
+// Phase 2: New function declarations
+void printConfig(const char* context);
+void saveConfig();
+void loadConfig();
+void addSensorReading(const char* sensor_id, const char* metric, float value, const char* timestamp);
+void clearTransmittedReadings();
+void collectSensorData();
+void transmitBufferedData();
+void connectNetwork();
+void disconnectNetwork();
+void handleSystemState();
+
+#if HAS_BLE
 void initRuuviTags();
 void createRuuviPayloads(const char* timestamp);
-void createPlaceholderPayloads(const char* timestamp);
-void initDeviceId();
-void scanBT(void* parameter);
-void goToSleep();
-void updateDisplay();
+void initMoKoSensors();
+void createMoKoPayloads(const char* timestamp);
 void initFrezzerDevices();
 void createFrezzerPayloads(const char* timestamp);
 void handleFrezzerMqttCommand(const char* topic, const char* payload);
+void scanBT(void* parameter);
+#endif // HAS_BLE
+#if HAS_WIRED_SENSORS
+void createWiredSensorPayloads(const char* timestamp);
+#endif // HAS_WIRED_SENSORS
+#if HAS_BLE
+void createPlaceholderPayloads(const char* timestamp);
+#endif // HAS_BLE
+void initDeviceId();
+void goToSleep();
+void updateDisplay();
+void initOta();
+void processOtaUpdate();
+void handleMqttMessage(char* topic, byte* payload, unsigned int length);
+void otaProgressCallback(const OtaProgress& progress);
 
-void IRAM_ATTR countRisingEdges() {
-  count++;
+// LED status indicator functions
+#if HAS_LED
+void ledInit();
+void ledOn();
+void ledOff();
+void ledBlink(int count, int onTime, int offTime);
+void ledStartup();
+void ledWifiConnecting();
+void ledWifiConnected();
+void ledMqttConnecting();
+void ledMqttConnected();
+void ledHeartbeat();
+void ledError();
+
+// LED state tracking
+static unsigned long lastHeartbeatTime = 0;
+static const unsigned long HEARTBEAT_INTERVAL = 5000; // 5 seconds
+
+/**
+ * @brief Initialize the LED pin for status indication
+ */
+void ledInit() {
+  pinMode(PIN_LED_BUILTIN, OUTPUT);
+  digitalWrite(PIN_LED_BUILTIN, !LED_ON); // Start with LED off
 }
+
+/**
+ * @brief Turn the LED on
+ */
+void ledOn() {
+  digitalWrite(PIN_LED_BUILTIN, LED_ON);
+}
+
+/**
+ * @brief Turn the LED off
+ */
+void ledOff() {
+  digitalWrite(PIN_LED_BUILTIN, !LED_ON);
+}
+
+/**
+ * @brief Blink the LED a specified number of times
+ * @param count Number of blinks
+ * @param onTime Duration LED is on in milliseconds
+ * @param offTime Duration LED is off in milliseconds
+ */
+void ledBlink(int count, int onTime, int offTime) {
+  for (int i = 0; i < count; i++) {
+    ledOn();
+    delay(onTime);
+    ledOff();
+    if (i < count - 1) {
+      delay(offTime);
+    }
+  }
+}
+
+/**
+ * @brief LED pattern for device startup (3 quick blinks)
+ */
+void ledStartup() {
+  ledBlink(3, 100, 100);
+}
+
+/**
+ * @brief LED pattern while connecting to WiFi (single fast blink)
+ * Call this repeatedly during WiFi connection attempts
+ * Note: Uses longer flash for better visibility
+ */
+void ledWifiConnecting() {
+  ledOn();
+  delay(100);
+  ledOff();
+  delay(100);
+}
+
+/**
+ * @brief LED pattern when WiFi connected (solid ON briefly)
+ */
+void ledWifiConnected() {
+  ledOn();
+  delay(500);
+  ledOff();
+}
+
+/**
+ * @brief LED pattern while connecting to MQTT (slow blink)
+ * Call this during MQTT connection attempts
+ * Note: Uses longer flash for better visibility
+ */
+void ledMqttConnecting() {
+  ledOn();
+  delay(150);
+  ledOff();
+  delay(150);
+}
+
+/**
+ * @brief LED pattern when MQTT connected (double blink)
+ */
+void ledMqttConnected() {
+  ledBlink(2, 100, 100);
+}
+
+/**
+ * @brief LED heartbeat pattern (brief flash)
+ * Call this periodically to indicate normal operation
+ */
+void ledHeartbeat() {
+  unsigned long currentTime = millis();
+  if (currentTime - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
+    ledBlink(1, 200, 0);  // 200ms flash for better visibility
+    lastHeartbeatTime = currentTime;
+  }
+}
+
+/**
+ * @brief LED error pattern (5 rapid blinks)
+ * Call this to indicate an error condition
+ */
+void ledError() {
+  ledBlink(5, 100, 100);
+}
+#endif // HAS_LED
 
 /**
  * @brief Get ISO 8601 formatted timestamp string
  * 
- * Creates a timestamp in format: YYYY-MM-DDTHH:MM:SSZ
- * Uses NTP time to get accurate UTC time
+ * Creates a timestamp in format: YYYY-MM-DDTHH:MM:SS±HH:MM
+ * Uses ESP32 native time functions with automatic DST support
  * 
  * @return String containing ISO 8601 formatted timestamp
  */
 String getISO8601Timestamp() {
-  unsigned long epochTime = timeClient.getEpochTime();
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return "1970-01-01T00:00:00+00:00";  // Fallback
+  }
   
-  // Calculate date components from epoch
-  int year = 1970;
-  int month = 1;
-  int day = 1;
+  // Get both local and UTC time to calculate offset
+  time_t now = time(nullptr);
+  struct tm localTime;
+  struct tm utcTime;
+  localtime_r(&now, &localTime);
+  gmtime_r(&now, &utcTime);
   
-  // Simplified date calculation (good enough for this use case)
-  unsigned long days = epochTime / 86400;
-  unsigned long seconds = epochTime % 86400;
+  // Calculate offset in seconds (local - UTC)
+  time_t localSec = localTime.tm_hour * 3600 + localTime.tm_min * 60 + localTime.tm_sec;
+  time_t utcSec = utcTime.tm_hour * 3600 + utcTime.tm_min * 60 + utcTime.tm_sec;
+  long tzOffset = localSec - utcSec;
   
-  int hours = seconds / 3600;
-  seconds %= 3600;
-  int minutes = seconds / 60;
-  int secs = seconds % 60;
-  
-  // Calculate year (accounting for leap years)
-  while (true) {
-    int daysInYear = ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) ? 366 : 365;
-    if (days >= daysInYear) {
-      days -= daysInYear;
-      year++;
+  // Handle day boundary crossing
+  if (localTime.tm_mday != utcTime.tm_mday) {
+    if (localTime.tm_mday > utcTime.tm_mday || (localTime.tm_mday == 1 && utcTime.tm_mday > 1)) {
+      tzOffset += 86400;  // Add a day
     } else {
-      break;
+      tzOffset -= 86400;  // Subtract a day
     }
   }
   
-  // Calculate month and day
-  int daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-    daysInMonth[1] = 29; // Leap year
-  }
+  char tzSign = tzOffset >= 0 ? '+' : '-';
+  int tzHours = abs(tzOffset) / 3600;
+  int tzMinutes = (abs(tzOffset) % 3600) / 60;
   
-  for (int m = 0; m < 12; m++) {
-    if (days >= daysInMonth[m]) {
-      days -= daysInMonth[m];
-      month++;
-    } else {
-      break;
-    }
-  }
-  day += days;
-  
-  // Format as ISO 8601: YYYY-MM-DDTHH:MM:SSZ
+  // Format as ISO 8601 with timezone: YYYY-MM-DDTHH:MM:SS±HH:MM
   char isoTimestamp[32];
   snprintf(isoTimestamp, sizeof(isoTimestamp), 
-           "%04d-%02d-%02dT%02d:%02d:%02dZ",
-           year, month, day, hours, minutes, secs);
+           "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d",
+           timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+           tzSign, tzHours, tzMinutes);
   
   return String(isoTimestamp);
 }
@@ -237,8 +523,22 @@ String getISO8601Timestamp() {
  */
 void setup() {
     Serial.begin(115200);
-    Serial.println("Starting setup...");
+    delay(100);  // Allow serial to initialize
     
+    // Display logging configuration
+    printLoggingConfig();
+    
+    LOG_INFO("System", "Starting setup...");
+    LOG_INFO("System", "Device: %s", DEVICE_NAME);
+    LOG_INFO("System", "Firmware: %s", FIRMWARE_VERSION);
+    
+#if HAS_LED
+    // Initialize LED for status indication
+    ledInit();
+    ledStartup();  // 3 quick blinks to indicate startup
+#endif
+
+#if HAS_DISPLAY
     pinMode(PIN_POWER_ON, OUTPUT);
     digitalWrite(PIN_POWER_ON, HIGH);
     tft.begin();
@@ -270,36 +570,121 @@ void setup() {
     ledcWrite(PIN_LCD_BL, 255);
 #endif
 
+    // Initialize the display UI system with button controls
+    Serial.println("Initializing Display UI...");
+    displayUI.begin(&tft);
+    
+    // Reduce CPU frequency to save power and reduce heat
+    // 240MHz is overkill for this application
+    setCpuFrequencyMhz(160);  // Reduce from 240MHz to 160MHz
+    Serial.print("CPU frequency set to: ");
+    Serial.print(getCpuFrequencyMhz());
+    Serial.println(" MHz (power saving mode)");
+    
+#endif // HAS_DISPLAY
+
     Serial.println("Setup Wifi Connection...");
     WiFi.mode(WIFI_STA);
+#ifdef ESP8266
+    // ESP8266-specific WiFi settings for improved stability
+    WiFi.persistent(false);  // Don't write WiFi settings to flash
+    WiFi.setAutoConnect(false);  // Disable auto-connect on boot
+    WiFi.disconnect(true);  // Clear any stored WiFi credentials
+    delay(100);
+#endif
+    
+    // Initialize WiFi manager with NVS persistence
+    Serial.println("Initializing WiFi Manager...");
+    wifiManager.begin();
+    
     //connect_wifi();
 
     // Initialize device ID from MAC address
     initDeviceId();
 
+    // Initialize device configuration BEFORE setting up time (needs timezone)
+    Serial.println("Loading device configuration...");
+    
+    // Load persisted config if available, otherwise use defaults
+    loadConfig();
+
     Serial.println("Setup MQTT Connection...");
-    timeClient.begin();
+    
+    // Configure ESP32 native time with timezone support (auto DST)
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    setenv("TZ", deviceConfig.timing.timezone, 1);
+    tzset();
+    Serial.print("Timezone configured: ");
+    Serial.println(deviceConfig.timing.timezone);
+    
     client.setServer(mqtt_server, mqtt_port);
+    client.setCallback(handleMqttMessage);  // Set MQTT message callback
+    client.setBufferSize(1024);  // Increase from default 256 bytes to handle larger config messages
 
     // Initialize paku-iot HTTP client if enabled
     initPakuIot();
 
+    // Initialize OTA update client
+    Serial.println("Setup OTA Update Client...");
+    initOta();
+
     // Initialize RuuviTag scanner
+#if HAS_BLE
+    // Initialize RuuviTag scanner (ESP32 only)
     Serial.println("Setup RuuviTag Scanner...");
     initRuuviTags();
+    
+    // Initialize MoKo sensor scanner (ESP32 only)
+    Serial.println("Setup MoKo Sensor Scanner...");
+    initMoKoSensors();
 
-    // Initialize Frezzer controller
+    // Initialize Frezzer controller (ESP32 only)
     Serial.println("Setup Frezzer Controller...");
     initFrezzerDevices();
+#endif // HAS_BLE
 
-    Serial.println("Setup Sensor...");
-    pinMode(PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(PIN), countRisingEdges, RISING);
+#if HAS_WIRED_SENSORS
+    // Initialize DS18B20 sensor (ESP8266 and ESP32)
+    Serial.println("Setup DS18B20 Temperature Sensor...");
+    if (wiredSensors.begin(0, 0)) {  // Parameters unused for DS18B20
+        Serial.print("Sensor type: ");
+        Serial.println(wiredSensors.getSensorType());
+    } else {
+        Serial.println("Warning: No DS18B20 sensors detected");
+        wiredSensorsEnabled = false;
+    }
+#endif // HAS_WIRED_SENSORS
+
+    // Flow sensor disabled - awaiting hardware integration and calibration
+    // TODO: Enable flow sensor when ready (see lib/paku_lib/src/flow_sensor.h)
+    Serial.println("Flow Sensor: DISABLED (future development)");
     
-    // Initialize intervals based on heater status
+    // Apply scenario based on heater status (Phase 1: maintain existing behavior)
+    if (heaterStatus == 1) {
+        deviceConfig.applyScenario("heater_active");
+    } else {
+        deviceConfig.applyScenario("default");
+    }
+    
+    // Initialize intervals based on heater status (legacy behavior for Phase 1)
     updateIntervals();
     
-    // Create a task for scanning Bluetooth devices
+    // Set initial state for continuous operation (no sleep in Phase 1)
+    currentState = STATE_CONTINUOUS;
+    
+    // Phase 2: Initialize state machine
+    currentSystemState = SYS_STATE_IDLE;
+    stateEnteredAt = millis();
+    lastSensorCollection = 0;
+    lastNetworkConnect = 0;
+    
+    Serial.printf("Wake interval: %d seconds\n", deviceConfig.timing.wake_interval_s);
+    Serial.printf("BLE scan duration: %d seconds\n", deviceConfig.sensors.ble.scan_duration_s);
+    Serial.printf("Deep sleep: %s\n", deviceConfig.power.deep_sleep_enabled ? "enabled" : "disabled");
+    Serial.println("Phase 2: State machine initialized");
+    
+#if HAS_BLE
+    // Create a task for scanning Bluetooth devices (ESP32 only)
     xTaskCreate(
       scanBT,          // Function to be called
       "scanBT",        // Name of the task
@@ -308,6 +693,7 @@ void setup() {
       1,               // Task priority
       NULL             // Task handle
     );
+#endif // HAS_BLE
 
     Serial.println("Setup complete.");
 
@@ -321,8 +707,8 @@ void setup() {
  * - Checks and maintains WiFi connection.
  * - Checks and maintains MQTT connection.
  * - Updates the time client.
- * - Processes flow data and calculates flow rate and required temperature delta.
- * - Creates payloads for humidity, temperature, flow, heating power, battery voltage, and heater status.
+ * - Processes sensor data from BLE and wired sensors.
+ * - Creates payloads for temperature, humidity, and other metrics.
  * - Sends payloads to MQTT broker at specified intervals.
  * 
  * The function uses the following global variables:
@@ -331,10 +717,6 @@ void setup() {
  * - timeClient: NTP time client object.
  * - lastTime_sensor: Timestamp of the last sensor data processing.
  * - sensorInterval: Interval for sensor data processing.
- * - count: Pulse count from the flow sensor.
- * - testMode: Flag to enable test mode with random pulse counts.
- * - calibrationFactor: Calibration factor for flow rate calculation.
- * - heaterPower: Power of the heater.
  * - lastTime_mqtt: Timestamp of the last MQTT data sending.
  * - mqttInterval: Interval for sending data to MQTT broker.
  * - payloads: Array of payload objects to be sent to MQTT broker.
@@ -345,11 +727,10 @@ void setup() {
  * - connectMQTT(): Connects to MQTT broker.
  * - updateIntervals(): Updates intervals based on heater status.
  * - createPayload(): Creates a payload for a given topic, value, and timestamp.
- * - countRisingEdges(): Interrupt service routine for counting rising edges of flow sensor pulses.
  */
 /**
  * @brief Main loop function that handles WiFi and MQTT connections, updates time, 
- *        processes flow data, and sends data to MQTT.
+ *        processes sensor data, and sends data to MQTT.
  * 
  * This function performs the following tasks:
  * - Checks and maintains WiFi connection.
@@ -358,132 +739,80 @@ void setup() {
  * - Updates the time using the time client.
  * - Updates the heater status (placeholder for actual implementation).
  * - Updates intervals based on the heater status.
- * - Processes flow data.
+ * - Processes sensor data.
  * - Sends data to the MQTT broker.
  */
+/**
+ * @brief Main loop function - Phase 2 with State Machine
+ * 
+ * Manages system state transitions:
+ * - IDLE: Wait for sensor collection interval
+ * - COLLECT_SENSORS: Read sensors (WiFi OFF)
+ * - CONNECT_NETWORK: Turn on WiFi and connect MQTT
+ * - TRANSMIT: Send buffered data
+ * - DISCONNECT: Turn off WiFi
+ */
 void loop() {
-  // Update heater status here
-  // heaterStatus = ...;  // Retrieve the actual heater status
-  // Update intervals based on heater status
-  updateIntervals();
-  processData();
+#if HAS_DISPLAY
+  // CRITICAL: Update display UI FIRST to ensure button responsiveness
+  // Must be before any potentially blocking operations
+  displayUI.update();
+#endif
 
-  if (WiFi.status() != WL_CONNECTED) {
-    connect_wifi();
-  }
-  if (!client.connected()) {
-      connectMQTT();
-  }
-
-  updateDisplay(); 
-  client.loop();
-  timeClient.update();
-  sendToMQTT();
-  sendToPakuIot();  
-  goToSleep();
-
+  // Phase 2: State machine-based operation
+  handleSystemState();
+  
+#if HAS_LED
+  // LED heartbeat - brief flash every 5 seconds during normal operation
+  ledHeartbeat();
+#endif
+  
+  // Legacy display update (can be removed if displayUI is fully adopted)
+  // updateDisplay();
+  
+  // Periodically sync time from NTP (ESP32 native time syncs automatically)\n  // No manual update needed - configTime() handles periodic sync\n  \n  // Small delay to prevent watchdog issues and reduce CPU usage
+  delay(50);  // Increased from 10ms to 50ms for better power efficiency
 }
 
 void goToSleep() {
+#if HAS_DISPLAY
+    // Only enable sleep for devices with display (ESP32-S3)
+    // ESP8266 doesn't wake from deep sleep without D0->RST connection
     // Check if the device has been awake for 30 seconds
-  static unsigned long awakeStartTime = millis();
-  if (millis() - awakeStartTime >= 30000) {
-    Serial.println("Going to sleep for 15 seconds...");
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.println("Going to sleep for 15 seconds...");
-    delay(2000);
-    // Configure the ESP32 to wake up after 15 seconds
-    esp_sleep_enable_timer_wakeup(15 * 1000000);
-    esp_deep_sleep_start();
-  } else {
-    delay(1000);
-  }
+    static unsigned long awakeStartTime = millis();
+    if (millis() - awakeStartTime >= 30000) {
+        Serial.println("Going to sleep for 15 seconds...");
+        tft.fillScreen(TFT_BLACK);
+        tft.setCursor(0, 0);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(2);
+        tft.println("Going to sleep for 15 seconds...");
+        delay(2000);
+        
+        // Configure deep sleep to wake up after 15 seconds
+#ifdef ESP8266
+        ESP.deepSleep(15 * 1000000);  // ESP8266 deep sleep (microseconds)
+#else
+        esp_sleep_enable_timer_wakeup(15 * 1000000);
+        esp_deep_sleep_start();
+#endif
+    } else {
+        delay(1000);
+    }
+#else
+    // No display = no sleep (e.g., ESP8266 headless, ESP32 headless)
+    // Just keep running and reading sensors
+    delay(100);
+#endif
 }
 
 void updateDisplay() {
-  unsigned long currentTime = millis();
-  if (currentTime - lastTime_sensor >= TFT_UPDATE_WAIT) {
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.println("Paku-Core");
-    tft.setTextSize(1);
-    tft.println(wifi_status);
-    if (!client.connected()){
-      tft.println("MQTT disconnected");
-    }else{
-      tft.println("MQTT connected");
-    }
-    
-    //tft.println("Time: " + timeClient.getFormattedTime());
-    //tft.println("Flow: " + String(flowRate, 1) + " L/min | dT: " + String(requiredDeltaT, 1) + "C");
-    tft.println("");
-    
-    // Display Frezzer fridge data first (most important for van use)
-    const FrezzerDevice* freshFridges[MAX_FREZZER_DEVICES];
-    uint8_t fridgeCount = getFreshFrezzerDevices(freshFridges, MAX_FREZZER_DEVICES, millis());
-    
-    if (fridgeCount > 0) {
-      tft.setTextSize(2);
-      tft.setTextColor(TFT_BLUE, TFT_BLACK);
-      tft.println("Fridge");
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      
-      for (uint8_t i = 0; i < fridgeCount && i < 2; i++) {  // Show max 2 fridges
-        const FrezzerDevice* fridge = freshFridges[i];
-        if (fridge->hasData && fridge->lastData.valid) {
-          tft.print(fridge->location);
-          tft.print(": ");
-          tft.print(String(fridge->lastData.currentTemp, 1));
-          tft.print("C/");
-          tft.print(String(fridge->lastData.targetTemp, 0));
-          tft.print("C ");
-          if (fridge->lastData.compressor == FrezzerCompressorState::RUNNING) {
-            tft.setTextColor(TFT_GREEN, TFT_BLACK);
-            tft.println("ON");
-          } else {
-            tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-            tft.println("OFF");
-          }
-          tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        }
-      }
-      tft.println("");
-    }
-    
-    // Display RuuviTag data
-    tft.setTextSize(2);
-    tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    tft.println("Ruuvi Tags");
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    
-    const RuuviTag* freshTags[MAX_RUUVI_TAGS];
-    uint8_t freshCount = getFreshTags(freshTags, MAX_RUUVI_TAGS, millis());
-    
-    if (freshCount == 0) {
-      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-      tft.println("No data available");
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    } else {
-      // Adjust max tags shown based on whether fridge data is displayed
-      uint8_t maxTags = (fridgeCount > 0) ? 2 : 4;
-      for (uint8_t i = 0; i < freshCount && i < maxTags; i++) {
-        const RuuviTag* tag = freshTags[i];
-        if (tag->hasData && tag->lastData.valid) {
-          tft.print(tag->location);
-          tft.print(": ");
-          tft.print(String(tag->lastData.temperature, 1));
-          tft.print("C ");
-          tft.print(String(tag->lastData.humidity, 0));
-          tft.println("%");
-        }
-      }
-    }
-  }
+#if HAS_DISPLAY
+  // DEPRECATED: Legacy display function replaced by DisplayUI class
+  // This function is kept for backward compatibility but does nothing
+  // The new displayUI.update() in loop() handles all display operations
+  // If you need to force a display refresh, use: displayUI.refresh()
+#endif // HAS_DISPLAY
 }
 
 /**
@@ -513,53 +842,36 @@ void processData() {
   if (currentTime - lastTime_sensor >= sensorInterval) {
     Serial.print(".");
  
-    // process flow data
-    detachInterrupt(digitalPinToInterrupt(PIN));
-    
-    if (testMode) {
-      count = random(198, 462);
-    }
-
-    // Calculate frequency in Hz (pulses per second)
-    float frequency = count / ((currentTime - lastTime_sensor) / 1000.0); 
-    flowRate = (frequency / calibrationFactor) * 60.0;
-    requiredDeltaT = heaterPower / (3.5 * flowRate);
+    // Flow sensor processing disabled - moved to flow_sensor.cpp
+    // TODO: Re-enable when flow sensor hardware is ready
     String timestamp = getISO8601Timestamp();
-
-    count = 0;
-    lastTime_sensor = currentTime;
-    attachInterrupt(digitalPinToInterrupt(PIN), countRisingEdges, RISING);
  
     // Create payloads for all data
     
+#if HAS_BLE
     // 1. RuuviTag sensor data (temperature, humidity, pressure from BLE sensors)
     createRuuviPayloads(timestamp.c_str());
     
-    // 2. Frezzer fridge data (temperature, status from BLE compressor fridges)
+    // 2. MoKo sensor data (temperature, humidity, pressure, accelerometer from BLE sensors)
+    createMoKoPayloads(timestamp.c_str());
+
+    // 3. Frezzer fridge data (temperature, status from BLE compressor fridges)
     createFrezzerPayloads(timestamp.c_str());
+#endif // HAS_BLE
     
+#if HAS_WIRED_SENSORS
+    // 2. DS18B20 sensor data (ESP8266 and ESP32)
+    createWiredSensorPayloads(timestamp.c_str());
+#endif // HAS_WIRED_SENSORS
+    
+#if HAS_BLE
     // 3. Placeholder data for sensors not yet implemented (disabled by default)
     createPlaceholderPayloads(timestamp.c_str());
+#endif // HAS_BLE
     
-    // 3. Flow sensor data - consolidated payload with all metrics
-    JsonDocument flowDoc;
-    flowDoc["timestamp"] = timestamp;
-    flowDoc["device_id"] = "coolant";
-    flowDoc["location"] = "coolant_line";
-    
-    JsonObject flowMetrics = flowDoc["metrics"].to<JsonObject>();
-    flowMetrics["flow_rate_lpm"] = flowRate;
-    flowMetrics["frequency_hz"] = frequency;
-    flowMetrics["required_dt_c"] = requiredDeltaT;
-    
-    String flowPayload;
-    serializeJson(flowDoc, flowPayload);
-    
-    if (payloadIndex < 30) {
-      payloads[payloadIndex].topic = "paku/flow/coolant/data";
-      payloads[payloadIndex].data = flowPayload;
-      payloadIndex++;
-    }
+    // Flow sensor data disabled - future development
+    // TODO: Re-enable flow sensor payload generation when hardware ready
+    // See lib/paku_lib/src/flow_sensor.h for flow sensor module
  }
 }
 
@@ -577,10 +889,23 @@ void sendToMQTT() {
   unsigned long currentTime = millis();
 
   if (currentTime - lastTime_mqtt >= mqttInterval) {
-    Serial.println("send to MQTT");
+    Serial.print("[DEBUG] sendToMQTT - payloadIndex before transmission: ");
+    Serial.println(payloadIndex);
+    
+    if (payloadIndex == 0) {
+      Serial.println("[DEBUG] No payloads to send to MQTT!");
+    }
     
     for (int i = 0; i < payloadIndex; i++) {
-      client.publish((char*) payloads[i].topic.c_str(), (char*) payloads[i].data.c_str());
+      Serial.print("[DEBUG] Publishing payload ");
+      Serial.print(i);
+      Serial.print(" to topic: ");
+      Serial.println(payloads[i].topic);
+      Serial.print("[DEBUG] Data: ");
+      Serial.println(payloads[i].data);
+      bool result = client.publish((char*) payloads[i].topic.c_str(), (char*) payloads[i].data.c_str());
+      Serial.print("[DEBUG] Publish result: ");
+      Serial.println(result ? "SUCCESS" : "FAILED");
     }
     
     payloadIndex = 0;
@@ -609,8 +934,19 @@ void initPakuIot() {
   uint8_t mac[6];
   WiFi.macAddress(mac);
   static char deviceId[20];
-  snprintf(deviceId, sizeof(deviceId), "paku-%02X%02X%02X%02X", 
+#ifdef ESP8266
+  snprintf(deviceId, sizeof(deviceId), "ESP8266-%02X%02X%02X%02X",
            mac[2], mac[3], mac[4], mac[5]);
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+  snprintf(deviceId, sizeof(deviceId), "ESP32-S3-%02X%02X%02X%02X",
+           mac[2], mac[3], mac[4], mac[5]);
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+  snprintf(deviceId, sizeof(deviceId), "ESP32-%02X%02X%02X%02X",
+           mac[2], mac[3], mac[4], mac[5]);
+#else
+  snprintf(deviceId, sizeof(deviceId), "UNKNOWN-%02X%02X%02X%02X",
+           mac[2], mac[3], mac[4], mac[5]);
+#endif
   
   PakuIotConfig config;
   config.host = PAKU_IOT_HOST;
@@ -708,22 +1044,23 @@ void sendToPakuIot() {
       readingCount++;
     }
     
-    // Only send actual sensor values (not placeholder -1000 values)
-    if (flowRate > 0) {
-      readings[readingCount].metric = "flow/coolant";
-      readings[readingCount].value = flowRate;
-      readings[readingCount].unit = "l_per_min";
-      readings[readingCount].timestamp = timestampBuf;
-      readingCount++;
-    }
-    
-    if (requiredDeltaT > 0 && requiredDeltaT < 1000) {
-      readings[readingCount].metric = "temperature/heating/required_dt";
-      readings[readingCount].value = requiredDeltaT;
-      readings[readingCount].unit = "celsius";
-      readings[readingCount].timestamp = timestampBuf;
-      readingCount++;
-    }
+    // Flow sensor disabled - future development
+    // TODO: Re-enable flow readings when hardware is ready
+    // if (FLOW_SENSOR_ENABLED && flowRate > 0) {
+    //   readings[readingCount].metric = "flow/coolant";
+    //   readings[readingCount].value = flowRate;
+    //   readings[readingCount].unit = "l_per_min";
+    //   readings[readingCount].timestamp = timestampBuf;
+    //   readingCount++;
+    // }
+    //
+    // if (FLOW_SENSOR_ENABLED && requiredDeltaT > 0 && requiredDeltaT < 1000) {
+    //   readings[readingCount].metric = "temperature/heating/required_dt";
+    //   readings[readingCount].value = requiredDeltaT;
+    //   readings[readingCount].unit = "celsius";
+    //   readings[readingCount].timestamp = timestampBuf;
+    //   readingCount++;
+    // }
     
     // Add heater status
     readings[readingCount].metric = "status/heater";
@@ -750,65 +1087,175 @@ void sendToPakuIot() {
 }
 
 /**
- * @brief Attempts to connect to a WiFi network from a list of SSIDs and passwords.
+ * @brief Establishes a WiFi connection by scanning for available networks first.
  * 
- * This function iterates through a predefined list of WiFi SSIDs and passwords,
- * attempting to connect to each one until a successful connection is made or all
- * options are exhausted. It prints the connection status to the Serial monitor.
+ * Strategy:
+ * 1. Scan for available networks
+ * 2. Try to connect to any matching network (NVS or firmware) that's in range
+ * 3. If all available networks fail, rescan and retry (max 2 scan attempts)
  * 
- * @note The function will delay for 10 milliseconds at the start and will print
- *       connection attempts and results to the Serial monitor.
+ * @note Networks from NVS and firmware defaults are treated equally - no priority order.
+ *       The function will connect to whichever available network succeeds first.
  * 
- * @details The function will try to connect to each SSID in the list. For each SSID,
- *          it will attempt to connect up to 20 times, with a 500-millisecond delay
- *          between each attempt. If a connection is established, it prints the IP
- *          address assigned to the device. If the connection fails, it moves on to
- *          the next SSID in the list.
- * 
- * @warning Ensure that the `wifi_ssid` and `wifi_password` arrays are properly defined
- *          and contain valid SSIDs and passwords.
+ * @warning Ensure that the firmware networks in secrets.h are properly defined.
  */
 void connect_wifi() {
   
   delay(10);
   Serial.println();
 
-  while (WiFi.status() != WL_CONNECTED) {
-    for (int i = 0; i < WIFI_COUNT; i++) {
-      Serial.print("Connecting to ");
-      Serial.print(WIFI_SSIDS[i]);
-      wifi_status = "Wifi connecting to ";
-      wifi_status += WIFI_SSIDS[i];
-      WiFi.begin(WIFI_SSIDS[i], WIFI_PASSWORDS[i]);
+#ifdef ESP8266
+  // ESP8266-specific WiFi initialization for better connectivity
+  WiFi.persistent(false);  // Don't write to flash on every connection
+  WiFi.setAutoConnect(false);  // Disable auto-connect
+  WiFi.setAutoReconnect(true);  // Enable auto-reconnect after connection
+#endif
+
+  // Build list of all configured networks (NVS + firmware)
+  struct NetworkConfig {
+    String ssid;
+    String password;
+    String source;  // "NVS" or "firmware"
+  };
+  
+  NetworkConfig configuredNetworks[MAX_NVS_WIFI_NETWORKS + WIFI_COUNT];
+  int configuredCount = 0;
+  
+  // Add NVS networks
+  int nvsCount = wifiManager.getStoredNetworkCount();
+  for (int i = 0; i < nvsCount && configuredCount < (MAX_NVS_WIFI_NETWORKS + WIFI_COUNT); i++) {
+    WiFiCredential cred = wifiManager.getNetwork(i);
+    if (cred.valid) {
+      configuredNetworks[configuredCount].ssid = String(cred.ssid);
+      configuredNetworks[configuredCount].password = String(cred.password);
+      configuredNetworks[configuredCount].source = "NVS";
+      configuredCount++;
+    }
+  }
+  
+  // Add firmware networks
+  for (int i = 0; i < WIFI_COUNT && configuredCount < (MAX_NVS_WIFI_NETWORKS + WIFI_COUNT); i++) {
+    configuredNetworks[configuredCount].ssid = String(WIFI_SSIDS[i]);
+    configuredNetworks[configuredCount].password = String(WIFI_PASSWORDS[i]);
+    configuredNetworks[configuredCount].source = "firmware";
+    configuredCount++;
+  }
+  
+  Serial.printf("Total configured networks: %d\n", configuredCount);
+  
+  // Try up to 2 scan cycles
+  for (int scanCycle = 0; scanCycle < 2 && WiFi.status() != WL_CONNECTED; scanCycle++) {
+    if (scanCycle > 0) {
+      Serial.println("Rescanning for networks...");
+      delay(1000);  // Wait before rescanning
+    }
+    
+    // Scan for available networks
+    Serial.println("Scanning for WiFi networks...");
+    wifi_status = "Scanning WiFi...";
+#if HAS_DISPLAY
+    displayUI.refresh();
+#endif
+    
+    int networksFound = WiFi.scanNetworks();
+    Serial.printf("Found %d networks\n", networksFound);
+    
+    if (networksFound == 0) {
+      Serial.println("No networks found in range");
+      continue;
+    }
+    
+    // Log all found networks
+    Serial.println("Available networks:");
+    for (int j = 0; j < networksFound; j++) {
+      Serial.printf("  %d: %s (RSSI: %d, Ch: %d, Enc: %d)\n", 
+                   j, WiFi.SSID(j).c_str(), WiFi.RSSI(j), WiFi.channel(j), WiFi.encryptionType(j));
+    }
+    
+    // Log configured networks
+    Serial.println("Configured networks:");
+    for (int i = 0; i < configuredCount; i++) {
+      Serial.printf("  %d: %s (%s)\n", i, configuredNetworks[i].ssid.c_str(), configuredNetworks[i].source.c_str());
+    }
+    
+    // Try to connect to any available configured network
+    for (int i = 0; i < configuredCount && WiFi.status() != WL_CONNECTED; i++) {
+      // Check if this network is in range
+      bool networkAvailable = false;
+      for (int j = 0; j < networksFound; j++) {
+        if (WiFi.SSID(j) == configuredNetworks[i].ssid) {
+          networkAvailable = true;
+          Serial.printf("Found configured network: %s (RSSI: %d)\n", 
+                       configuredNetworks[i].ssid.c_str(), WiFi.RSSI(j));
+          break;
+        }
+      }
+      
+      if (!networkAvailable) {
+        continue;  // Skip networks not in range
+      }
+      
+      // Try to connect
+      Serial.printf("Connecting to %s (%s)...\n", 
+                   configuredNetworks[i].ssid.c_str(), 
+                   configuredNetworks[i].source.c_str());
+      wifi_status = "Connecting to ";
+      wifi_status += configuredNetworks[i].ssid;
+      
+      // Disconnect and clear any previous connection state
+      WiFi.disconnect();
+      delay(100);
+      
+      WiFi.begin(configuredNetworks[i].ssid.c_str(), configuredNetworks[i].password.c_str());
       int attempts = 0;
 
-      while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+      while (WiFi.status() != WL_CONNECTED && attempts < 20) {
         delay(500);
-        //Serial.print(".");
         wifi_status += ".";
         attempts++;
-        updateDisplay();
+#if HAS_LED
+        ledWifiConnecting();
+#endif
+#if HAS_DISPLAY
+        displayUI.update();
+        displayUI.refresh();
+#endif
       }
 
       if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("");
-        Serial.println("WiFi connected");
-        Serial.println("IP address: ");
-        Serial.println(WiFi.localIP());
+        LOG_INFO("WiFi", "Connected to %s (%s)", 
+                configuredNetworks[i].ssid.c_str(), 
+                configuredNetworks[i].source.c_str());
+        LOG_INFO("WiFi", "IP address: %s", WiFi.localIP().toString().c_str());
+        LOG_DEBUG_WIFI("RSSI: %d dBm", WiFi.RSSI());
+        
         wifi_status = "WiFi connected to ";
-        wifi_status += WIFI_SSIDS[i];
+        wifi_status += configuredNetworks[i].ssid;
         wifi_status += " (";
-        wifi_status += WiFi.localIP();
+        wifi_status += WiFi.localIP().toString();
         wifi_status += ")";
-        updateDisplay();
+#if HAS_LED
+        ledWifiConnected();
+#endif
+#if HAS_DISPLAY
+        displayUI.refresh();
+#endif
         return;
       } else {
-        Serial.println("");
-        Serial.print("Failed to connect to ");
-        Serial.println(WIFI_SSIDS[i]);
+        Serial.printf("Failed to connect to %s\n", configuredNetworks[i].ssid.c_str());
+#if HAS_LED
+        ledError();
+#endif
       }
     }
   }
+  
+  // All connection attempts failed
+  Serial.println("Failed to connect to any WiFi network after scanning");
+  wifi_status = "WiFi connection failed";
+#if HAS_DISPLAY
+  displayUI.refresh();
+#endif
 }
 
 /**
@@ -823,20 +1270,68 @@ void connect_wifi() {
 void connectMQTT() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
+#if HAS_LED
+    ledMqttConnecting();  // Slow blink while connecting
+#endif
     //tft.fillScreen(TFT_BLACK);
     //tft.setCursor(0, 0);
     //tft.setTextColor(TFT_WHITE, TFT_BLACK);
     //tft.setTextSize(2);
     //tft.println("Attempting MQTT connection...");
 
-    if (client.connect("ESP32Client")) {  // Use a unique client ID for ESP32
-      Serial.println("MQTT connected and subscribed to 'paku/control'");
+    if (client.connect(deviceId)) {  // Use unique device ID as MQTT client ID
+      Serial.println("MQTT connected and subscribed to control topics");
+#if HAS_LED
+      ledMqttConnected();  // Double blink to indicate success
+#endif
       //tft.println("MQTT connected and subscribed to 'paku/control'");
+      
+      // Subscribe to legacy control topic (backward compatibility)
       client.subscribe("paku/control");
+      
+      // Subscribe to new edge device control topic (schema-compliant)
+      String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
+      client.subscribe(edgeControlTopic.c_str());
+      Serial.print("Subscribed to edge control topic: ");
+      Serial.println(edgeControlTopic);
+      
+      // Phase 2: Subscribe to config/set topic (for receiving configuration commands)
+      String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
+      client.subscribe(edgeConfigTopic.c_str());
+      Serial.print("Subscribed to config/set topic: ");
+      Serial.println(edgeConfigTopic);
+      
+      // Subscribe to OTA command topic (edge structure)
+      String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
+      client.subscribe(otaTopic.c_str());
+      Serial.print("Subscribed to OTA topic: ");
+      Serial.println(otaTopic);
+      
+      // Subscribe to WiFi management command topic
+      String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
+      client.subscribe(wifiCmdTopic.c_str());
+      Serial.print("Subscribed to WiFi cmd topic: ");
+      Serial.println(wifiCmdTopic);
+      
+      // Step 1: Publish device status first (announce we're online)
+      publishDeviceStatus();
+      
+      // Step 2 & 3: Process any retained config/set messages and apply them
+      Serial.println("Processing retained messages...");
+      for (int i = 0; i < 10; i++) {
+        client.loop();
+        delay(10);
+      }
+      
+      // Step 4: Report current config (includes any updates from config/set)
+      publishDeviceConfig();
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
+#if HAS_LED
+      ledError();  // Error blink for failed connection
+#endif
       //tft.print("failed, rc=");
       //tft.print(client.state());
       //tft.println(" try again in 5 seconds");
@@ -849,17 +1344,24 @@ void connectMQTT() {
  * @brief Initializes the device ID from MAC address
  * 
  * Generates a unique device identifier using the last 4 bytes of the
- * ESP32's MAC address in the format "paku-AABBCCDD".
+ * ESP32/ESP8266 MAC address in the format "ESP32-AABBCCDD" or "ESP8266-AABBCCDD".
  */
 void initDeviceId() {
   uint8_t mac[6];
   WiFi.macAddress(mac);
-  snprintf(deviceId, sizeof(deviceId), "paku-%02X%02X%02X%02X", 
+#ifdef ESP8266
+  snprintf(deviceId, sizeof(deviceId), "ESP8266-%02X%02X%02X%02X",
            mac[2], mac[3], mac[4], mac[5]);
+#else
+  // ESP32 or ESP32-S3
+  snprintf(deviceId, sizeof(deviceId), "ESP32-%02X%02X%02X%02X",
+           mac[2], mac[3], mac[4], mac[5]);
+#endif
   Serial.print("Device ID: ");
   Serial.println(deviceId);
 }
 
+#if HAS_BLE
 /**
  * @brief Initializes RuuviTag scanner and registers known tags
  * 
@@ -908,10 +1410,13 @@ void createRuuviPayloads(const char* timestamp) {
     // Build consolidated payload with all metrics for this device
     JsonDocument doc;
     doc["timestamp"] = String(timestamp);
-    doc["device_id"] = String("ruuvi_") + tag->location;
-    doc["location"] = tag->location;
-    doc["mac"] = tag->macString;
     
+    // Construct device_id as ruuvi_<location>
+    String deviceId = String("ruuvi_") + tag->location;
+    doc["device_id"] = deviceId;
+    doc["location"] = tag->location;
+    
+    // Create nested metrics object
     JsonObject metrics = doc["metrics"].to<JsonObject>();
     metrics["temperature_c"] = tag->lastData.temperature;
     metrics["humidity_percent"] = tag->lastData.humidity;
@@ -924,30 +1429,209 @@ void createRuuviPayloads(const char* timestamp) {
       metrics["battery_mv"] = tag->lastData.batteryVoltage;
     }
     
-    // Serialize and add to payload queue
+    // Serialize and buffer as snapshot
     String payload;
     serializeJson(doc, payload);
-    
-    // Construct device_id as ruuvi_<location>
-    String deviceId = String("ruuvi_") + tag->location;
     String topic = String("paku/sensors/") + deviceId + "/data";
     
-    if (payloadIndex < 30) {
-      payloads[payloadIndex].topic = topic;
-      payloads[payloadIndex].data = payload;
-      payloadIndex++;
+    // Add to snapshot buffer
+    if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
+      sensorSnapshots[sensorSnapshotCount].topic = topic;
+      sensorSnapshots[sensorSnapshotCount].payload = payload;
+      sensorSnapshots[sensorSnapshotCount].transmitted = false;
+      sensorSnapshotCount++;
     }
     
-    Serial.print("RuuviTag [");
+    Serial.print("Buffered RuuviTag [");
     Serial.print(tag->location);
     Serial.print("]: T=");
     Serial.print(tag->lastData.temperature);
     Serial.print("°C, H=");
     Serial.print(tag->lastData.humidity);
-    Serial.println("%");
+    Serial.print("% (buffer: ");
+    Serial.print(sensorSnapshotCount);
+    Serial.println(")");
   }
 }
 
+/**
+ * @brief Initializes MoKo sensor scanner and registers known sensors
+ * 
+ * If MOKO_SENSOR_COUNT is defined in secrets.h with known MAC addresses,
+ * those sensors will be registered. Otherwise, sensors will be auto-discovered
+ * during BLE scans.
+ */
+void initMoKoSensors() {
+  initMoKoScanner();
+  
+#if defined(MOKO_SENSOR_COUNT) && MOKO_SENSOR_COUNT > 0
+  Serial.println("Registering known MoKo sensors...");
+  for (int i = 0; i < MOKO_SENSOR_COUNT; i++) {
+    if (registerMoKoSensor(MOKO_SENSOR_MACS[i], MOKO_SENSOR_LOCATIONS[i])) {
+      Serial.print("  Registered: ");
+      Serial.print(MOKO_SENSOR_MACS[i]);
+      Serial.print(" -> ");
+      Serial.println(MOKO_SENSOR_LOCATIONS[i]);
+    }
+  }
+#else
+  Serial.println("No pre-registered MoKo sensors (auto-discovery enabled)");
+#endif
+  
+  Serial.print("MoKo sensor scanner initialized. Registered sensors: ");
+  Serial.println(getRegisteredSensorCount());
+}
+
+/**
+ * @brief Creates MQTT payloads from MoKo sensor data
+ * 
+ * Iterates through all registered sensors with fresh data and creates
+ * temperature, humidity, pressure, and accelerometer payloads using the 
+ * architecture-compliant topic structure: paku/sensors/{device_id}/data
+ * 
+ * @param timestamp Current timestamp string
+ */
+void createMoKoPayloads(const char* timestamp) {
+  const MoKoSensor* freshSensors[MAX_MOKO_SENSORS];
+  uint8_t freshCount = getFreshSensors(freshSensors, MAX_MOKO_SENSORS, millis());
+  
+  for (uint8_t i = 0; i < freshCount; i++) {
+    const MoKoSensor* sensor = freshSensors[i];
+    if (!sensor->hasData || !sensor->lastData.valid) continue;
+    
+    // Build consolidated payload with all metrics for this device
+    JsonDocument doc;
+    doc["timestamp"] = String(timestamp);
+    
+    // Construct device_id as moko_<location>
+    String deviceId = String("moko_") + sensor->location;
+    doc["device_id"] = deviceId;
+    doc["location"] = sensor->location;
+    
+    // Nest all metrics under "metrics" object
+    JsonObject metrics = doc["metrics"].to<JsonObject>();
+    metrics["temperature_c"] = sensor->lastData.temperature;
+    metrics["humidity_percent"] = sensor->lastData.humidity;
+    
+    if (sensor->lastData.pressure > 0) {
+      metrics["pressure_hpa"] = sensor->lastData.pressure / 100.0f;
+    }
+    
+    if (sensor->lastData.batteryVoltage > 0) {
+      metrics["battery_mv"] = sensor->lastData.batteryVoltage * 1000.0f;
+    }
+    
+    if (sensor->lastData.batteryPercent > 0) {
+      metrics["battery_percent"] = sensor->lastData.batteryPercent;
+    }
+    
+    // Add accelerometer data (if non-zero)
+    if (sensor->lastData.accelerationX != 0 || sensor->lastData.accelerationY != 0 || sensor->lastData.accelerationZ != 0) {
+      metrics["accel_x"] = sensor->lastData.accelerationX;
+      metrics["accel_y"] = sensor->lastData.accelerationY;
+      metrics["accel_z"] = sensor->lastData.accelerationZ;
+    }
+    
+    // Serialize and buffer as snapshot
+    String payload;
+    serializeJson(doc, payload);
+    String topic = String("paku/sensors/") + deviceId + "/data";
+    
+    // Add to snapshot buffer
+    if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
+      sensorSnapshots[sensorSnapshotCount].topic = topic;
+      sensorSnapshots[sensorSnapshotCount].payload = payload;
+      sensorSnapshots[sensorSnapshotCount].transmitted = false;
+      sensorSnapshotCount++;
+    }
+    
+    // Determine model name
+    const char* modelName = "Unknown";
+    if (sensor->model == 1) modelName = "H2";
+    else if (sensor->model == 2) modelName = "H3";
+    else if (sensor->model == 3) modelName = "H4";
+    
+    Serial.print("Buffered MoKo [");
+    Serial.print(sensor->location);
+    Serial.print("] ");
+    Serial.print(modelName);
+    Serial.print(": T=");
+    Serial.print(sensor->lastData.temperature);
+    Serial.print("°C, H=");
+    Serial.print(sensor->lastData.humidity);
+    Serial.print("% (buffer: ");
+    Serial.print(sensorSnapshotCount);
+    Serial.println(")");
+  }
+}
+#endif // HAS_BLE
+
+#if HAS_WIRED_SENSORS
+// Device ID suffix for wired sensors
+#define WIRED_SENSOR_SUFFIX "_wired"
+
+/**
+ * @brief Creates MQTT payloads from DS18B20 sensor data
+ * 
+ * Reads temperature from DS18B20 digital sensor and creates payloads 
+ * using architecture-compliant topic structure.
+ * 
+ * @param timestamp Current timestamp string
+ */
+void createWiredSensorPayloads(const char* timestamp) {
+  if (!wiredSensorsEnabled) return;
+  
+  unsigned long currentTime = millis();
+  if (currentTime - lastWiredSensorRead < WIRED_SENSOR_INTERVAL_MS) {
+    return;  // Not time to read yet
+  }
+  
+  lastWiredSensorRead = currentTime;
+  
+  WiredSensorData data = wiredSensors.readSensors();
+  
+  if (!data.valid) {
+    Serial.println("Warning: DS18B20 sensor reading invalid");
+    return;
+  }
+  
+  // Create consolidated payload with all metrics
+  JsonDocument doc;
+  doc["timestamp"] = String(timestamp);
+  doc["device_id"] = String(deviceId) + WIRED_SENSOR_SUFFIX;
+  doc["location"] = "wired_sensor";
+  doc["sensor_type"] = wiredSensors.getSensorType();
+  
+  JsonObject metrics = doc["metrics"].to<JsonObject>();
+  
+  // Add temperature from DS18B20
+  if (wiredSensors.isAvailable()) {
+    metrics["temperature_c"] = data.temperature;
+  }
+  
+  String payload;
+  serializeJson(doc, payload);
+  
+  String topic = String("paku/sensors/") + deviceId + WIRED_SENSOR_SUFFIX + "/data";
+  
+  // Add to sensor snapshot buffer (used for all consolidated sensor transmissions)
+  if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
+    sensorSnapshots[sensorSnapshotCount].topic = topic;
+    sensorSnapshots[sensorSnapshotCount].payload = payload;
+    sensorSnapshots[sensorSnapshotCount].transmitted = false;
+    Serial.print("Buffered DS18B20 [wired_sensor]: T=");
+    Serial.print(data.temperature, 2);
+    Serial.print("°C (buffer: ");
+    Serial.print(sensorSnapshotCount + 1);
+    Serial.println(")");
+    sensorSnapshotCount++;
+  } else {
+    Serial.println("Warning: Snapshot buffer full, dropping DS18B20 reading");
+  }
+}
+#endif // HAS_WIRED_SENSORS
+
+#if HAS_BLE
 /**
  * @brief Creates placeholder payloads for sensors not yet implemented
  * 
@@ -1006,6 +1690,114 @@ void createPlaceholderPayloads(const char* timestamp) {
   createPayload(String("paku/devices/") + deviceId + "/telemetry/status/pump", SENSOR_NOT_AVAILABLE, timestamp);
 }
 
+/**
+ * @brief Initializes Frezzer controller and registers known devices
+ */
+void initFrezzerDevices() {
+  initFrezzerController();
+#if FREZZER_COUNT > 0
+  for (int i = 0; i < FREZZER_COUNT; i++) {
+    if (registerFrezzerDevice(FREZZER_MACS[i], FREZZER_LOCATIONS[i])) {
+      Serial.print("  Frezzer registered: ");
+      Serial.print(FREZZER_MACS[i]);
+      Serial.print(" -> ");
+      Serial.println(FREZZER_LOCATIONS[i]);
+    }
+  }
+#else
+  Serial.println("Frezzer: auto-discovery enabled");
+#endif
+}
+
+/**
+ * @brief Creates MQTT payloads from Frezzer device data
+ */
+void createFrezzerPayloads(const char* timestamp) {
+  const FrezzerDevice* freshDevices[MAX_FREZZER_DEVICES];
+  uint8_t freshCount = getFreshFrezzerDevices(freshDevices, MAX_FREZZER_DEVICES, millis());
+
+  for (uint8_t i = 0; i < freshCount; i++) {
+    const FrezzerDevice* device = freshDevices[i];
+    if (!device->hasData || !device->lastData.valid) continue;
+
+    JsonDocument doc;
+    doc["timestamp"] = String(timestamp);
+    doc["device_id"] = String("frezzer_") + device->location;
+    doc["location"] = device->location;
+    doc["mac"] = device->macString;
+    if (strlen(device->deviceName) > 0) {
+      doc["device_name"] = device->deviceName;
+    }
+
+    JsonObject metrics = doc["metrics"].to<JsonObject>();
+    metrics["current_temp_c"]  = device->lastData.currentTemp;
+    metrics["target_temp_c"]   = device->lastData.targetTemp;
+    metrics["battery_voltage"] = device->lastData.batteryVoltage;
+    metrics["bat_percent"]     = device->lastData.batPercent;
+    metrics["bat_saver_mode"]  = device->lastData.batSaverMode;
+    metrics["mode"]            = frezzerModeToString(device->lastData.mode);
+    metrics["compressor"]      = frezzerCompressorStateToString(device->lastData.compressor);
+    metrics["locked"]          = device->lastData.locked;
+    metrics["error"]           = frezzerErrorToString(device->lastData.error);
+    metrics["connected"]       = device->connected;
+
+    String payload;
+    serializeJson(doc, payload);
+
+    String topic = String("paku/fridge/") + device->location + "/data";
+    if (payloadIndex < 30) {
+      payloads[payloadIndex].topic = topic;
+      payloads[payloadIndex].data = payload;
+      payloadIndex++;
+    }
+  }
+}
+
+/**
+ * @brief Handles MQTT commands for Frezzer devices
+ *        Topic: paku/fridge/{location}/cmd
+ *        Payload: {"command": "set_temp"|"set_mode"|"power", "value": ...}
+ */
+void handleFrezzerMqttCommand(const char* topic, const char* payload) {
+  String topicStr = String(topic);
+  if (!topicStr.startsWith("paku/fridge/") || !topicStr.endsWith("/cmd")) return;
+
+  int startIdx = 12;
+  int endIdx = topicStr.lastIndexOf("/cmd");
+  if (endIdx <= startIdx) return;
+  String location = topicStr.substring(startIdx, endIdx);
+
+  const FrezzerDevice* device = nullptr;
+  for (uint8_t i = 0; i < getFrezzerDeviceCount(); i++) {
+    const FrezzerDevice* d = getFrezzerDevice(i);
+    if (d != nullptr && String(d->location) == location) { device = d; break; }
+  }
+  if (device == nullptr) return;
+
+  JsonDocument cmdDoc;
+  if (deserializeJson(cmdDoc, payload) != DeserializationError::Ok) return;
+
+  const char* command = cmdDoc["command"];
+  if (command == nullptr) return;
+
+  FrezzerDevice* mutableDevice = const_cast<FrezzerDevice*>(device);
+
+  if (strcmp(command, "set_temp") == 0) {
+    setFrezzerTargetTemp(mutableDevice, cmdDoc["value"].as<float>());
+  } else if (strcmp(command, "set_mode") == 0) {
+    const char* modeStr = cmdDoc["value"];
+    FrezzerMode mode = FrezzerMode::UNKNOWN;
+    if (strcmp(modeStr, "off") == 0)           mode = FrezzerMode::OFF;
+    else if (strcmp(modeStr, "eco") == 0)      mode = FrezzerMode::ECO;
+    else if (strcmp(modeStr, "max_cool") == 0) mode = FrezzerMode::MAX_COOL;
+    setFrezzerMode(mutableDevice, mode);
+  } else if (strcmp(command, "power") == 0) {
+    const char* val = cmdDoc["value"];
+    if (strcmp(val, "on") == 0)       turnFrezzerOn(mutableDevice);
+    else if (strcmp(val, "off") == 0) turnFrezzerOff(mutableDevice);
+  }
+}
+
 // Function to scan for Bluetooth devices and parse RuuviTag data
 void scanBT(void* parameter) {
   // Initialize BLE once
@@ -1027,45 +1819,28 @@ void scanBT(void* parameter) {
     Serial.print("Devices found: ");
     Serial.println(foundDevices.getCount());
 
-    // Iterate through the found devices and check for RuuviTags
+    // Iterate through the found devices and check for RuuviTags and MoKo sensors
     for (int i = 0; i < foundDevices.getCount(); i++) {
       BLEAdvertisedDevice device = foundDevices.getDevice(i);
       
       // Get device name if available
-      const char* devName = nullptr;
-      if (device.haveName()) {
-        devName = device.getName().c_str();
-      }
+      std::string deviceName = device.haveName() ? device.getName() : "";
       
-      // Get MAC address bytes
-      uint8_t macBytes[6];
-      esp_bd_addr_t* nativeAddr = device.getAddress().getNative();
-      for (int j = 0; j < 6; j++) {
-        macBytes[j] = (*nativeAddr)[j];
-      }
-      
-      // Check if this is a Frezzer device by name
-      if (devName != nullptr && isFrezzerDevice(devName)) {
-        Serial.print("Frezzer device found: ");
-        Serial.print(devName);
-        Serial.print(" - ");
-        Serial.println(device.getAddress().toString().c_str());
-        
-        // Update Frezzer device in our registry
-        int rssi = device.getRSSI();
-        if (updateFrezzerFromScan(macBytes, devName, rssi, millis())) {
-          Serial.println("  -> Frezzer device registered/updated");
-        }
-      }
-      
-      // Check if device has manufacturer data (for RuuviTag)
+      // Check if device has manufacturer data
       if (device.haveManufacturerData()) {
         std::string mfData = device.getManufacturerData();
         
-        // Check minimum length for Ruuvi data
+        // Check minimum length for data
         if (mfData.length() >= 2) {
           // Get manufacturer ID (little-endian)
           uint16_t manufacturerId = (uint8_t)mfData[0] | ((uint8_t)mfData[1] << 8);
+          
+          // Get MAC address bytes
+          uint8_t macBytes[6];
+          esp_bd_addr_t* nativeAddr = device.getAddress().getNative();
+          for (int j = 0; j < 6; j++) {
+            macBytes[j] = (*nativeAddr)[j];
+          }
           
           // Check if this is Ruuvi data
           if (isRuuviManufacturer(manufacturerId)) {
@@ -1085,6 +1860,24 @@ void scanBT(void* parameter) {
               }
             }
           }
+          // MOKO sensor support disabled - advertisement format requires additional documentation
+          // TODO: Re-enable when complete protocol specification is available
+          /*
+          else if (isMoKoManufacturer(manufacturerId) || isMoKoDeviceName(deviceName.c_str())) {
+            // MoKo sensor processing disabled
+          }
+          */
+        }
+      }
+
+      // Check if this is a Frezzer device by name (Alpicool OEM: WT-0001, A1-*, AK1-*, ...)
+      if (!deviceName.empty() && isFrezzerDevice(deviceName.c_str())) {
+        esp_bd_addr_t* nativeAddr = device.getAddress().getNative();
+        uint8_t macBytes[6];
+        for (int j = 0; j < 6; j++) macBytes[j] = (*nativeAddr)[j];
+        if (updateFrezzerFromScan(macBytes, deviceName.c_str(), device.getRSSI(), millis())) {
+          Serial.print("Frezzer found: ");
+          Serial.println(device.getAddress().toString().c_str());
         }
       }
     }
@@ -1099,6 +1892,7 @@ void scanBT(void* parameter) {
   // Delete the task if scanBT_enabled is set to false
   vTaskDelete(NULL);
 }
+#endif // HAS_BLE
 
 /**
  * @brief Creates a payload with the given topic, value, and timestamp, and stores it in the payloads array.
@@ -1111,10 +1905,10 @@ void scanBT(void* parameter) {
  * @param value The value to be included in the payload.
  * @param timestamp The timestamp to be included in the payload.
  * 
- * @note The function ensures that the payloadIndex does not exceed the size of the payloads array (assumed to be 30).
+ * @note The function ensures that the payloadIndex does not exceed MAX_MQTT_PAYLOADS.
  */
 void createPayload(String topic, float value, String timestamp) {
-  if (payloadIndex < 30) { // Ensure we don't exceed array size
+  if (payloadIndex < MAX_MQTT_PAYLOADS) { // Ensure we don't exceed array size
     String data = "{\"value\": " + String(value) + ", \"timestamp\": \"" + timestamp + "\"}";
     payloads[payloadIndex].topic = topic;
     payloads[payloadIndex].data = data;
@@ -1130,216 +1924,702 @@ void createPayload(String topic, float value, String timestamp) {
  * the intervals are set to fast intervals. Otherwise, they are set to slow intervals.
  */
 void updateIntervals() {
-  static unsigned long heaterOnStartTime = 0;
-
   if (heaterStatus == 1) {
-    if (heaterOnStartTime == 0) {
-      heaterOnStartTime = millis();
-    }
-
-    if (millis() - heaterOnStartTime >= 3600000) { // 1 hour in milliseconds
-      mqttInterval = mqttSlowInterval;
-      sensorInterval = sensorSlowInterval;
-    } else {
-      mqttInterval = mqttFastInterval;
-      sensorInterval = sensorFastInterval;
-    }
+    // Heater is on - use fast intervals for the entire duration
+    mqttInterval = mqttFastInterval;
+    sensorInterval = sensorFastInterval;
   } else {
-    heaterOnStartTime = 0;
+    // Heater is off - use slow intervals
     mqttInterval = mqttSlowInterval;
     sensorInterval = sensorSlowInterval;
   }
 }
 
 /**
- * @brief Initializes Frezzer controller and registers known devices
+ * @brief Publish device status to MQTT
  * 
- * If FREZZER_COUNT is defined in secrets.h with known MAC addresses,
- * those devices will be registered. Otherwise, devices will be auto-discovered
- * during BLE scans.
+ * Publishes operational status to paku/edge/{deviceId}/status topic
+ * following the documented MQTT schema.
  */
-void initFrezzerDevices() {
-  initFrezzerController();
-  
-#if FREZZER_COUNT > 0
-  Serial.println("Registering known Frezzer devices...");
-  for (int i = 0; i < FREZZER_COUNT; i++) {
-    if (registerFrezzerDevice(FREZZER_MACS[i], FREZZER_LOCATIONS[i])) {
-      Serial.print("  Registered: ");
-      Serial.print(FREZZER_MACS[i]);
-      Serial.print(" -> ");
-      Serial.println(FREZZER_LOCATIONS[i]);
-    }
+void publishDeviceStatus() {
+  if (!client.connected()) {
+    Serial.println("publishDeviceStatus: Client not connected!");
+    return;
   }
-#else
-  Serial.println("No pre-registered Frezzer devices (auto-discovery enabled)");
-#endif
   
-  Serial.print("Frezzer controller initialized. Registered devices: ");
-  Serial.println(getFrezzerDeviceCount());
+  Serial.println("publishDeviceStatus: Starting...");
+  
+  String statusTopic = String("paku/edge/") + deviceId + "/status";
+  JsonDocument doc;
+  
+  // Get MAC address
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  
+  doc["online"] = true;
+  doc["device_id"] = deviceId;
+  doc["mac_address"] = macStr;
+  
+  // Add friendly name if configured
+  const char* friendlyName = getEdgeDeviceFriendlyName();
+  if (friendlyName != nullptr) {
+    doc["friendly_name"] = friendlyName;
+  }
+  
+  doc["last_seen"] = getISO8601Timestamp();
+  doc["signal_strength_dbm"] = WiFi.RSSI();
+  doc["uptime_seconds"] = millis() / 1000;
+  doc["firmware_version"] = FIRMWARE_VERSION;
+  #ifdef DEVICE_MODEL
+  doc["device_model"] = DEVICE_MODEL;
+  #endif
+  doc["state"] = (currentState == STATE_CONTINUOUS ? "continuous" : "unknown");
+  doc["heater_status"] = heaterStatus;
+  
+  // Add active scenario info
+  if (deviceConfig.timing.wake_interval_s == 10) {
+    doc["active_scenario"] = "heater_active";
+  } else if (deviceConfig.timing.wake_interval_s == 300) {
+    doc["active_scenario"] = "power_save";
+  } else {
+    doc["active_scenario"] = "default";
+  }
+  
+  String output;
+  serializeJson(doc, output);
+  
+  // Publish with QoS 1 and retain flag
+  client.publish(statusTopic.c_str(), output.c_str(), true);
+  Serial.print("Published device status to: ");
+  Serial.println(statusTopic);
 }
 
 /**
- * @brief Creates MQTT payloads from Frezzer device data
+ * @brief Publish device configuration to MQTT
  * 
- * Iterates through all registered devices with fresh data and creates
- * temperature, status, and control payloads using the architecture-compliant
- * topic structure: paku/fridge/{location}/data
- * 
- * @param timestamp Current timestamp string
+ * Publishes current configuration to paku/edge/{deviceId}/config/report topic
+ * following the documented MQTT schema.
  */
-void createFrezzerPayloads(const char* timestamp) {
-  const FrezzerDevice* freshDevices[MAX_FREZZER_DEVICES];
-  uint8_t freshCount = getFreshFrezzerDevices(freshDevices, MAX_FREZZER_DEVICES, millis());
+void publishDeviceConfig() {
+  if (!client.connected()) {
+    Serial.println("publishDeviceConfig: Client not connected!");
+    return;
+  }
   
-  for (uint8_t i = 0; i < freshCount; i++) {
-    const FrezzerDevice* device = freshDevices[i];
-    if (!device->hasData || !device->lastData.valid) continue;
+  Serial.println("publishDeviceConfig: Starting...");
+  printConfig("Publishing to MQTT");
+  
+  String configTopic = String("paku/edge/") + deviceId + "/config/report";
+  JsonDocument doc;
+
+  doc["version"] = FIRMWARE_VERSION;
+  
+  // Timing configuration
+  doc["timing"]["wake_interval_s"] = deviceConfig.timing.wake_interval_s;
+  doc["timing"]["connection_duration_max_s"] = deviceConfig.timing.connection_duration_max_s;
+  doc["timing"]["wifi_connect_timeout_s"] = deviceConfig.timing.wifi_connect_timeout_s;
+  doc["timing"]["mqtt_connect_timeout_s"] = deviceConfig.timing.mqtt_connect_timeout_s;
+  doc["timing"]["timezone"] = deviceConfig.timing.timezone;
+  
+  // Sensor configuration
+  doc["sensors"]["ble"]["enabled"] = deviceConfig.sensors.ble.enabled;
+  doc["sensors"]["ble"]["scan_duration_s"] = deviceConfig.sensors.ble.scan_duration_s;
+  doc["sensors"]["ble"]["scan_active"] = deviceConfig.sensors.ble.scan_active;
+  
+  doc["sensors"]["wired"]["enabled"] = deviceConfig.sensors.wired.enabled;
+  doc["sensors"]["wired"]["sample_count"] = deviceConfig.sensors.wired.sample_count;
+  doc["sensors"]["wired"]["sample_interval_ms"] = deviceConfig.sensors.wired.sample_interval_ms;
+  
+  doc["sensors"]["flow"]["enabled"] = deviceConfig.sensors.flow.enabled;
+  doc["sensors"]["flow"]["measurement_duration_s"] = deviceConfig.sensors.flow.measurement_duration_s;
+  
+  // Power configuration
+  doc["power"]["deep_sleep_enabled"] = deviceConfig.power.deep_sleep_enabled;
+  doc["power"]["light_sleep_during_wait"] = deviceConfig.power.light_sleep_during_wait;
+  doc["power"]["battery_monitor_enabled"] = deviceConfig.power.battery_monitor_enabled;
+  
+  String output;
+  serializeJson(doc, output);
+  
+  // Publish with QoS 1 and retain flag
+  Serial.print("publishDeviceConfig: Serialized JSON length: ");
+  Serial.println(output.length());
+  
+  // Publish with QoS 1 and retain flag
+  bool published = client.publish(configTopic.c_str(), output.c_str(), true);
+  Serial.print("Published config (");
+  Serial.print(output.length());
+  Serial.print(" bytes), result: ");
+  Serial.println(published ? "SUCCESS" : "FAILED");
+  Serial.print("Published device config to: ");
+  Serial.println(configTopic);
+}
+
+// ============================================================================
+// Phase 2: Config Persistence, Sensor Buffer, and Network Management
+// ============================================================================
+
+/**
+ * @brief Print current device configuration for debugging
+ * 
+ * @param context Description of when/why config is being printed
+ */
+void printConfig(const char* context) {
+  Serial.println("========================================");
+  Serial.print("CONFIG [");
+  Serial.print(context);
+  Serial.println("]");
+  Serial.println("========================================");
+  
+  Serial.println("Timing:");
+  Serial.print("  wake_interval_s: ");
+  Serial.println(deviceConfig.timing.wake_interval_s);
+  Serial.print("  connection_duration_max_s: ");
+  Serial.println(deviceConfig.timing.connection_duration_max_s);
+  Serial.print("  wifi_connect_timeout_s: ");
+  Serial.println(deviceConfig.timing.wifi_connect_timeout_s);
+  Serial.print("  mqtt_connect_timeout_s: ");
+  Serial.println(deviceConfig.timing.mqtt_connect_timeout_s);
+  Serial.print("  timezone: ");
+  Serial.println(deviceConfig.timing.timezone);
+  
+  Serial.println("Sensors:");
+  Serial.print("  ble.enabled: ");
+  Serial.println(deviceConfig.sensors.ble.enabled ? "true" : "false");
+  Serial.print("  ble.scan_duration_s: ");
+  Serial.println(deviceConfig.sensors.ble.scan_duration_s);
+  Serial.print("  ble.scan_active: ");
+  Serial.println(deviceConfig.sensors.ble.scan_active ? "true" : "false");
+  Serial.print("  wired.enabled: ");
+  Serial.println(deviceConfig.sensors.wired.enabled ? "true" : "false");
+  Serial.print("  wired.sample_count: ");
+  Serial.println(deviceConfig.sensors.wired.sample_count);
+  Serial.print("  wired.sample_interval_ms: ");
+  Serial.println(deviceConfig.sensors.wired.sample_interval_ms);
+  Serial.print("  flow.enabled: ");
+  Serial.println(deviceConfig.sensors.flow.enabled ? "true" : "false");
+  Serial.print("  flow.measurement_duration_s: ");
+  Serial.println(deviceConfig.sensors.flow.measurement_duration_s);
+  
+  Serial.println("Power:");
+  Serial.print("  deep_sleep_enabled: ");
+  Serial.println(deviceConfig.power.deep_sleep_enabled ? "true" : "false");
+  Serial.print("  light_sleep_during_wait: ");
+  Serial.println(deviceConfig.power.light_sleep_during_wait ? "true" : "false");
+  Serial.print("  battery_monitor_enabled: ");
+  Serial.println(deviceConfig.power.battery_monitor_enabled ? "true" : "false");
+  
+  Serial.println("========================================");
+}
+
+/**
+ * @brief Save device configuration to persistent storage
+ * 
+ * Saves the current deviceConfig to NVS (ESP32) or EEPROM (ESP8266).
+ */
+void saveConfig() {
+#ifdef ESP8266
+  // ESP8266: Use EEPROM
+  EEPROM.begin(512);
+  EEPROM.put(0, deviceConfig);
+  EEPROM.commit();
+  EEPROM.end();
+  Serial.println("Config saved to EEPROM");
+  printConfig("Saved to EEPROM");
+#else
+  // ESP32: Use Preferences
+  preferences.begin("paku", false);
+  preferences.putUInt("wake_int", deviceConfig.timing.wake_interval_s);
+  preferences.putUInt("conn_dur", deviceConfig.timing.connection_duration_max_s);
+  preferences.putUInt("wifi_to", deviceConfig.timing.wifi_connect_timeout_s);
+  preferences.putUInt("mqtt_to", deviceConfig.timing.mqtt_connect_timeout_s);
+  preferences.putString("timezone", deviceConfig.timing.timezone);
+  
+  preferences.putBool("ble_en", deviceConfig.sensors.ble.enabled);
+  preferences.putUInt("ble_dur", deviceConfig.sensors.ble.scan_duration_s);
+  preferences.putBool("ble_act", deviceConfig.sensors.ble.scan_active);
+  
+  preferences.putBool("wired_en", deviceConfig.sensors.wired.enabled);
+  preferences.putUInt("wired_cnt", deviceConfig.sensors.wired.sample_count);
+  preferences.putUInt("wired_int", deviceConfig.sensors.wired.sample_interval_ms);
+  
+  preferences.putBool("flow_en", deviceConfig.sensors.flow.enabled);
+  preferences.putUInt("flow_dur", deviceConfig.sensors.flow.measurement_duration_s);
+  
+  preferences.putBool("deep_sl", deviceConfig.power.deep_sleep_enabled);
+  preferences.putBool("light_sl", deviceConfig.power.light_sleep_during_wait);
+  preferences.putBool("batt_mon", deviceConfig.power.battery_monitor_enabled);
+  
+  preferences.end();
+  Serial.println("Config saved to Preferences");
+  printConfig("Saved to NVS");
+#endif
+}
+
+/**
+ * @brief Load device configuration from persistent storage
+ * 
+ * Loads deviceConfig from NVS (ESP32) or EEPROM (ESP8266).
+ * If no valid config found, uses defaults.
+ */
+void loadConfig() {
+#ifdef ESP8266
+  // ESP8266: Use EEPROM
+  EEPROM.begin(512);
+  DeviceConfig loadedConfig;
+  EEPROM.get(0, loadedConfig);
+  EEPROM.end();
+  
+  // Basic validation - check if wake_interval is reasonable
+  if (loadedConfig.timing.wake_interval_s > 0 && loadedConfig.timing.wake_interval_s < 86400) {
+    deviceConfig = loadedConfig;
+    Serial.println("Config loaded from EEPROM");
+    printConfig("Loaded from EEPROM");
+  } else {
+    Serial.println("No valid config in EEPROM, loading defaults");
+    deviceConfig.loadDefaults();
+    printConfig("Defaults loaded (first boot)");
+    Serial.println("Saving default config to EEPROM...");
+    saveConfig();  // Save defaults so next boot doesn't re-initialize
+  }
+#else
+  // ESP32: Use Preferences
+  preferences.begin("paku", true); // read-only
+  
+  if (preferences.isKey("wake_int")) {
+    // Load existing config from NVS
+    deviceConfig.timing.wake_interval_s = preferences.getUInt("wake_int", 60);
+    deviceConfig.timing.connection_duration_max_s = preferences.getUInt("conn_dur", 30);
+    deviceConfig.timing.wifi_connect_timeout_s = preferences.getUInt("wifi_to", 10);
+    deviceConfig.timing.mqtt_connect_timeout_s = preferences.getUInt("mqtt_to", 5);
+    String tz = preferences.getString("timezone", "EET-2EEST,M3.5.0/3,M10.5.0/4");
+    strncpy(deviceConfig.timing.timezone, tz.c_str(), sizeof(deviceConfig.timing.timezone) - 1);
+    deviceConfig.timing.timezone[sizeof(deviceConfig.timing.timezone) - 1] = '\0';
     
-    // Build consolidated payload with all metrics for this device
-    JsonDocument doc;
-    doc["timestamp"] = String(timestamp);
-    doc["device_id"] = String("frezzer_") + device->location;
-    doc["location"] = device->location;
-    doc["mac"] = device->macString;
-    if (strlen(device->deviceName) > 0) {
-      doc["device_name"] = device->deviceName;
+    deviceConfig.sensors.ble.enabled = preferences.getBool("ble_en", true);
+    deviceConfig.sensors.ble.scan_duration_s = preferences.getUInt("ble_dur", 10);
+    deviceConfig.sensors.ble.scan_active = preferences.getBool("ble_act", true);
+    
+    deviceConfig.sensors.wired.enabled = preferences.getBool("wired_en", true);
+    deviceConfig.sensors.wired.sample_count = preferences.getUInt("wired_cnt", 3);
+    deviceConfig.sensors.wired.sample_interval_ms = preferences.getUInt("wired_int", 100);
+    
+    deviceConfig.sensors.flow.enabled = preferences.getBool("flow_en", false);
+    deviceConfig.sensors.flow.measurement_duration_s = preferences.getUInt("flow_dur", 5);
+    
+    deviceConfig.power.deep_sleep_enabled = preferences.getBool("deep_sl", false);
+    deviceConfig.power.light_sleep_during_wait = preferences.getBool("light_sl", true);
+    deviceConfig.power.battery_monitor_enabled = preferences.getBool("batt_mon", false);
+    
+    Serial.println("Config loaded from Preferences");
+    printConfig("Loaded from NVS");
+  } else {
+    // No saved config - this is first boot or NVS was erased
+    Serial.println("No saved config found, loading defaults");
+    deviceConfig.loadDefaults();
+    printConfig("Defaults loaded (first boot)");
+    Serial.println("Saving default config to Preferences...");
+    saveConfig();  // Save defaults so next boot doesn't re-initialize
+  }
+  
+  preferences.end();
+#endif
+}
+
+/**
+ * @brief Add a sensor reading to the buffer
+ * 
+ * @param sensor_id Sensor identifier
+ * @param metric Metric name (temperature, humidity, etc.)
+ * @param value Sensor value
+ * @param timestamp ISO8601 timestamp
+ */
+void addSensorReading(const char* sensor_id, const char* metric, float value, const char* timestamp) {
+  if (bufferCount >= MAX_BUFFERED_READINGS) {
+    Serial.println("Warning: Sensor buffer full, dropping oldest reading");
+    // Shift buffer to make room
+    for (int i = 0; i < MAX_BUFFERED_READINGS - 1; i++) {
+      sensorBuffer[i] = sensorBuffer[i + 1];
+    }
+    bufferCount = MAX_BUFFERED_READINGS - 1;
+  }
+  
+  SensorReading* reading = &sensorBuffer[bufferCount];
+  strncpy(reading->timestamp, timestamp, sizeof(reading->timestamp) - 1);
+  strncpy(reading->sensor_id, sensor_id, sizeof(reading->sensor_id) - 1);
+  strncpy(reading->metric, metric, sizeof(reading->metric) - 1);
+  reading->value = value;
+  reading->transmitted = false;
+  
+  bufferCount++;
+  
+  Serial.print("Buffered reading: ");
+  Serial.print(sensor_id);
+  Serial.print(" ");
+  Serial.print(metric);
+  Serial.print(" = ");
+  Serial.print(value);
+  Serial.print(" (buffer: ");
+  Serial.print(bufferCount);
+  Serial.println(")");
+}
+
+/**
+ * @brief Clear transmitted readings from buffer
+ * 
+ * Removes readings that have been successfully transmitted,
+ * compacting the buffer.
+ */
+void clearTransmittedReadings() {
+  int writeIndex = 0;
+  for (int readIndex = 0; readIndex < bufferCount; readIndex++) {
+    if (!sensorBuffer[readIndex].transmitted) {
+      if (writeIndex != readIndex) {
+        sensorBuffer[writeIndex] = sensorBuffer[readIndex];
+      }
+      writeIndex++;
+    }
+  }
+  int cleared = bufferCount - writeIndex;
+  bufferCount = writeIndex;
+  
+  if (cleared > 0) {
+    Serial.print("Cleared ");
+    Serial.print(cleared);
+    Serial.println(" transmitted readings from buffer");
+  }
+}
+
+/**
+ * @brief Collect sensor data without network connection
+ * 
+ * Reads all enabled sensors and stores readings in buffer.
+ * WiFi should be OFF during this operation.
+ */
+void collectSensorData() {
+  Serial.println("=== Collecting Sensor Data ===");
+  String timestampStr = getISO8601Timestamp();
+  const char* timestamp = timestampStr.c_str();
+  
+#if HAS_BLE
+  // BLE Sensor Collection
+  if (deviceConfig.sensors.ble.enabled) {
+    Serial.println("Scanning BLE sensors...");
+    // Capture BLE sensor snapshots with current timestamp
+    createRuuviPayloads(timestamp);
+    createMoKoPayloads(timestamp);
+  }
+#endif
+
+#if HAS_WIRED_SENSORS
+  // Wired Sensor Collection
+  if (deviceConfig.sensors.wired.enabled) {
+    Serial.println("Reading wired sensors...");
+    createWiredSensorPayloads(timestamp);
+  }
+#endif
+
+  // Flow Sensor Collection - DISABLED (future development)
+  // TODO: Re-enable when flow sensor hardware is installed and calibrated
+  // if (deviceConfig.sensors.flow.enabled && FLOW_SENSOR_ENABLED) {
+  //   Serial.println("Measuring flow...");
+  //   float flow = processFlowData(millis() - lastSensorCollection);
+  //   addSensorReading(deviceId, "flow_rate", flow, timestamp);
+  //   addSensorReading(deviceId, "required_dt", getRequiredDeltaT(), timestamp);
+  // }
+  
+  lastSensorCollection = millis();
+  Serial.print("Sensor collection complete. Buffer size: ");
+  Serial.println(bufferCount);
+}
+
+/**
+ * @brief Transmit buffered sensor data
+ * 
+ * Sends all untransmitted readings from buffer to MQTT.
+ * Marks readings as transmitted on success.
+ */
+void transmitBufferedData() {
+  if (!client.connected()) {
+    Serial.println("Cannot transmit: MQTT not connected");
+    return;
+  }
+  
+  Serial.print("Transmitting ");
+  Serial.print(bufferCount);
+  Serial.println(" buffered readings...");
+  
+  int transmitted = 0;
+  for (int i = 0; i < bufferCount; i++) {
+    SensorReading* reading = &sensorBuffer[i];
+    
+    if (reading->transmitted) {
+      continue; // Skip already transmitted
     }
     
-    JsonObject metrics = doc["metrics"].to<JsonObject>();
-    metrics["current_temp_c"] = device->lastData.currentTemp;
-    metrics["target_temp_c"] = device->lastData.targetTemp;
-    metrics["battery_voltage"] = device->lastData.batteryVoltage;
-    metrics["bat_percent"] = device->lastData.batPercent;
-    metrics["bat_saver_mode"] = device->lastData.batSaverMode;
-    metrics["mode"] = frezzerModeToString(device->lastData.mode);
-    metrics["compressor"] = frezzerCompressorStateToString(device->lastData.compressor);
-    metrics["locked"] = device->lastData.locked;
-    metrics["error"] = frezzerErrorToString(device->lastData.error);
-    metrics["connected"] = device->connected;
+    // Create MQTT topic according to schema
+    String topic = String("paku/sensors/") + reading->sensor_id + "/data";
     
-    // Serialize and add to payload queue
+    // Create JSON payload
+    JsonDocument doc;
+    doc["timestamp"] = reading->timestamp;
+    doc["sensor_id"] = reading->sensor_id;
+    doc[reading->metric] = reading->value;
+    
     String payload;
     serializeJson(doc, payload);
     
-    // Construct topic as paku/fridge/{location}/data
-    String topic = String("paku/fridge/") + device->location + "/data";
+    // Publish
+    if (client.publish(topic.c_str(), payload.c_str())) {
+      reading->transmitted = true;
+      transmitted++;
+      Serial.print("  TX: ");
+      Serial.println(topic);
+    } else {
+      Serial.print("  FAILED: ");
+      Serial.println(topic);
+    }
+  }
+  
+  Serial.print("Transmitted ");
+  Serial.print(transmitted);
+  Serial.print(" / ");
+  Serial.println(bufferCount);
+  
+  // Clear transmitted readings
+  clearTransmittedReadings();
+}
+
+/**
+ * @brief Transmit buffered sensor snapshots
+ * 
+ * Sends all untransmitted sensor snapshots (consolidated payloads from BLE, wired, etc.) to MQTT.
+ */
+void transmitSensorSnapshots() {
+  if (!client.connected()) {
+    return; // Silently skip if not connected
+  }
+  
+  if (sensorSnapshotCount == 0) {
+    return; // Nothing to transmit
+  }
+  
+  Serial.print("Transmitting ");
+  Serial.print(sensorSnapshotCount);
+  Serial.println(" sensor snapshots...");
+  
+  int transmitted = 0;
+  for (int i = 0; i < sensorSnapshotCount; i++) {
+    SensorSnapshot* snapshot = &sensorSnapshots[i];
     
-    if (payloadIndex < 30) {
-      payloads[payloadIndex].topic = topic;
-      payloads[payloadIndex].data = payload;
-      payloadIndex++;
+    if (snapshot->transmitted) {
+      continue; // Skip already transmitted
     }
     
-    Serial.print("Frezzer [");
-    Serial.print(device->location);
-    Serial.print("]: T=");
-    Serial.print(device->lastData.currentTemp);
-    Serial.print("°C, Target=");
-    Serial.print(device->lastData.targetTemp);
-    Serial.print("°C, Mode=");
-    Serial.println(frezzerModeToString(device->lastData.mode));
+    // Publish
+    if (client.publish(snapshot->topic.c_str(), snapshot->payload.c_str())) {
+      snapshot->transmitted = true;
+      transmitted++;
+      Serial.print("  TX: ");
+      Serial.println(snapshot->topic);
+    } else {
+      Serial.print("  FAILED: ");
+      Serial.println(snapshot->topic);
+    }
+  }
+  
+  Serial.print("Transmitted ");
+  Serial.print(transmitted);
+  Serial.print(" / ");
+  Serial.println(sensorSnapshotCount);
+  
+  // Clear transmitted snapshots
+  int writeIndex = 0;
+  for (int readIndex = 0; readIndex < sensorSnapshotCount; readIndex++) {
+    if (!sensorSnapshots[readIndex].transmitted) {
+      if (writeIndex != readIndex) {
+        sensorSnapshots[writeIndex] = sensorSnapshots[readIndex];
+      }
+      writeIndex++;
+    }
+  }
+  int cleared = sensorSnapshotCount - writeIndex;
+  sensorSnapshotCount = writeIndex;
+  
+  if (cleared > 0) {
+    Serial.print("Cleared ");
+    Serial.print(cleared);
+    Serial.println(" transmitted sensor snapshots from buffer");
   }
 }
 
 /**
- * @brief Handles MQTT commands for Frezzer devices
+ * @brief Connect to WiFi and MQTT
  * 
- * Parses incoming MQTT commands and sends them to the appropriate Frezzer device.
- * Command format: {"command": "set_temp", "value": -8.0}
- * 
- * @param topic MQTT topic (paku/fridge/{location}/cmd)
- * @param payload JSON command payload
+ * Turns on WiFi, connects to AP, and establishes MQTT connection.
  */
-void handleFrezzerMqttCommand(const char* topic, const char* payload) {
-  // Parse topic to extract location
-  // Expected format: paku/fridge/{location}/cmd
-  String topicStr = String(topic);
-  if (!topicStr.startsWith("paku/fridge/") || !topicStr.endsWith("/cmd")) {
+void connectNetwork() {
+  Serial.println("=== Connecting to Network ===");
+  
+  // Connect WiFi
+  connect_wifi();
+  
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi connection failed");
     return;
   }
   
-  // Extract location from topic
-  int startIdx = 12;  // Length of "paku/fridge/"
-  int endIdx = topicStr.lastIndexOf("/cmd");
-  if (endIdx <= startIdx) return;
+  // Connect MQTT
+  connectMQTT();
   
-  String location = topicStr.substring(startIdx, endIdx);
+  if (client.connected()) {
+    Serial.println("Network connection established");
+    lastNetworkConnect = millis();
+  } else {
+    Serial.println("MQTT connection failed");
+  }
+}
+
+/**
+ * @brief Disconnect from network and turn off WiFi
+ * 
+ * Cleanly disconnects MQTT and turns off WiFi radio for power savings.
+ */
+void disconnectNetwork() {
+  Serial.println("=== Disconnecting Network ===");
   
-  // Find the device
-  // Note: This is a simplified lookup - in production you'd want a more efficient method
-  const FrezzerDevice* device = nullptr;
-  for (uint8_t i = 0; i < getFrezzerDeviceCount(); i++) {
-    const FrezzerDevice* d = getFrezzerDevice(i);
-    if (d != nullptr && String(d->location) == location) {
-      device = d;
+  // Disconnect MQTT
+  if (client.connected()) {
+    client.disconnect();
+    Serial.println("MQTT disconnected");
+  }
+  
+  // Disconnect WiFi
+  WiFi.disconnect(true); // true = turn off WiFi radio
+  WiFi.mode(WIFI_OFF);
+  
+  Serial.println("WiFi turned OFF");
+}
+
+// ============================================================================
+// End Phase 2 Functions
+// ============================================================================
+
+/**
+ * @brief State machine handler for Phase 2
+ * 
+ * Manages transitions between states based on timing and conditions.
+ * Replaces the continuous loop pattern with clear state-based flow.
+ */
+void handleSystemState() {
+  unsigned long now = millis();
+  unsigned long stateElapsed = now - stateEnteredAt;
+  
+  switch (currentSystemState) {
+    
+    case SYS_STATE_IDLE: {
+      // Wait for sensor collection interval
+      if (now - lastSensorCollection >= (deviceConfig.timing.wake_interval_s * 1000)) {
+        currentSystemState = SYS_STATE_COLLECT_SENSORS;
+        stateEnteredAt = now;
+        Serial.println("STATE: IDLE -> COLLECT_SENSORS");
+      }
+      break;
+    }
+      
+    case SYS_STATE_COLLECT_SENSORS: {
+      // Collect sensor data (WiFi OFF)
+      collectSensorData();
+      
+      // Decide if we should transmit now
+      // Transmit if: buffer is getting full OR enough time has passed
+      bool shouldTransmit = (bufferCount >= (MAX_BUFFERED_READINGS * 0.8)) ||
+                            (now - lastNetworkConnect >= (deviceConfig.timing.wake_interval_s * 1000));
+      
+      if (shouldTransmit) {
+        currentSystemState = SYS_STATE_CONNECT_NETWORK;
+        stateEnteredAt = now;
+        Serial.println("STATE: COLLECT_SENSORS -> CONNECT_NETWORK");
+      } else {
+        // Don't transmit yet, go back to idle
+        currentSystemState = SYS_STATE_IDLE;
+        stateEnteredAt = now;
+        Serial.println("STATE: COLLECT_SENSORS -> IDLE (no transmission needed)");
+      }
+      break;
+    }
+      
+    case SYS_STATE_CONNECT_NETWORK: {
+      // Turn on WiFi and connect
+      connectNetwork();
+      
+      if (client.connected()) {
+        currentSystemState = SYS_STATE_TRANSMIT;
+        stateEnteredAt = now;
+        Serial.println("STATE: CONNECT_NETWORK -> TRANSMIT");
+      } else if (stateElapsed >= (deviceConfig.timing.wifi_connect_timeout_s * 1000)) {
+        // Connection timeout, give up and go back to idle
+        Serial.println("Network connection timeout");
+        currentSystemState = SYS_STATE_DISCONNECT;
+        stateEnteredAt = now;
+        Serial.println("STATE: CONNECT_NETWORK -> DISCONNECT (timeout)");
+      }
+      break;
+    }
+      
+    case SYS_STATE_TRANSMIT: {
+      // Process MQTT messages
+      client.loop();
+      
+      // Transmit buffered data
+      static bool transmissionStarted = false;
+      if (!transmissionStarted) {
+        // Transmit all buffered data
+        transmitSensorSnapshots();
+        transmitBufferedData();
+        publishDeviceStatus();
+        transmissionStarted = true;
+      }
+      
+      // Check if we should disconnect
+      bool transmissionComplete = (bufferCount == 0);
+      bool connectionTimeout = (stateElapsed >= (deviceConfig.timing.connection_duration_max_s * 1000));
+      
+      if (transmissionComplete && connectionTimeout) {
+        transmissionStarted = false;
+        currentSystemState = SYS_STATE_DISCONNECT;
+        stateEnteredAt = now;
+        Serial.println("STATE: TRANSMIT -> DISCONNECT");
+      }
+      
+      // Handle pending OTA updates
+      if (otaUpdatePending) {
+        processOtaUpdate();
+      }
+      break;
+    }
+      
+    case SYS_STATE_DISCONNECT: {
+      // Disconnect and turn off WiFi
+      disconnectNetwork();
+      
+      currentSystemState = SYS_STATE_IDLE;
+      stateEnteredAt = now;
+      Serial.println("STATE: DISCONNECT -> IDLE");
       break;
     }
   }
-  
-  if (device == nullptr) {
-    Serial.print("Frezzer command: device not found for location ");
-    Serial.println(location);
-    return;
-  }
-  
-  // Parse command JSON
-  JsonDocument cmdDoc;
-  DeserializationError error = deserializeJson(cmdDoc, payload);
-  if (error) {
-    Serial.print("Frezzer command: JSON parse error - ");
-    Serial.println(error.c_str());
-    return;
-  }
-  
-  const char* command = cmdDoc["command"];
-  if (command == nullptr) {
-    Serial.println("Frezzer command: missing 'command' field");
-    return;
-  }
-  
-  // Note: We need a non-const pointer for control functions
-  // This is safe because we're modifying the internal device state
-  FrezzerDevice* mutableDevice = const_cast<FrezzerDevice*>(device);
-  
-  FrezzerResult result = FrezzerResult::UNKNOWN_ERROR;
-  
-  if (strcmp(command, "set_temp") == 0) {
-    float temp = cmdDoc["value"].as<float>();
-    result = setFrezzerTargetTemp(mutableDevice, temp);
-    Serial.print("Frezzer set_temp ");
-    Serial.print(temp);
-  } else if (strcmp(command, "set_mode") == 0) {
-    const char* modeStr = cmdDoc["value"];
-    FrezzerMode mode = FrezzerMode::UNKNOWN;
-    if (strcmp(modeStr, "off") == 0)      mode = FrezzerMode::OFF;
-    else if (strcmp(modeStr, "eco") == 0)      mode = FrezzerMode::ECO;
-    else if (strcmp(modeStr, "max_cool") == 0) mode = FrezzerMode::MAX_COOL;
-    // "fridge" and "freezer" are temperature targets, not modes — use set_temp
-    
-    result = setFrezzerMode(mutableDevice, mode);
-    Serial.print("Frezzer set_mode ");
-    Serial.print(modeStr);
-  } else if (strcmp(command, "power") == 0) {
-    const char* powerStr = cmdDoc["value"];
-    if (strcmp(powerStr, "on") == 0) {
-      result = turnFrezzerOn(mutableDevice);
-    } else if (strcmp(powerStr, "off") == 0) {
-      result = turnFrezzerOff(mutableDevice);
-    }
-    Serial.print("Frezzer power ");
-    Serial.print(powerStr);
-  } else {
-    Serial.print("Frezzer command: unknown command ");
-    Serial.println(command);
-    return;
-  }
-  
-  Serial.print(" -> ");
-  Serial.println(frezzerResultToString(result));
 }
 
-// TFT Pin check
+// ============================================================================
+// End Phase 2 State Machine
+// ============================================================================
+
+// TFT Pin check (only for devices with display)
+#if HAS_DISPLAY
 #if PIN_LCD_WR  != TFT_WR || \
     PIN_LCD_RD  != TFT_RD || \
     PIN_LCD_CS    != TFT_CS   || \
@@ -1359,6 +2639,588 @@ void handleFrezzerMqttCommand(const char* topic, const char* payload) {
     320   != TFT_HEIGHT
 #error  "Error! Please make sure <User_Setups/Setup206_LilyGo_T_Display_S3.h> is selected in <TFT_eSPI/User_Setup_Select.h>"
 #endif
+#endif // HAS_DISPLAY
+
+/**
+ * @brief Initialize the OTA update client
+ * 
+ * Initializes the OTA client and validates the current firmware.
+ * Call this during setup().
+ */
+void initOta() {
+  OtaResult result = otaClient.begin();
+  if (result != OtaResult::SUCCESS) {
+    Serial.print("OTA: Failed to initialize: ");
+    Serial.println(otaClient.getLastError());
+    return;
+  }
+
+  // Get current firmware info
+  char version[32];
+  char partition[32];
+  if (otaClient.getCurrentFirmwareInfo(version, sizeof(version), partition, sizeof(partition))) {
+    Serial.print("OTA: Running firmware version: ");
+    Serial.print(version);
+    Serial.print(" on partition: ");
+    Serial.println(partition);
+  }
+
+  // Mark current firmware as valid (prevents rollback after successful boot)
+  // This should be called after verifying the device is working correctly
+  result = otaClient.validateCurrentFirmware();
+  if (result == OtaResult::SUCCESS) {
+    Serial.println("OTA: Current firmware validated");
+  }
+
+  Serial.println("OTA: Client initialized successfully");
+}
+
+/**
+ * @brief Process pending OTA updates
+ * 
+ * Call this in the main loop to process OTA updates when triggered via MQTT.
+ */
+void processOtaUpdate() {
+  if (!otaUpdatePending) {
+    return;
+  }
+
+  Serial.println("OTA: Processing pending update...");
+  
+  // Configure OTA update
+  OtaConfig config;
+  config.firmwareUrl = pendingOtaUrl.c_str();
+  config.expectedChecksum = pendingOtaChecksum.c_str();
+  config.targetVersion = pendingOtaVersion.c_str();
+  config.verifySignature = false;  // Signature verification not implemented yet
+  config.allowDowngrade = false;
+  config.timeoutMs = 300000;  // 5 minutes
+  config.bufferSize = 4096;
+  config.resumeSupported = false;
+
+  // Start the update (blocking operation)
+  OtaResult result = otaClient.startUpdate(config, otaProgressCallback);
+
+  // Report result via MQTT
+  String resultTopic = String("paku/edge/") + deviceId + "/ota/result";
+  JsonDocument resultDoc;
+  resultDoc["timestamp"] = getISO8601Timestamp();
+  resultDoc["current_version"] = FIRMWARE_VERSION;
+  resultDoc["target_version"] = pendingOtaVersion;
+  resultDoc["success"] = (result == OtaResult::SUCCESS);
+  resultDoc["result_code"] = (int)result;
+  resultDoc["message"] = OtaClient::resultToString(result);
+  
+  String resultPayload;
+  serializeJson(resultDoc, resultPayload);
+  client.publish(resultTopic.c_str(), resultPayload.c_str());
+
+  // Clear pending flag
+  otaUpdatePending = false;
+  pendingOtaUrl = "";
+  pendingOtaChecksum = "";
+  pendingOtaVersion = "";
+
+  if (result == OtaResult::SUCCESS) {
+    Serial.println("OTA: Update successful! Rebooting in 3 seconds...");
+    // Short delay to allow MQTT message to be sent, then reboot
+    unsigned long rebootTime = millis();
+    while (millis() - rebootTime < 3000) {
+      client.loop();  // Allow MQTT to process messages
+      delay(100);
+    }
+    ESP.restart();
+  } else {
+    Serial.print("OTA: Update failed: ");
+    Serial.println(otaClient.getLastError());
+  }
+}
+
+/**
+ * @brief MQTT message callback handler
+ * 
+ * Handles incoming MQTT messages, including OTA update commands and heater control.
+ * 
+ * Supported topics:
+ * - paku/control: Legacy control commands (e.g., {"heater": 1})
+ * - paku/edge/{deviceId}/control: New schema-compliant control (e.g., {"scenario": "heater_active"})
+ * - paku/edge/{deviceId}/cmd/ota: OTA update commands
+ * 
+ * @param topic MQTT topic
+ * @param payload Message payload
+ * @param length Payload length
+ */
+void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
+  Serial.print("MQTT message received on topic: ");
+  Serial.println(topic);
+
+  // Convert payload to string
+  String message;
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  Serial.print("Message: ");
+  Serial.println(message);
+
+  // Check for new edge device control topic (Phase 1: not yet fully implemented)
+  String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
+  if (String(topic) == edgeControlTopic) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (!error && !doc["scenario"].isNull()) {
+      const char* scenario = doc["scenario"];
+      Serial.print("Switching to scenario: ");
+      Serial.println(scenario);
+      
+      deviceConfig.applyScenario(scenario);
+      
+      // Update heater status based on scenario for backward compatibility
+      if (strcmp(scenario, "heater_active") == 0) {
+        heaterStatus = 1;
+      } else {
+        heaterStatus = 0;
+      }
+      
+      updateIntervals();
+      
+      // Publish updated status and config
+      publishDeviceStatus();
+      publishDeviceConfig();
+    }
+    return;
+  }
+
+  // Check if this is a legacy control command
+  if (String(topic) == "paku/control") {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (!error && !doc["heater"].isNull()) {
+      int newHeaterStatus = doc["heater"];
+      if (newHeaterStatus == 0 || newHeaterStatus == 1) {
+        heaterStatus = newHeaterStatus;
+        Serial.print("Heater status updated to: ");
+        Serial.println(heaterStatus);
+        
+        // Apply corresponding scenario
+        if (heaterStatus == 1) {
+          deviceConfig.applyScenario("heater_active");
+        } else {
+          deviceConfig.applyScenario("default");
+        }
+        
+        updateIntervals();
+        
+        // Publish updated status and config
+        publishDeviceStatus();
+        publishDeviceConfig();
+      }
+    }
+    return;
+  }
+
+  // Phase 2: Check for configuration command topic (config/set)
+  String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
+  if (String(topic) == edgeConfigTopic) {
+    Serial.println("========================================");
+    Serial.println("MQTT CONFIG/SET MESSAGE RECEIVED");
+    Serial.print("Message: ");
+    Serial.println(message);
+    Serial.println("========================================");
+    printConfig("Current config before processing MQTT");
+    
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("Config parse error: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    
+    // Track if any config actually changed to avoid processing our own published config
+    bool configChanged = false;
+    
+    // Update timing configuration if present
+    if (!doc["timing"].isNull()) {
+      if (!doc["timing"]["wake_interval_s"].isNull()) {
+        uint32_t newValue = doc["timing"]["wake_interval_s"];
+        if (newValue != deviceConfig.timing.wake_interval_s) {
+          Serial.print("Config change: wake_interval_s ");
+          Serial.print(deviceConfig.timing.wake_interval_s);
+          Serial.print(" -> ");
+          Serial.println(newValue);
+          deviceConfig.timing.wake_interval_s = newValue;
+          configChanged = true;
+        }
+      }
+      if (!doc["timing"]["connection_duration_max_s"].isNull()) {
+        uint32_t newValue = doc["timing"]["connection_duration_max_s"];
+        if (newValue != deviceConfig.timing.connection_duration_max_s) {
+          Serial.print("Config change: connection_duration_max_s ");
+          Serial.print(deviceConfig.timing.connection_duration_max_s);
+          Serial.print(" -> ");
+          Serial.println(newValue);
+          deviceConfig.timing.connection_duration_max_s = newValue;
+          configChanged = true;
+        }
+      }
+      if (!doc["timing"]["wifi_connect_timeout_s"].isNull()) {
+        uint32_t newValue = doc["timing"]["wifi_connect_timeout_s"];
+        if (newValue != deviceConfig.timing.wifi_connect_timeout_s) {
+          Serial.print("Config change: wifi_connect_timeout_s ");
+          Serial.print(deviceConfig.timing.wifi_connect_timeout_s);
+          Serial.print(" -> ");
+          Serial.println(newValue);
+          deviceConfig.timing.wifi_connect_timeout_s = newValue;
+          configChanged = true;
+        }
+      }
+      if (!doc["timing"]["mqtt_connect_timeout_s"].isNull()) {
+        uint32_t newValue = doc["timing"]["mqtt_connect_timeout_s"];
+        if (newValue != deviceConfig.timing.mqtt_connect_timeout_s) {
+          Serial.print("Config change: mqtt_connect_timeout_s ");
+          Serial.print(deviceConfig.timing.mqtt_connect_timeout_s);
+          Serial.print(" -> ");
+          Serial.println(newValue);
+          deviceConfig.timing.mqtt_connect_timeout_s = newValue;
+          configChanged = true;
+        }
+      }
+      if (!doc["timing"]["timezone"].isNull()) {
+        const char* newValue = doc["timing"]["timezone"];
+        if (strcmp(newValue, deviceConfig.timing.timezone) != 0) {
+          strncpy(deviceConfig.timing.timezone, newValue, sizeof(deviceConfig.timing.timezone) - 1);
+          deviceConfig.timing.timezone[sizeof(deviceConfig.timing.timezone) - 1] = '\0';
+          // Apply new timezone immediately
+          setenv("TZ", deviceConfig.timing.timezone, 1);
+          tzset();
+          configChanged = true;
+          Serial.print("Timezone updated to: ");
+          Serial.println(deviceConfig.timing.timezone);
+        }
+      }
+    }
+    
+    // Update sensor configuration if present
+    if (!doc["sensors"].isNull()) {
+      if (!doc["sensors"]["ble"].isNull()) {
+        if (!doc["sensors"]["ble"]["enabled"].isNull()) {
+          bool newValue = doc["sensors"]["ble"]["enabled"];
+          if (newValue != deviceConfig.sensors.ble.enabled) {
+            Serial.print("Config change: sensors.ble.enabled ");
+            Serial.print(deviceConfig.sensors.ble.enabled ? "true" : "false");
+            Serial.print(" -> ");
+            Serial.println(newValue ? "true" : "false");
+            deviceConfig.sensors.ble.enabled = newValue;
+            configChanged = true;
+          }
+        }
+        if (!doc["sensors"]["ble"]["scan_duration_s"].isNull()) {
+          uint32_t newValue = doc["sensors"]["ble"]["scan_duration_s"];
+          if (newValue != deviceConfig.sensors.ble.scan_duration_s) {
+            Serial.print("Config change: sensors.ble.scan_duration_s ");
+            Serial.print(deviceConfig.sensors.ble.scan_duration_s);
+            Serial.print(" -> ");
+            Serial.println(newValue);
+            deviceConfig.sensors.ble.scan_duration_s = newValue;
+            configChanged = true;
+          }
+        }
+        if (!doc["sensors"]["ble"]["scan_active"].isNull()) {
+          bool newValue = doc["sensors"]["ble"]["scan_active"];
+          if (newValue != deviceConfig.sensors.ble.scan_active) {
+            Serial.print("Config change: sensors.ble.scan_active ");
+            Serial.print(deviceConfig.sensors.ble.scan_active ? "true" : "false");
+            Serial.print(" -> ");
+            Serial.println(newValue ? "true" : "false");
+            deviceConfig.sensors.ble.scan_active = newValue;
+            configChanged = true;
+          }
+        }
+      }
+      
+      if (!doc["sensors"]["wired"].isNull()) {
+        if (!doc["sensors"]["wired"]["enabled"].isNull()) {
+          bool newValue = doc["sensors"]["wired"]["enabled"];
+          if (newValue != deviceConfig.sensors.wired.enabled) {
+            Serial.print("Config change: sensors.wired.enabled ");
+            Serial.print(deviceConfig.sensors.wired.enabled ? "true" : "false");
+            Serial.print(" -> ");
+            Serial.println(newValue ? "true" : "false");
+            deviceConfig.sensors.wired.enabled = newValue;
+            configChanged = true;
+          }
+        }
+        if (!doc["sensors"]["wired"]["sample_count"].isNull()) {
+          uint8_t newValue = doc["sensors"]["wired"]["sample_count"];
+          if (newValue != deviceConfig.sensors.wired.sample_count) {
+            Serial.print("Config change: sensors.wired.sample_count ");
+            Serial.print(deviceConfig.sensors.wired.sample_count);
+            Serial.print(" -> ");
+            Serial.println(newValue);
+            deviceConfig.sensors.wired.sample_count = newValue;
+            configChanged = true;
+          }
+        }
+        if (!doc["sensors"]["wired"]["sample_interval_ms"].isNull()) {
+          uint16_t newValue = doc["sensors"]["wired"]["sample_interval_ms"];
+          if (newValue != deviceConfig.sensors.wired.sample_interval_ms) {
+            Serial.print("Config change: sensors.wired.sample_interval_ms ");
+            Serial.print(deviceConfig.sensors.wired.sample_interval_ms);
+            Serial.print(" -> ");
+            Serial.println(newValue);
+            deviceConfig.sensors.wired.sample_interval_ms = newValue;
+            configChanged = true;
+          }
+        }
+      }
+      
+      if (!doc["sensors"]["flow"].isNull()) {
+        if (!doc["sensors"]["flow"]["enabled"].isNull()) {
+          bool newValue = doc["sensors"]["flow"]["enabled"];
+          if (newValue != deviceConfig.sensors.flow.enabled) {
+            Serial.print("Config change: sensors.flow.enabled ");
+            Serial.print(deviceConfig.sensors.flow.enabled ? "true" : "false");
+            Serial.print(" -> ");
+            Serial.println(newValue ? "true" : "false");
+            deviceConfig.sensors.flow.enabled = newValue;
+            configChanged = true;
+          }
+        }
+        if (!doc["sensors"]["flow"]["measurement_duration_s"].isNull()) {
+          uint32_t newValue = doc["sensors"]["flow"]["measurement_duration_s"];
+          if (newValue != deviceConfig.sensors.flow.measurement_duration_s) {
+            Serial.print("Config change: sensors.flow.measurement_duration_s ");
+            Serial.print(deviceConfig.sensors.flow.measurement_duration_s);
+            Serial.print(" -> ");
+            Serial.println(newValue);
+            deviceConfig.sensors.flow.measurement_duration_s = newValue;
+            configChanged = true;
+          }
+        }
+      }
+    }
+    
+    // Update power configuration if present
+    if (!doc["power"].isNull()) {
+      if (!doc["power"]["deep_sleep_enabled"].isNull()) {
+        bool newValue = doc["power"]["deep_sleep_enabled"];
+        if (newValue != deviceConfig.power.deep_sleep_enabled) {
+          Serial.print("Config change: power.deep_sleep_enabled ");
+          Serial.print(deviceConfig.power.deep_sleep_enabled ? "true" : "false");
+          Serial.print(" -> ");
+          Serial.println(newValue ? "true" : "false");
+          deviceConfig.power.deep_sleep_enabled = newValue;
+          configChanged = true;
+        }
+      }
+      if (!doc["power"]["light_sleep_during_wait"].isNull()) {
+        bool newValue = doc["power"]["light_sleep_during_wait"];
+        if (newValue != deviceConfig.power.light_sleep_during_wait) {
+          Serial.print("Config change: power.light_sleep_during_wait ");
+          Serial.print(deviceConfig.power.light_sleep_during_wait ? "true" : "false");
+          Serial.print(" -> ");
+          Serial.println(newValue ? "true" : "false");
+          deviceConfig.power.light_sleep_during_wait = newValue;
+          configChanged = true;
+        }
+      }
+      if (!doc["power"]["battery_monitor_enabled"].isNull()) {
+        bool newValue = doc["power"]["battery_monitor_enabled"];
+        if (newValue != deviceConfig.power.battery_monitor_enabled) {
+          Serial.print("Config change: power.battery_monitor_enabled ");
+          Serial.print(deviceConfig.power.battery_monitor_enabled ? "true" : "false");
+          Serial.print(" -> ");
+          Serial.println(newValue ? "true" : "false");
+          deviceConfig.power.battery_monitor_enabled = newValue;
+          configChanged = true;
+        }
+      }
+    }
+    
+    // Only save and republish if config actually changed
+    if (configChanged) {
+      Serial.println("========================================");
+      Serial.println("CONFIG CHANGED - Saving and republishing");
+      Serial.println("========================================");
+      
+      // Save updated configuration to persistent storage
+      saveConfig();
+      
+      // Publish updated config back as confirmation
+      publishDeviceConfig();
+      publishDeviceStatus();
+      
+      Serial.println("Configuration updated and saved");
+    } else {
+      Serial.println("========================================");
+      Serial.println("Config unchanged (ignoring duplicate/own message)");
+      Serial.println("========================================");
+    }
+    return;
+  }
+
+  // Phase 2: Check for WiFi management commands (paku/devices/{deviceId}/cmd/wifi)
+  String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
+  if (String(topic) == wifiCmdTopic) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("WiFi CMD: Parse error: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    
+    const char* action = doc["action"];
+    String responseTopic = String("paku/devices/") + deviceId + "/wifi/status";
+    JsonDocument responseDoc;
+    responseDoc["timestamp"] = getISO8601Timestamp();
+    
+    if (!action) {
+      responseDoc["success"] = false;
+      responseDoc["error"] = "Missing action";
+    } else if (strcmp(action, "add") == 0) {
+      const char* ssid = doc["ssid"];
+      const char* password = doc["password"];
+      
+      if (!ssid || strlen(ssid) == 0) {
+        responseDoc["success"] = false;
+        responseDoc["error"] = "Missing or empty SSID";
+      } else {
+        bool success = wifiManager.addNetwork(ssid, password ? password : "");
+        responseDoc["success"] = success;
+        responseDoc["action"] = "add";
+        responseDoc["ssid"] = ssid;
+        if (success) {
+          LOG_INFO("WiFi", "Added network via MQTT: %s", ssid);
+        } else {
+          responseDoc["error"] = "Failed to add network (storage full)";
+        }
+      }
+    } else if (strcmp(action, "remove") == 0) {
+      const char* ssid = doc["ssid"];
+      
+      if (!ssid || strlen(ssid) == 0) {
+        responseDoc["success"] = false;
+        responseDoc["error"] = "Missing or empty SSID";
+      } else {
+        bool success = wifiManager.removeNetwork(ssid);
+        responseDoc["success"] = success;
+        responseDoc["action"] = "remove";
+        responseDoc["ssid"] = ssid;
+        if (success) {
+          LOG_INFO("WiFi", "Removed network via MQTT: %s", ssid);
+        } else {
+          responseDoc["error"] = "Network not found";
+        }
+      }
+    } else if (strcmp(action, "list") == 0) {
+      String networks = wifiManager.listNetworks();
+      responseDoc["success"] = true;
+      responseDoc["action"] = "list";
+      
+      // Parse the listNetworks JSON and merge it
+      JsonDocument listDoc;
+      deserializeJson(listDoc, networks);
+      responseDoc["networks"] = listDoc["networks"];
+      responseDoc["count"] = listDoc["count"];
+      
+      LOG_INFO("WiFi", "Listed stored networks via MQTT");
+    } else if (strcmp(action, "clear") == 0) {
+      wifiManager.clearAllNetworks();
+      responseDoc["success"] = true;
+      responseDoc["action"] = "clear";
+      LOG_INFO("WiFi", "Cleared all stored networks via MQTT");
+    } else {
+      responseDoc["success"] = false;
+      responseDoc["error"] = "Unknown action";
+    }
+    
+    String responsePayload;
+    serializeJson(responseDoc, responsePayload);
+    client.publish(responseTopic.c_str(), responsePayload.c_str());
+    return;
+  }
+
+  // Check if this is an OTA command
+  String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
+  if (String(topic) == otaTopic) {
+    // Parse OTA command JSON
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, message);
+    
+    if (error) {
+      Serial.print("OTA: Failed to parse JSON: ");
+      Serial.println(error.c_str());
+      return;
+    }
+
+    // Extract OTA parameters
+    const char* url = doc["url"];
+    const char* checksum = doc["checksum"];
+    const char* version = doc["version"];
+
+    if (!url || strlen(url) == 0) {
+      Serial.println("OTA: Invalid command - missing URL");
+      return;
+    }
+
+    // Store OTA parameters for processing
+    pendingOtaUrl = String(url);
+    pendingOtaChecksum = checksum ? String(checksum) : "";
+    pendingOtaVersion = version ? String(version) : "unknown";
+    otaUpdatePending = true;
+
+    Serial.print("OTA: Update scheduled - URL: ");
+    Serial.println(pendingOtaUrl);
+    Serial.print("OTA: Target version: ");
+    Serial.println(pendingOtaVersion);
+
+    // Send acknowledgment
+    String ackTopic = String("paku/edge/") + deviceId + "/ota/status";
+    JsonDocument ackDoc;
+    ackDoc["timestamp"] = getISO8601Timestamp();
+    ackDoc["status"] = "accepted";
+    ackDoc["current_version"] = FIRMWARE_VERSION;
+    ackDoc["target_version"] = pendingOtaVersion;
+    
+    String ackPayload;
+    serializeJson(ackDoc, ackPayload);
+    client.publish(ackTopic.c_str(), ackPayload.c_str());
+  }
+}
+
+/**
+ * @brief OTA progress callback
+ * 
+ * Called periodically during OTA update to report progress.
+ * Publishes progress updates via MQTT.
+ * 
+ * @param progress Current OTA progress information
+ */
+void otaProgressCallback(const OtaProgress& progress) {
+  Serial.print("OTA Progress: ");
+  Serial.print(progress.progressPercent);
+  Serial.print("% - ");
+  Serial.println(OtaClient::stateToString(progress.state));
+
+  // Publish progress to MQTT
+  String progressTopic = String("paku/edge/") + deviceId + "/ota/progress";
+  JsonDocument progressDoc;
+  progressDoc["timestamp"] = getISO8601Timestamp();
+  progressDoc["state"] = OtaClient::stateToString(progress.state);
+  progressDoc["percent"] = progress.progressPercent;
+  progressDoc["downloaded"] = progress.downloadedBytes;
+  progressDoc["total"] = progress.totalBytes;
+  progressDoc["elapsed_ms"] = progress.elapsedMs;
+  
+  String progressPayload;
+  serializeJson(progressDoc, progressPayload);
+  client.publish(progressTopic.c_str(), progressPayload.c_str());
+}
 
 // NOTE: ESP-IDF 5.0+ and Arduino ESP32 3.0+ are now supported.
 // The LEDC API differences are handled at lines 143-150.
