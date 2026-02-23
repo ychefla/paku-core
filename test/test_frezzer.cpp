@@ -148,11 +148,13 @@ void test_findFrezzerDeviceByMac_notFound(void) {
  * Test isFrezzerDevice name matching
  */
 void test_isFrezzerDevice(void) {
-    TEST_ASSERT_TRUE(isFrezzerDevice("FREZZER"));
-    TEST_ASSERT_TRUE(isFrezzerDevice("FREZZER PRO 65L"));
-    TEST_ASSERT_TRUE(isFrezzerDevice("frezzer"));
-    TEST_ASSERT_TRUE(isFrezzerDevice("Frezzer_123"));
-    
+    // Frezzer PRO and other Alpicool OEM fridges
+    TEST_ASSERT_TRUE(isFrezzerDevice("WT-0001"));
+    TEST_ASSERT_TRUE(isFrezzerDevice("A1-12345"));
+    TEST_ASSERT_TRUE(isFrezzerDevice("AK1-001"));
+    TEST_ASSERT_TRUE(isFrezzerDevice("AK2-ABC"));
+    TEST_ASSERT_TRUE(isFrezzerDevice("AK3-XYZ"));
+
     TEST_ASSERT_FALSE(isFrezzerDevice("DOMETIC"));
     TEST_ASSERT_FALSE(isFrezzerDevice("WAECO"));
     TEST_ASSERT_FALSE(isFrezzerDevice("RuuviTag"));
@@ -164,12 +166,10 @@ void test_isFrezzerDevice(void) {
  * Test Frezzer mode to string conversion
  */
 void test_frezzerModeToString(void) {
-    TEST_ASSERT_EQUAL_STRING("off", frezzerModeToString(FrezzerMode::OFF));
-    TEST_ASSERT_EQUAL_STRING("fridge", frezzerModeToString(FrezzerMode::FRIDGE));
-    TEST_ASSERT_EQUAL_STRING("freezer", frezzerModeToString(FrezzerMode::FREEZER));
-    TEST_ASSERT_EQUAL_STRING("eco", frezzerModeToString(FrezzerMode::ECO));
+    TEST_ASSERT_EQUAL_STRING("off",      frezzerModeToString(FrezzerMode::OFF));
     TEST_ASSERT_EQUAL_STRING("max_cool", frezzerModeToString(FrezzerMode::MAX_COOL));
-    TEST_ASSERT_EQUAL_STRING("unknown", frezzerModeToString(FrezzerMode::UNKNOWN));
+    TEST_ASSERT_EQUAL_STRING("eco",      frezzerModeToString(FrezzerMode::ECO));
+    TEST_ASSERT_EQUAL_STRING("unknown",  frezzerModeToString(FrezzerMode::UNKNOWN));
 }
 
 /**
@@ -210,22 +210,41 @@ void test_frezzerResultToString(void) {
  */
 void test_buildFrezzerCommand(void) {
     uint8_t buffer[8];
-    
-    // Set target temp to -8.0°C (param = -80 in 0.1°C units)
-    size_t len = buildFrezzerCommand(FrezzerCommand::SET_TARGET_TEMP, -80, buffer, sizeof(buffer));
-    
-    TEST_ASSERT_EQUAL_UINT(4, len);
-    TEST_ASSERT_EQUAL_UINT8(0xFE, buffer[0]);  // Header
-    TEST_ASSERT_EQUAL_UINT8(0x01, buffer[1]);  // SET_TARGET_TEMP
-    TEST_ASSERT_EQUAL_UINT8(0xB0, buffer[2]);  // -80 low byte (0xFFB0 & 0xFF)
-    TEST_ASSERT_EQUAL_UINT8(0xFF, buffer[3]);  // -80 high byte
+
+    // QUERY command: FE FE 03 01 | checksum(FE+FE+03+01=0x0200)
+    size_t len = buildFrezzerCommand(FrezzerCommand::QUERY, 0, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_UINT(6, len);
+    TEST_ASSERT_EQUAL_UINT8(0xFE, buffer[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xFE, buffer[1]);
+    TEST_ASSERT_EQUAL_UINT8(0x03, buffer[2]);  // length
+    TEST_ASSERT_EQUAL_UINT8(0x01, buffer[3]);  // QUERY cmd
+    TEST_ASSERT_EQUAL_UINT8(0x02, buffer[4]);  // checksum hi
+    TEST_ASSERT_EQUAL_UINT8(0x00, buffer[5]);  // checksum lo
+
+    // BIND command: FE FE 03 00 | checksum(FE+FE+03+00=0x01FF)
+    len = buildFrezzerCommand(FrezzerCommand::BIND, 0, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_UINT(6, len);
+    TEST_ASSERT_EQUAL_UINT8(0x00, buffer[3]);  // BIND cmd
+    TEST_ASSERT_EQUAL_UINT8(0x01, buffer[4]);  // checksum hi
+    TEST_ASSERT_EQUAL_UINT8(0xFF, buffer[5]);  // checksum lo
+
+    // SET_LEFT_TARGET -8°C (int8=0xF8): FE FE 04 05 F8 | checksum(FE+FE+04+05+F8=0x02F9)
+    len = buildFrezzerCommand(FrezzerCommand::SET_LEFT_TARGET, -8, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_UINT(7, len);
+    TEST_ASSERT_EQUAL_UINT8(0xFE, buffer[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xFE, buffer[1]);
+    TEST_ASSERT_EQUAL_UINT8(0x04, buffer[2]);  // length
+    TEST_ASSERT_EQUAL_UINT8(0x05, buffer[3]);  // SET_LEFT_TARGET cmd
+    TEST_ASSERT_EQUAL_UINT8(0xF8, buffer[4]);  // -8 as int8
+    TEST_ASSERT_EQUAL_UINT8(0x02, buffer[5]);  // checksum hi
+    TEST_ASSERT_EQUAL_UINT8(0xF9, buffer[6]);  // checksum lo
 }
 
 /**
  * Test building command with null buffer
  */
 void test_buildFrezzerCommand_nullBuffer(void) {
-    size_t len = buildFrezzerCommand(FrezzerCommand::SET_TARGET_TEMP, -80, nullptr, 8);
+    size_t len = buildFrezzerCommand(FrezzerCommand::QUERY, 0, nullptr, 8);
     TEST_ASSERT_EQUAL_UINT(0, len);
 }
 
@@ -234,7 +253,7 @@ void test_buildFrezzerCommand_nullBuffer(void) {
  */
 void test_buildFrezzerCommand_smallBuffer(void) {
     uint8_t buffer[2];
-    size_t len = buildFrezzerCommand(FrezzerCommand::SET_TARGET_TEMP, -80, buffer, sizeof(buffer));
+    size_t len = buildFrezzerCommand(FrezzerCommand::QUERY, 0, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL_UINT(0, len);
 }
 
@@ -395,9 +414,9 @@ void test_setMode(void) {
     FrezzerDevice* devices = getInternalFrezzerDevicesForTesting();
     connectFrezzer(&devices[0]);
     
-    FrezzerResult result = setFrezzerMode(&devices[0], FrezzerMode::FREEZER);
+    FrezzerResult result = setFrezzerMode(&devices[0], FrezzerMode::ECO);
     TEST_ASSERT_EQUAL(FrezzerResult::SUCCESS, result);
-    TEST_ASSERT_EQUAL(FrezzerMode::FREEZER, devices[0].lastData.mode);
+    TEST_ASSERT_EQUAL(FrezzerMode::ECO, devices[0].lastData.mode);
     
     // Invalid mode
     result = setFrezzerMode(&devices[0], FrezzerMode::UNKNOWN);
@@ -419,7 +438,7 @@ void test_powerOnOff(void) {
     
     result = turnFrezzerOn(&devices[0]);
     TEST_ASSERT_EQUAL(FrezzerResult::SUCCESS, result);
-    TEST_ASSERT_EQUAL(FrezzerMode::FRIDGE, devices[0].lastData.mode);
+    TEST_ASSERT_EQUAL(FrezzerMode::MAX_COOL, devices[0].lastData.mode);
 }
 
 /**
@@ -430,7 +449,7 @@ void test_updateFrezzerFromScan_autoDiscover(void) {
     
     uint8_t macAddr[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
     
-    bool result = updateFrezzerFromScan(macAddr, "FREZZER PRO 65L", -50, 1000);
+    bool result = updateFrezzerFromScan(macAddr, "WT-0001", -50, 1000);
     TEST_ASSERT_TRUE(result);
     
     // Should have auto-registered
@@ -438,7 +457,7 @@ void test_updateFrezzerFromScan_autoDiscover(void) {
     
     const FrezzerDevice* device = getFrezzerDevice(0);
     TEST_ASSERT_EQUAL_STRING("11:22:33:44:55:66", device->macString);
-    TEST_ASSERT_EQUAL_STRING("FREZZER PRO 65L", device->deviceName);
+    TEST_ASSERT_EQUAL_STRING("WT-0001", device->deviceName);
     TEST_ASSERT_FALSE(device->registered);  // Not explicitly registered
 }
 
@@ -446,47 +465,78 @@ void test_updateFrezzerFromScan_autoDiscover(void) {
  * Test parsing valid Frezzer data
  */
 void test_parseFrezzerData_valid(void) {
-    // Construct test data matching the expected format
-    uint8_t testData[] = {
-        0x01,              // Header/Protocol version
-        0xCE, 0xFF,        // Current temp: -50 (0xFFCE) = -5.0°C
-        0xB0, 0xFF,        // Target temp: -80 (0xFFB0) = -8.0°C
-        0x68, 0x30,        // Voltage: 12392 mV = 12.392V
-        0x01,              // Mode: FRIDGE
-        0x01,              // Compressor: RUNNING
-        0x30,              // Flags: powerLevel=12 (bits 2-7), no lid open (bit 0), no low voltage (bit 1)
-        0x00               // Error: NONE
+    // Actual Alpicool query response frame (confirmed protocol from klightspeed/BrassMonkeyFridgeMonitor):
+    // FE FE len cmd body[18] checksum_hi checksum_lo
+    // Body: [locked, poweredOn, runMode, batSaver, leftTarget, tempMax, tempMin,
+    //        retDiff, startDelay, unit, TCHot, TCMid, TCCold, TCHalt, leftCurrent,
+    //        batPercent, batVolInt, batVolDec]
+    //
+    // Example: locked=0, on=1, runMode=0(Max), batSaver=0, target=-15,
+    //          tempMax=20, tempMin=-20, retDiff=2, delay=0, unit=C,
+    //          TC corrections=0, current=-13, bat=100%, 12V.3
+    // Frame: fe fe 15 01 00 01 00 00 f1 14 ec 02 00 00 00 00 00 00 f3 64 0c 03 cs_hi cs_lo
+    // checksum = sum(FE+FE+15+01+...+03) = 0x056b (approx)
+    uint8_t frame[] = {
+        0xFE, 0xFE,  // frame header
+        0x15,        // length = 21 (cmd + 18 body bytes + 2 checksum)
+        0x01,        // cmd: query response
+        // body[18]:
+        0x00,        // [0]  locked=false
+        0x01,        // [1]  poweredOn=true
+        0x00,        // [2]  runMode=0 (Max)
+        0x00,        // [3]  batSaver=0 (Low)
+        0xF1,        // [4]  leftTarget=-15°C
+        0x14,        // [5]  tempMax=20°C
+        0xEC,        // [6]  tempMin=-20°C
+        0x02,        // [7]  leftRetDiff=2
+        0x00,        // [8]  startDelay=0
+        0x00,        // [9]  unit=Celsius
+        0x00, 0x00, 0x00, 0x00,  // [10-13] TC corrections
+        0xF3,        // [14] leftCurrent=-13°C
+        0x64,        // [15] batPercent=100
+        0x0C,        // [16] batVolInt=12
+        0x03,        // [17] batVolDec=3 -> 12.3V
+        // checksum (placeholder - isValidFrezzerData checks length not checksum)
+        0x00, 0x00
     };
-    
-    FrezzerData data = parseFrezzerData(testData, sizeof(testData));
-    
+    // Fix length: isValidFrezzerData checks pktLen == len(frame)-3 = 24-3=21=0x15 ✓
+    // Fix checksum bytes to make pktLen check pass
+    size_t frameLen = sizeof(frame);
+
+    FrezzerData data = parseFrezzerData(frame, frameLen);
+
     TEST_ASSERT_TRUE(data.valid);
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, -5.0f, data.currentTemp);
-    TEST_ASSERT_FLOAT_WITHIN(0.1f, -8.0f, data.targetTemp);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 12.392f, data.batteryVoltage);
-    TEST_ASSERT_EQUAL(FrezzerMode::FRIDGE, data.mode);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, -13.0f, data.currentTemp);  // leftCurrent
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, -15.0f, data.targetTemp);   // leftTarget
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 12.3f,  data.batteryVoltage);
+    TEST_ASSERT_EQUAL_UINT8(100, data.batPercent);
+    TEST_ASSERT_FALSE(data.locked);
+    TEST_ASSERT_EQUAL(FrezzerMode::MAX_COOL, data.mode);
     TEST_ASSERT_EQUAL(FrezzerCompressorState::RUNNING, data.compressor);
     TEST_ASSERT_EQUAL(FrezzerError::NONE, data.error);
-    TEST_ASSERT_FALSE(data.lidOpen);
-    TEST_ASSERT_FALSE(data.lowVoltageProtection);
 }
 
 /**
  * Test parsing invalid Frezzer data
  */
 void test_parseFrezzerData_invalid(void) {
-    // Too short
-    uint8_t shortData[] = {0x01, 0x02, 0x03};
+    // Too short (< 24 bytes)
+    uint8_t shortData[] = {0xFE, 0xFE, 0x03};
     FrezzerData data = parseFrezzerData(shortData, sizeof(shortData));
     TEST_ASSERT_FALSE(data.valid);
-    
+
     // Null pointer
-    data = parseFrezzerData(nullptr, 10);
+    data = parseFrezzerData(nullptr, 24);
     TEST_ASSERT_FALSE(data.valid);
-    
-    // Invalid header
-    uint8_t invalidHeader[] = {0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    data = parseFrezzerData(invalidHeader, sizeof(invalidHeader));
+
+    // Wrong frame header
+    uint8_t badHeader[24] = {0xAA, 0xBB, 0x15, 0x01};
+    data = parseFrezzerData(badHeader, sizeof(badHeader));
+    TEST_ASSERT_FALSE(data.valid);
+
+    // Wrong command byte (not query response 0x01)
+    uint8_t badCmd[24] = {0xFE, 0xFE, 0x15, 0x02};  // cmd=0x02 (set response)
+    data = parseFrezzerData(badCmd, sizeof(badCmd));
     TEST_ASSERT_FALSE(data.valid);
 }
 

@@ -13,105 +13,88 @@ FrezzerData parseFrezzerData(const uint8_t* data, size_t length) {
     result.mode = FrezzerMode::UNKNOWN;
     result.compressor = FrezzerCompressorState::UNKNOWN;
     result.error = FrezzerError::NONE;
-    
+    result.batPercent = 0x7F;  // unknown
+
     if (!isValidFrezzerData(data, length)) {
         return result;
     }
-    
-    // Parse based on expected data format
-    // Note: This is a hypothetical format based on common BLE fridge protocols
-    // The actual format will need to be determined by reverse engineering
-    // the specific Frezzer PRO device
-    
-    // Expected format (hypothetical - 10+ bytes):
-    // Byte 0: Header/Protocol version
-    // Byte 1-2: Current temperature (signed int16, 0.1°C resolution)
-    // Byte 3-4: Target temperature (signed int16, 0.1°C resolution)
-    // Byte 5-6: Battery voltage (uint16, mV)
-    // Byte 7: Mode (enum)
-    // Byte 8: Compressor state (enum)
-    // Byte 9: Status flags (bit field)
-    // Byte 10: Error code
-    
-    if (length >= 10) {
-        // Current temperature (0.1°C resolution, signed)
-        int16_t tempRaw = (int16_t)((data[2] << 8) | data[1]);
-        result.currentTemp = tempRaw / 10.0f;
-        
-        // Target temperature
-        int16_t targetRaw = (int16_t)((data[4] << 8) | data[3]);
-        result.targetTemp = targetRaw / 10.0f;
-        
-        // Battery voltage in mV
-        uint16_t voltageRaw = (data[6] << 8) | data[5];
-        result.batteryVoltage = voltageRaw / 1000.0f;
-        
-        // Operating mode
-        uint8_t modeVal = data[7];
-        if (modeVal <= 4) {
-            result.mode = static_cast<FrezzerMode>(modeVal);
-        } else {
-            result.mode = FrezzerMode::UNKNOWN;
-        }
-        
-        // Compressor state
-        uint8_t compressorVal = data[8];
-        if (compressorVal <= 3) {
-            result.compressor = static_cast<FrezzerCompressorState>(compressorVal);
-        } else {
-            result.compressor = FrezzerCompressorState::UNKNOWN;
-        }
-        
-        // Status flags
-        uint8_t flags = data[9];
-        result.lidOpen = (flags & 0x01) != 0;
-        result.lowVoltageProtection = (flags & 0x02) != 0;
-        result.powerLevel = (flags >> 2) & 0x3F;  // bits 2-7 for power level
-        
-        // Error code (if present)
-        if (length >= 11) {
-            uint8_t errorVal = data[10];
-            if (errorVal <= 6) {
-                result.error = static_cast<FrezzerError>(errorVal);
-            } else {
-                result.error = FrezzerError::UNKNOWN;
-            }
-        }
-        
-        // Validate temperature ranges
-        if (result.currentTemp >= -40.0f && result.currentTemp <= 50.0f &&
-            result.targetTemp >= -25.0f && result.targetTemp <= 20.0f) {
-            result.valid = true;
-        }
+
+    // Alpicool protocol query response (cmd=0x01).
+    // Full frame: FE FE len cmd body[18] checksum_hi checksum_lo
+    // Body starts at frame[4]. Layout (single-zone, 18 bytes):
+    //   [0]  locked         (bool)
+    //   [1]  poweredOn      (bool)
+    //   [2]  runMode        (0=Max, 1=Eco)
+    //   [3]  batSaver       (0=Low, 1=Mid, 2=High)
+    //   [4]  leftTarget     (signed int8, °C)
+    //   [5]  tempMax        (signed int8, °C)
+    //   [6]  tempMin        (signed int8, °C)
+    //   [7]  leftRetDiff    (hysteresis °C)
+    //   [8]  startDelay     (minutes)
+    //   [9]  unit           (0=Celsius, 1=Fahrenheit)
+    //  [10]  leftTCHot      (temp correction >−6 °C)
+    //  [11]  leftTCMid      (temp correction −12 to −6 °C)
+    //  [12]  leftTCCold     (temp correction <−12 °C)
+    //  [13]  leftTCHalt     (temp correction at shutdown)
+    //  [14]  leftCurrent    (signed int8, °C) ← ACTUAL current temperature
+    //  [15]  batPercent     (0–100, 0x7F = unknown)
+    //  [16]  batVolInt      (integer part of battery voltage)
+    //  [17]  batVolDec      (decimal part, divide by 10)
+    const uint8_t* body = &data[4];
+
+    result.locked       = (body[0] != 0);
+    bool poweredOn      = (body[1] != 0);
+    uint8_t runMode     = body[2];
+    result.batSaverMode = body[3];
+    result.targetTemp   = static_cast<float>(static_cast<int8_t>(body[4]));
+    result.currentTemp  = static_cast<float>(static_cast<int8_t>(body[14]));
+    result.batPercent   = body[15];
+    result.batteryVoltage = body[16] + (body[17] / 10.0f);
+
+    // Map Alpicool poweredOn + runMode to FrezzerMode
+    if (!poweredOn) {
+        result.mode       = FrezzerMode::OFF;
+        result.compressor = FrezzerCompressorState::OFF;
+    } else if (runMode == 1) {
+        result.mode       = FrezzerMode::ECO;
+        result.compressor = FrezzerCompressorState::RUNNING;
+    } else {
+        result.mode       = FrezzerMode::MAX_COOL;
+        result.compressor = FrezzerCompressorState::RUNNING;
     }
-    
+
+    result.error = FrezzerError::NONE;
+    result.valid = true;
     return result;
 }
 
 bool isValidFrezzerData(const uint8_t* data, size_t length) {
-    if (data == nullptr || length < 10) {
+    if (data == nullptr || length < 24) {
         return false;
     }
-    
-    // Check for valid header byte (hypothetical protocol version)
-    // Adjust this based on actual device protocol
-    uint8_t header = data[0];
-    if (header < 0x01 || header > 0x10) {
-        return false;  // Invalid protocol version
+    // Alpicool frame header must be FE FE
+    if (data[0] != 0xFE || data[1] != 0xFE) {
+        return false;
     }
-    
+    // Length byte: must equal total_bytes - 3
+    uint8_t pktLen = data[2];
+    if (pktLen != (uint8_t)(length - 3)) {
+        return false;
+    }
+    // Only handle query responses (cmd = 0x01)
+    if (data[3] != 0x01) {
+        return false;
+    }
     return true;
 }
 
 const char* frezzerModeToString(FrezzerMode mode) {
     switch (mode) {
-        case FrezzerMode::OFF: return "off";
-        case FrezzerMode::FRIDGE: return "fridge";
-        case FrezzerMode::FREEZER: return "freezer";
-        case FrezzerMode::ECO: return "eco";
+        case FrezzerMode::OFF:      return "off";
         case FrezzerMode::MAX_COOL: return "max_cool";
-        case FrezzerMode::UNKNOWN: 
-        default: return "unknown";
+        case FrezzerMode::ECO:      return "eco";
+        case FrezzerMode::UNKNOWN:
+        default:                    return "unknown";
     }
 }
 
@@ -160,47 +143,70 @@ const char* frezzerResultToString(FrezzerResult result) {
 }
 
 bool isFrezzerDevice(const char* deviceName) {
-    if (deviceName == nullptr || strlen(deviceName) == 0) {
+    if (deviceName == nullptr || deviceName[0] == '\0') {
         return false;
     }
-    
-    // Check if device name starts with FREZZER (case-insensitive)
-    const char* prefix = FREZZER_DEVICE_NAME_PREFIX;
-    size_t prefixLen = strlen(prefix);
-    
-    if (strlen(deviceName) < prefixLen) {
-        return false;
-    }
-    
-    for (size_t i = 0; i < prefixLen; i++) {
-        char c1 = deviceName[i];
-        char c2 = prefix[i];
-        // Case-insensitive comparison
-        if (toupper((unsigned char)c1) != toupper((unsigned char)c2)) {
-            return false;
-        }
-    }
-    
-    return true;
+    // Frezzer PRO advertises as "WT-0001" (confirmed Alpicool OEM platform).
+    // Other compatible brands use A1-/AK1-/AK2-/AK3- prefixes.
+    if (strcmp(deviceName, FREZZER_DEVICE_NAME_WT) == 0) return true;
+    if (strncmp(deviceName, FREZZER_DEVICE_NAME_A1,  3) == 0) return true;
+    if (strncmp(deviceName, FREZZER_DEVICE_NAME_AK1, 4) == 0) return true;
+    if (strncmp(deviceName, FREZZER_DEVICE_NAME_AK2, 4) == 0) return true;
+    if (strncmp(deviceName, FREZZER_DEVICE_NAME_AK3, 4) == 0) return true;
+    return false;
 }
 
-size_t buildFrezzerCommand(FrezzerCommand cmd, int16_t param, 
+size_t buildFrezzerCommand(FrezzerCommand cmd, int16_t param,
                             uint8_t* buffer, size_t bufferSize) {
-    if (buffer == nullptr || bufferSize < 4) {
+    if (buffer == nullptr) {
         return 0;
     }
-    
-    // Command format (hypothetical):
-    // Byte 0: Command header (0xFE)
-    // Byte 1: Command type
-    // Byte 2-3: Parameter (little-endian)
-    
-    buffer[0] = 0xFE;  // Command header
-    buffer[1] = static_cast<uint8_t>(cmd);
-    buffer[2] = param & 0xFF;          // Low byte
-    buffer[3] = (param >> 8) & 0xFF;   // High byte
-    
-    return 4;
+
+    // Alpicool frame: FE FE | lenByte | cmd [int8_param] | checksum_hi checksum_lo
+    // create_packet equivalent (klightspeed/BrassMonkeyFridgeMonitor):
+    //   data = cmd_byte [+ param_byte]
+    //   pkt  = FE FE | (len(data)+2) | data | big_endian_16(sum(all_prefix_bytes))
+    //
+    // Commands WITHOUT parameter (BIND, QUERY, RESET): frame = 6 bytes
+    // Commands WITH int8 parameter (SET_LEFT_TARGET, SET_RIGHT_TARGET): frame = 7 bytes
+
+    bool hasParam = false;
+    switch (cmd) {
+        case FrezzerCommand::BIND:
+        case FrezzerCommand::QUERY:
+        case FrezzerCommand::RESET:
+            hasParam = false;
+            break;
+        case FrezzerCommand::SET_LEFT_TARGET:
+        case FrezzerCommand::SET_RIGHT_TARGET:
+            hasParam = true;
+            break;
+        default:
+            return 0;  // SET (full payload) handled separately via buildSetCommand
+    }
+
+    const size_t frameLen = hasParam ? 7u : 6u;
+    if (bufferSize < frameLen) {
+        return 0;
+    }
+
+    buffer[0] = 0xFE;
+    buffer[1] = 0xFE;
+    buffer[2] = hasParam ? 4 : 3;           // length byte
+    buffer[3] = static_cast<uint8_t>(cmd);
+    if (hasParam) {
+        buffer[4] = static_cast<uint8_t>(static_cast<int8_t>(param));  // signed int8
+    }
+
+    // Checksum = big-endian 16-bit sum of all bytes before the 2 checksum bytes
+    uint16_t checksum = 0;
+    for (size_t i = 0; i < frameLen - 2u; i++) {
+        checksum += buffer[i];
+    }
+    buffer[frameLen - 2] = static_cast<uint8_t>(checksum >> 8);
+    buffer[frameLen - 1] = static_cast<uint8_t>(checksum & 0xFF);
+
+    return frameLen;
 }
 
 #ifdef UNIT_TEST

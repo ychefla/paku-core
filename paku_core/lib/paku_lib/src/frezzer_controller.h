@@ -1,13 +1,13 @@
 /**
  * @file frezzer_controller.h
  * @brief Frezzer PRO compressor fridge BLE GATT controller
- * 
+ *
  * This module provides interfaces for connecting to and controlling
  * Frezzer PRO 65L 12/24V compressor fridges via BLE GATT.
- * 
- * @note The Frezzer PRO uses a proprietary BLE GATT protocol. The UUIDs
- *       in this file are placeholders that need to be determined by
- *       reverse engineering the specific device.
+ *
+ * @note Protocol confirmed: the Frezzer PRO (BLE name "WT-0001") uses the
+ *       Alpicool OEM platform. UUIDs and protocol documented by
+ *       klightspeed/BrassMonkeyFridgeMonitor (MIT license).
  */
 #pragma once
 
@@ -16,32 +16,19 @@
 #include "frezzer.h"
 
 /**
- * @brief Frezzer BLE Service UUID (placeholder - needs reverse engineering)
- * 
- * Common approaches to find the actual UUID:
- * 1. Use nRF Connect app to scan the Frezzer device and discover services
- * 2. Analyze BLE traffic between the official Frezzer app and device
- * 3. Check if device uses standard Environmental Sensing Service (0x181A)
- * 
- * The actual UUID format for proprietary services is typically:
- * XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+ * @brief Alpicool GATT service UUID (16-bit 0x1234 in 128-bit form)
  */
-#define FREZZER_SERVICE_UUID "0000181a-0000-1000-8000-00805f9b34fb"
+#define FREZZER_SERVICE_UUID      "00001234-0000-1000-8000-00805f9b34fb"
 
 /**
- * @brief Frezzer temperature/status read characteristic UUID (placeholder)
+ * @brief Write characteristic UUID (0x1235) — send commands to the fridge
  */
-#define FREZZER_STATUS_CHAR_UUID "00002a6e-0000-1000-8000-00805f9b34fb"
+#define FREZZER_WRITE_CHAR_UUID   "00001235-0000-1000-8000-00805f9b34fb"
 
 /**
- * @brief Frezzer control/command write characteristic UUID (placeholder)
+ * @brief Notify characteristic UUID (0x1236) — receive status from the fridge
  */
-#define FREZZER_CONTROL_CHAR_UUID "00002a6f-0000-1000-8000-00805f9b34fb"
-
-/**
- * @brief Frezzer notification characteristic UUID (placeholder)
- */
-#define FREZZER_NOTIFY_CHAR_UUID "00002a6d-0000-1000-8000-00805f9b34fb"
+#define FREZZER_NOTIFY_CHAR_UUID  "00001236-0000-1000-8000-00805f9b34fb"
 
 /**
  * @brief Maximum time to wait for BLE scan results (ms)
@@ -49,9 +36,10 @@
 #define FREZZER_SCAN_TIMEOUT_MS 10000
 
 /**
- * @brief Interval between status reads when connected (ms)
+ * @brief Interval between QUERY polls when connected (ms).
+ * Alpicool app polls every 2 seconds.
  */
-#define FREZZER_STATUS_INTERVAL_MS 30000
+#define FREZZER_STATUS_INTERVAL_MS 2000
 
 /**
  * @brief Callback type for Frezzer status updates
