@@ -235,28 +235,28 @@ FrezzerResult readFrezzerStatus(FrezzerDevice* device) {
         return FrezzerResult::NOT_CONNECTED;
     }
     
-    // Placeholder: Actual implementation would read from BLE characteristic
-    // pRemoteCharacteristic->readValue();
-    // Parse the data and update device->lastData
-    
+    // Alpicool QUERY command: FE FE 03 01 02 00
+    // On hardware: write to FREZZER_WRITE_CHAR_UUID, response arrives on FREZZER_NOTIFY_CHAR_UUID
+    // Parse response with parseFrezzerData()
+
 #ifdef UNIT_TEST
-    // Simulate reading status for testing
-    device->lastData.valid = true;
-    device->lastData.currentTemp = -5.0f;
-    device->lastData.targetTemp = -8.0f;
-    device->lastData.batteryVoltage = 12.4f;
-    device->lastData.mode = FrezzerMode::FRIDGE;
-    device->lastData.compressor = FrezzerCompressorState::RUNNING;
-    device->lastData.error = FrezzerError::NONE;
-    device->lastData.lidOpen = false;
-    device->lastData.lowVoltageProtection = false;
-    device->lastData.powerLevel = 50;
+    // Simulate a realistic query response for unit testing
+    device->lastData.valid           = true;
+    device->lastData.currentTemp     = -5.0f;
+    device->lastData.targetTemp      = -8.0f;
+    device->lastData.batteryVoltage  = 12.4f;
+    device->lastData.mode            = FrezzerMode::MAX_COOL;
+    device->lastData.compressor      = FrezzerCompressorState::RUNNING;
+    device->lastData.error           = FrezzerError::NONE;
+    device->lastData.locked          = false;
+    device->lastData.batPercent      = 80;
+    device->lastData.batSaverMode    = 0;  // Low
     device->hasData = true;
-    
+
     if (statusCallback) {
         statusCallback(device, &device->lastData);
     }
-    
+
     return FrezzerResult::SUCCESS;
 #else
     return FrezzerResult::NOT_CONNECTED;
@@ -277,21 +277,22 @@ FrezzerResult setFrezzerTargetTemp(FrezzerDevice* device, float tempCelsius) {
         return FrezzerResult::NOT_CONNECTED;
     }
     
-    // Build command
+    // Build Alpicool SET_LEFT_TARGET command (signed int8 °C, range -25..+20)
     uint8_t cmdBuffer[8];
-    int16_t tempParam = (int16_t)(tempCelsius * 10);  // 0.1°C resolution
-    size_t cmdLen = buildFrezzerCommand(FrezzerCommand::SET_TARGET_TEMP, 
-                                         tempParam, cmdBuffer, sizeof(cmdBuffer));
-    
+    int16_t tempParam = static_cast<int16_t>(
+        static_cast<int8_t>(tempCelsius));  // signed int8 — no 0.1°C decimals
+    size_t cmdLen = buildFrezzerCommand(FrezzerCommand::SET_LEFT_TARGET,
+                                        tempParam, cmdBuffer, sizeof(cmdBuffer));
+
     if (cmdLen == 0) {
         return FrezzerResult::UNKNOWN_ERROR;
     }
-    
-    // Placeholder: Actual implementation would write to BLE characteristic
-    // pRemoteCharacteristic->writeValue(cmdBuffer, cmdLen);
-    
+
+    // On hardware: write cmdBuffer[0..cmdLen-1] to FREZZER_WRITE_CHAR_UUID
+    // (response echo arrives on FREZZER_NOTIFY_CHAR_UUID)
+
 #ifdef UNIT_TEST
-    device->lastData.targetTemp = tempCelsius;
+    device->lastData.targetTemp = static_cast<float>(static_cast<int8_t>(tempCelsius));
     return FrezzerResult::SUCCESS;
 #else
     return FrezzerResult::NOT_CONNECTED;
@@ -311,18 +312,21 @@ FrezzerResult setFrezzerMode(FrezzerDevice* device, FrezzerMode mode) {
         return FrezzerResult::NOT_CONNECTED;
     }
     
-    // Build command
-    uint8_t cmdBuffer[8];
-    size_t cmdLen = buildFrezzerCommand(FrezzerCommand::SET_MODE,
-                                         static_cast<int16_t>(mode),
-                                         cmdBuffer, sizeof(cmdBuffer));
-    
-    if (cmdLen == 0) {
-        return FrezzerResult::UNKNOWN_ERROR;
-    }
-    
+    // Alpicool has no dedicated "set mode" command.
+    // Mode change (Max/Eco) or power on/off requires the full SET command (0x02)
+    // with all current settings. Read current state first, then send full SET.
+    //
+    // On hardware: build full SET packet from current device->lastData and
+    // write to FREZZER_WRITE_CHAR_UUID. For now the UNIT_TEST path is kept simple.
+    (void)mode;  // suppress unused-param warning in non-unit builds
+
 #ifdef UNIT_TEST
     device->lastData.mode = mode;
+    if (mode == FrezzerMode::OFF) {
+        device->lastData.compressor = FrezzerCompressorState::OFF;
+    } else {
+        device->lastData.compressor = FrezzerCompressorState::RUNNING;
+    }
     return FrezzerResult::SUCCESS;
 #else
     return FrezzerResult::NOT_CONNECTED;
@@ -338,16 +342,16 @@ FrezzerResult turnFrezzerOn(FrezzerDevice* device) {
         return FrezzerResult::NOT_CONNECTED;
     }
     
+    // Alpicool power-on: send full SET command with poweredOn=true.
+    // On hardware: build SET packet from current settings, set poweredOn byte to 1.
     uint8_t cmdBuffer[8];
-    size_t cmdLen = buildFrezzerCommand(FrezzerCommand::POWER_ON, 0,
-                                         cmdBuffer, sizeof(cmdBuffer));
-    
-    if (cmdLen == 0) {
-        return FrezzerResult::UNKNOWN_ERROR;
-    }
-    
+    size_t cmdLen = buildFrezzerCommand(FrezzerCommand::QUERY, 0,
+                                        cmdBuffer, sizeof(cmdBuffer));
+    (void)cmdLen;
+
 #ifdef UNIT_TEST
-    device->lastData.mode = FrezzerMode::FRIDGE;
+    device->lastData.mode       = FrezzerMode::MAX_COOL;
+    device->lastData.compressor = FrezzerCompressorState::RUNNING;
     return FrezzerResult::SUCCESS;
 #else
     return FrezzerResult::NOT_CONNECTED;
@@ -363,16 +367,16 @@ FrezzerResult turnFrezzerOff(FrezzerDevice* device) {
         return FrezzerResult::NOT_CONNECTED;
     }
     
+    // Alpicool power-off: send full SET command with poweredOn=false.
+    // On hardware: build SET packet from current settings, set poweredOn byte to 0.
     uint8_t cmdBuffer[8];
-    size_t cmdLen = buildFrezzerCommand(FrezzerCommand::POWER_OFF, 0,
-                                         cmdBuffer, sizeof(cmdBuffer));
-    
-    if (cmdLen == 0) {
-        return FrezzerResult::UNKNOWN_ERROR;
-    }
-    
+    size_t cmdLen = buildFrezzerCommand(FrezzerCommand::QUERY, 0,
+                                        cmdBuffer, sizeof(cmdBuffer));
+    (void)cmdLen;
+
 #ifdef UNIT_TEST
-    device->lastData.mode = FrezzerMode::OFF;
+    device->lastData.mode       = FrezzerMode::OFF;
+    device->lastData.compressor = FrezzerCompressorState::OFF;
     return FrezzerResult::SUCCESS;
 #else
     return FrezzerResult::NOT_CONNECTED;

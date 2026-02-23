@@ -1,13 +1,16 @@
 /**
  * @file frezzer.h
  * @brief Frezzer PRO compressor fridge BLE data structures and parsing
- * 
+ *
  * This module provides structures and functions for parsing and handling
  * Frezzer PRO 65L 12/24V compressor fridge BLE data.
- * 
- * @note The Frezzer PRO uses a proprietary BLE protocol. The UUIDs and
- *       data formats in this file are based on reverse engineering and
- *       may need adjustment for your specific device/firmware version.
+ *
+ * @note The Frezzer PRO uses the Alpicool OEM BLE protocol, confirmed via
+ *       its BLE device name "WT-0001". The protocol is documented by
+ *       klightspeed/BrassMonkeyFridgeMonitor (MIT) and implemented in
+ *       Gruni22/alpicool_ha_ble (Home Assistant integration).
+ *       Frame format: FE FE | len | cmd | body... | checksum(2, big-endian)
+ *       Service 0x1234, write char 0x1235, notify char 0x1236.
  */
 #pragma once
 
@@ -20,9 +23,22 @@
 #define MAX_FREZZER_DEVICES 4
 
 /**
- * @brief Frezzer device name prefix for BLE scanning
+ * @brief Known BLE device names for Alpicool OEM fridge platform.
+ *
+ * The Frezzer PRO advertises as "WT-0001". Other Alpicool-compatible
+ * brands use names starting with A1-, AK1-, AK2-, or AK3-.
+ * Use isFrezzerDevice() for matching logic.
  */
-#define FREZZER_DEVICE_NAME_PREFIX "FREZZER"
+#define FREZZER_DEVICE_NAME_WT  "WT-0001"
+#define FREZZER_DEVICE_NAME_A1  "A1-"
+#define FREZZER_DEVICE_NAME_AK1 "AK1-"
+#define FREZZER_DEVICE_NAME_AK2 "AK2-"
+#define FREZZER_DEVICE_NAME_AK3 "AK3-"
+
+/**
+ * @brief Query interval in milliseconds (Alpicool app polls every 2 s)
+ */
+#define FREZZER_QUERY_INTERVAL_MS 2000
 
 /**
  * @brief Timeout in milliseconds for considering device data as stale
@@ -35,15 +51,15 @@
 #define FREZZER_CONNECT_TIMEOUT_MS 10000  // 10 seconds
 
 /**
- * @brief Frezzer operating mode enumeration
+ * @brief Frezzer operating mode (derived from Alpicool poweredOn + runMode fields)
+ *
+ * Alpicool protocol: poweredOn (bool) + runMode (0=Max, 1=Eco).
  */
 enum class FrezzerMode : uint8_t {
-    OFF = 0,          ///< Fridge is off
-    FRIDGE = 1,       ///< Fridge mode (typically 0-8°C)
-    FREEZER = 2,      ///< Freezer mode (typically -18 to -22°C)
-    ECO = 3,          ///< Eco/power saving mode
-    MAX_COOL = 4,     ///< Maximum cooling mode
-    UNKNOWN = 255     ///< Unknown mode
+    OFF      = 0,    ///< Fridge powered off (poweredOn=false)
+    MAX_COOL = 1,    ///< Maximum cooling (poweredOn=true, runMode=0)
+    ECO      = 2,    ///< Eco/power-saving mode (poweredOn=true, runMode=1)
+    UNKNOWN  = 255   ///< Unknown/parse error
 };
 
 /**
@@ -72,31 +88,36 @@ enum class FrezzerError : uint8_t {
 };
 
 /**
- * @brief Frezzer device sensor data
+ * @brief Frezzer device sensor data (Alpicool query response, single-zone)
+ *
+ * All temperature values are in Celsius (signed int8 in wire format).
+ * battery_voltage = batVolInt + batVolDec / 10.0f
  */
 struct FrezzerData {
-    float currentTemp;             ///< Current internal temperature in Celsius
-    float targetTemp;              ///< Target temperature setting in Celsius
-    float batteryVoltage;          ///< Battery/power supply voltage
-    FrezzerMode mode;              ///< Current operating mode
-    FrezzerCompressorState compressor; ///< Compressor state
-    FrezzerError error;            ///< Current error code
-    bool lidOpen;                  ///< Lid/door open sensor status
-    bool lowVoltageProtection;     ///< Low voltage protection active
-    uint8_t powerLevel;            ///< Power consumption level (0-100%)
-    bool valid;                    ///< Whether the data is valid
+    float currentTemp;                 ///< Current internal temperature (°C)
+    float targetTemp;                  ///< Target temperature setpoint (°C)
+    float batteryVoltage;              ///< Supply voltage (V)
+    FrezzerMode mode;                  ///< Combined power+run mode
+    FrezzerCompressorState compressor; ///< Inferred compressor state
+    FrezzerError error;                ///< Error state
+    bool locked;                       ///< Control panel locked
+    uint8_t batPercent;                ///< Battery charge % (0-100, 0x7F=unknown)
+    uint8_t batSaverMode;              ///< Low-voltage cutout level (0=Low,1=Mid,2=High)
+    bool valid;                        ///< Whether data was parsed successfully
 };
 
 /**
- * @brief Frezzer command types for control
+ * @brief Alpicool protocol command codes (from klightspeed/BrassMonkeyFridgeMonitor)
+ *
+ * Frame: FE FE | (len+2) | cmd [param...] | checksum_hi checksum_lo
  */
 enum class FrezzerCommand : uint8_t {
-    SET_TARGET_TEMP = 0x01,   ///< Set target temperature
-    SET_MODE = 0x02,          ///< Set operating mode
-    POWER_ON = 0x03,          ///< Turn on the fridge
-    POWER_OFF = 0x04,         ///< Turn off the fridge
-    REQUEST_STATUS = 0x05,    ///< Request current status
-    SET_LOW_VOLTAGE_CUTOFF = 0x06  ///< Set low voltage protection threshold
+    BIND             = 0x00, ///< Bind (fridge shows "APP", user presses button)
+    QUERY            = 0x01, ///< Query all status — fridge responds on notify char
+    SET              = 0x02, ///< Set all parameters (full settings payload)
+    RESET            = 0x04, ///< Factory reset
+    SET_LEFT_TARGET  = 0x05, ///< Set unit 1 (single/left zone) target temp (int8 °C)
+    SET_RIGHT_TARGET = 0x06  ///< Set unit 2 (right zone) target temp (int8 °C)
 };
 
 /**

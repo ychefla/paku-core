@@ -1210,11 +1210,11 @@ void createFrezzerPayloads(const char* timestamp) {
     metrics["current_temp_c"] = device->lastData.currentTemp;
     metrics["target_temp_c"] = device->lastData.targetTemp;
     metrics["battery_voltage"] = device->lastData.batteryVoltage;
+    metrics["bat_percent"] = device->lastData.batPercent;
+    metrics["bat_saver_mode"] = device->lastData.batSaverMode;
     metrics["mode"] = frezzerModeToString(device->lastData.mode);
     metrics["compressor"] = frezzerCompressorStateToString(device->lastData.compressor);
-    metrics["power_level"] = device->lastData.powerLevel;
-    metrics["lid_open"] = device->lastData.lidOpen;
-    metrics["low_voltage_protection"] = device->lastData.lowVoltageProtection;
+    metrics["locked"] = device->lastData.locked;
     metrics["error"] = frezzerErrorToString(device->lastData.error);
     metrics["connected"] = device->connected;
     
@@ -1312,11 +1312,10 @@ void handleFrezzerMqttCommand(const char* topic, const char* payload) {
   } else if (strcmp(command, "set_mode") == 0) {
     const char* modeStr = cmdDoc["value"];
     FrezzerMode mode = FrezzerMode::UNKNOWN;
-    if (strcmp(modeStr, "off") == 0) mode = FrezzerMode::OFF;
-    else if (strcmp(modeStr, "fridge") == 0) mode = FrezzerMode::FRIDGE;
-    else if (strcmp(modeStr, "freezer") == 0) mode = FrezzerMode::FREEZER;
-    else if (strcmp(modeStr, "eco") == 0) mode = FrezzerMode::ECO;
+    if (strcmp(modeStr, "off") == 0)      mode = FrezzerMode::OFF;
+    else if (strcmp(modeStr, "eco") == 0)      mode = FrezzerMode::ECO;
     else if (strcmp(modeStr, "max_cool") == 0) mode = FrezzerMode::MAX_COOL;
+    // "fridge" and "freezer" are temperature targets, not modes — use set_temp
     
     result = setFrezzerMode(mutableDevice, mode);
     Serial.print("Frezzer set_mode ");
