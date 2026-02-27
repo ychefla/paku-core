@@ -28,6 +28,8 @@ set(PAKU_LIB_SOURCES
     ${PAKU_LIB_DIR}/ruuvi_scanner.cpp
     ${PAKU_LIB_DIR}/sensor_placeholders.cpp
     ${PAKU_LIB_DIR}/data_transmitter.cpp
+    ${PAKU_LIB_DIR}/frezzer.cpp
+    ${PAKU_LIB_DIR}/frezzer_controller.cpp
 )
 
 # Unit test source files
@@ -38,6 +40,7 @@ set(UNIT_TEST_SOURCES
     test_ruuvi_scanner.cpp
     test_data_transmitter.cpp
     test_sensor_placeholders.cpp
+    test_frezzer.cpp
 )
 
 # Create a test executable for each unit test file
