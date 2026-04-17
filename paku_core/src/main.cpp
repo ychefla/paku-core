@@ -108,6 +108,12 @@ lcd_cmd_t lcd_st7789v[] = {
 #endif
 #endif // HAS_DISPLAY
 
+// Waveshare RGB LCD touchscreen GUI (LVGL-based, 800×480)
+#if HAS_RGB_LCD
+#include "paku_gui.h"
+#include "waveshare_hal.h"
+#endif
+
 // BLE settings (ESP32 only)
 #if HAS_BLE
 bool scanBT_enabled = true;
@@ -607,6 +613,83 @@ String getISO8601Timestamp() {
   return String(isoTimestamp);
 }
 
+// ============================================================================
+// GUI Action Callbacks — invoked from the LVGL task, safe to publish MQTT.
+// Registered in setup() after gui_init().
+// ============================================================================
+#if HAS_RGB_LCD
+
+static void on_gui_light_changed(uint8_t zone, bool on, uint8_t brightness, uint16_t colorTempK) {
+#if HAS_MILIGHT
+    if (!client.connected()) return;
+    String topic = String("paku/edge/") + deviceId + "/cmd/light/" + (zone + 1);
+    JsonDocument doc;
+    doc["state"]      = on ? "ON" : "OFF";
+    doc["brightness"] = brightness;
+    // Convert Kelvin to Mired (153-500); clamp to valid HA range
+    uint16_t mired = (colorTempK > 0) ? (uint16_t)(1000000UL / colorTempK) : 370;
+    if (mired < 153) mired = 153;
+    if (mired > 500) mired = 500;
+    doc["color_temp"] = mired;
+    String payload;
+    serializeJson(doc, payload);
+    client.publish(topic.c_str(), payload.c_str());
+    LOG_INFO("GUI", "Light z%u %s bri=%u ct=%u", zone + 1, on ? "ON" : "OFF", brightness, mired);
+#endif // HAS_MILIGHT
+}
+
+static void on_gui_fan_changed(bool power, uint8_t speed, bool dirIn, bool lidOpen) {
+#if HAS_FAN_IR
+    if (!client.connected()) return;
+    String topic = String("paku/edge/") + deviceId + "/cmd/fan";
+    JsonDocument doc;
+    doc["power"]     = power;
+    doc["speed"]     = speed;
+    doc["direction"] = dirIn ? "intake" : "exhaust";
+    doc["lid"]       = lidOpen ? "open" : "closed";
+    String payload;
+    serializeJson(doc, payload);
+    client.publish(topic.c_str(), payload.c_str());
+    LOG_INFO("GUI", "Fan on=%d spd=%u dir=%s lid=%s", power, speed,
+             dirIn ? "in" : "out", lidOpen ? "open" : "closed");
+#endif // HAS_FAN_IR
+}
+
+static void on_gui_heater_changed(bool on, uint8_t powerLevel, uint8_t targetTempC) {
+#ifdef HEATER_ENABLED
+    if (!client.connected()) return;
+    String topic = String("paku/heater/") + deviceId + "/cmd";
+    JsonDocument doc;
+    if (on) {
+        doc["cmd"]   = "start";
+        doc["power"] = (powerLevel > 0) ? powerLevel : 5;
+    } else {
+        doc["cmd"] = "stop";
+    }
+    String payload;
+    serializeJson(doc, payload);
+    client.publish(topic.c_str(), payload.c_str());
+    LOG_INFO("GUI", "Heater %s pwr=%u temp=%u", on ? "ON" : "OFF", powerLevel, targetTempC);
+#endif // HEATER_ENABLED
+}
+
+static void on_gui_backlight_changed(uint8_t percent) {
+    waveshare_hal_set_backlight(percent);
+}
+
+static void on_gui_restart() {
+    LOG_INFO("GUI", "Restarting device via GUI request");
+    delay(200);
+    ESP.restart();
+}
+
+// NOTE: Lighting and climate presets are now managed by the GUI preset system
+// (gui_presets.h/cpp) with NVS persistence.  The home tab applies presets
+// directly via the registered _cb_light / _cb_heater / _cb_fan callbacks.
+
+#endif // HAS_RGB_LCD
+
+// ============================================================================
 /**
  * @brief Initializes the system setup.
  * 
@@ -681,6 +764,22 @@ void setup() {
     Serial.println(" MHz (power saving mode)");
     
 #endif // HAS_DISPLAY
+
+#if HAS_RGB_LCD
+    // Initialize Waveshare RGB LCD touchscreen GUI (LVGL)
+    Serial.println("Initializing Waveshare GUI...");
+    gui_init();
+    gui_set_firmware_version(FIRMWARE_VERSION);
+    // Register GUI action callbacks (GUI → MQTT / hardware)
+    gui_on_light_changed(on_gui_light_changed);
+    gui_on_fan_changed(on_gui_fan_changed);
+    gui_on_heater_changed(on_gui_heater_changed);
+    gui_on_backlight_changed(on_gui_backlight_changed);
+    gui_on_restart(on_gui_restart);
+    // Preset callbacks removed — home tab now applies presets directly
+    // via the individual light/heater/fan callbacks registered above.
+    Serial.println("Waveshare GUI initialized");
+#endif // HAS_RGB_LCD
 
     Serial.println("Setup Wifi Connection...");
     WiFi.mode(WIFI_STA);
@@ -938,6 +1037,31 @@ void loop() {
   // CRITICAL: Update display UI FIRST to ensure button responsiveness
   // Must be before any potentially blocking operations
   displayUI.update();
+#endif
+
+#if HAS_RGB_LCD
+  // CRITICAL: Run LVGL timer handler FIRST for touch responsiveness
+  gui_update();
+
+  // Push periodic status data to the GUI (~1 Hz)
+  {
+    static unsigned long lastGuiStatusPush = 0;
+    if (millis() - lastGuiStatusPush >= 1000) {
+      lastGuiStatusPush = millis();
+      gui_set_wifi_status(WiFi.status() == WL_CONNECTED, WiFi.RSSI());
+      gui_set_mqtt_status(client.connected());
+#if HAS_BLE
+      gui_set_ble_status(scanBT_enabled);
+#endif
+      // Push time string from NTP (if available)
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo, 0)) {
+        char timeBuf[6];
+        strftime(timeBuf, sizeof(timeBuf), "%H:%M", &timeinfo);
+        gui_set_time(timeBuf);
+      }
+    }
+  }
 #endif
 
 #ifdef HEATER_ENABLED
@@ -1436,6 +1560,9 @@ void connect_wifi() {
 #if HAS_DISPLAY
         displayUI.refresh();
 #endif
+#if HAS_RGB_LCD
+        gui_set_wifi_status(true, WiFi.RSSI());
+#endif
         return;
       } else {
         Serial.printf("Failed to connect to %s\n", configuredNetworks[i].ssid.c_str());
@@ -1512,6 +1639,10 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
 
     // Publish device status (announce we're online)
     publishDeviceStatus();
+
+#if HAS_RGB_LCD
+    gui_set_mqtt_status(true);
+#endif
 }
 
 /**

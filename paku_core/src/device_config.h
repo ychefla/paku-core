@@ -22,12 +22,16 @@
 //
 // Available devices:
 //   DEVICE_LILYGO_T_DISPLAY_S3    - ESP32-S3, LilyGo T-Display S3 with ST7789V TFT display
+//   DEVICE_WAVESHARE_LCD_4_3      - ESP32-S3, Waveshare 4.3" 800×480 RGB LCD (SKU:25948)
+//   DEVICE_WAVESHARE_LCD_5         - ESP32-S3, Waveshare 5" 800×480 RGB LCD (SKU:28117)
 //   DEVICE_ESP32_CH340C_30PIN     - ESP32 (not S3), Generic 30-pin board, no display
 //   DEVICE_ESP8266_WIRED_SENSORS  - ESP8266, NodeMCU or generic board with DS18B20 sensor
 //
 // If a device is defined via build flags (-D), use that.
 // Otherwise fall back to the manual selection below.
 #if !defined(DEVICE_LILYGO_T_DISPLAY_S3) && \
+    !defined(DEVICE_WAVESHARE_LCD_4_3) && \
+    !defined(DEVICE_WAVESHARE_LCD_5) && \
     !defined(DEVICE_ESP32_CH340C_30PIN) && \
     !defined(DEVICE_ESP8266_WIRED_SENSORS)
 #define DEVICE_LILYGO_T_DISPLAY_S3
@@ -63,6 +67,54 @@
     #else
     #define HAS_MILIGHT 0
     #endif
+
+// =============================================================================
+// Device Configuration: Waveshare ESP32-S3-Touch-LCD-4.3 (SKU: 25948)
+// =============================================================================
+// 800×480 ST7262 RGB LCD, GT911 touch, CH422G IO expander, RS485, CAN/TWAI,
+// SD card (SPI via CH422G CS), UART header, ADC header.
+// RGB LCD driver implemented via WaveshareHAL + PakuGUI libraries.
+#elif defined(DEVICE_WAVESHARE_LCD_4_3)
+    #define DEVICE_NAME "Waveshare LCD 4.3\""
+    #define DEVICE_MODEL "waveshare-s3-touch-lcd-43"
+    #define MCU_ESP32_S3 1
+    #define HAS_DISPLAY 0       // TFT_eSPI SPI display (not used — see HAS_RGB_LCD)
+    #define HAS_TOUCH 0         // CST mutual touch (not used — GT911 via HAS_RGB_LCD)
+    #define HAS_PSRAM 1
+    #define HAS_LED 0           // No simple onboard LED (backlight via CH422G)
+    #define HAS_BLE 1
+    #define HAS_WIRED_SENSORS 0
+    #define HAS_RGB_LCD 1       // ST7262 RGB parallel LCD hardware present
+    #define HAS_IO_EXPANDER 1   // CH422G I2C IO expander (addr 0x24)
+    #define HAS_RS485 1         // RS485 transceiver on UART
+    #define HAS_CAN 1           // CAN/TWAI transceiver
+    #define HAS_SD_CARD 1       // SD card slot (CS via CH422G EXIO4)
+    #define HAS_UART_HEADER 1   // External UART header (GPIO43/44)
+    #define HAS_ADC_HEADER 1    // External ADC header (GPIO6)
+
+// =============================================================================
+// Device Configuration: Waveshare ESP32-S3-Touch-LCD-5 (SKU: 28117)
+// =============================================================================
+// 800×480 ST7262 RGB LCD, GT911 touch, CH422G IO expander, RS485, CAN/TWAI,
+// SD card (SPI via CH422G CS), PCF85063A RTC, isolated digital IO.
+// RGB LCD driver implemented via WaveshareHAL + PakuGUI libraries.
+#elif defined(DEVICE_WAVESHARE_LCD_5)
+    #define DEVICE_NAME "Waveshare LCD 5\""
+    #define DEVICE_MODEL "waveshare-s3-touch-lcd-5"
+    #define MCU_ESP32_S3 1
+    #define HAS_DISPLAY 0       // TFT_eSPI SPI display (not used — see HAS_RGB_LCD)
+    #define HAS_TOUCH 0         // CST mutual touch (not used — GT911 via HAS_RGB_LCD)
+    #define HAS_PSRAM 1
+    #define HAS_LED 0           // No simple onboard LED (backlight via CH422G)
+    #define HAS_BLE 1
+    #define HAS_WIRED_SENSORS 0
+    #define HAS_RGB_LCD 1       // ST7262 RGB parallel LCD hardware present
+    #define HAS_IO_EXPANDER 1   // CH422G I2C IO expander (addr 0x24)
+    #define HAS_RS485 1         // RS485 transceiver on UART
+    #define HAS_CAN 1           // CAN/TWAI transceiver
+    #define HAS_SD_CARD 1       // SD card slot (CS via CH422G EXIO4)
+    #define HAS_RTC 1           // PCF85063A RTC on I2C (addr 0x51)
+    #define HAS_ISOLATED_IO 1   // Isolated DI/DO via CH422G
 
 // =============================================================================
 // Device Configuration: ESP32 CH340C 30PIN (ESP32, not S3)
