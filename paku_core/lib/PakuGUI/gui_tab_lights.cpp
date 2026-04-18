@@ -24,8 +24,8 @@ struct ZoneWidgets {
     lv_obj_t *lblCTemp;
 };
 
-static const char *zoneNames[NUM_ZONES]  = {"Living Area", "Kitchen", "Bedroom", "Outside"};
-static const char *zoneIcons[NUM_ZONES]  = {LV_SYMBOL_HOME, LV_SYMBOL_LIST, LV_SYMBOL_EYE_CLOSE, LV_SYMBOL_IMAGE};
+static const char *zoneNames[NUM_ZONES]  = {"Ceiling", "Counter", "Drawers", "Under Bed"};
+static const char *zoneIcons[NUM_ZONES]  = {LV_SYMBOL_HOME, LV_SYMBOL_LIST, LV_SYMBOL_IMAGE, LV_SYMBOL_EYE_CLOSE};
 static uint8_t     zoneBright[NUM_ZONES] = {80, 65, 40, 100};
 static uint16_t    zoneCTemp[NUM_ZONES]  = {4000, 3500, 2700, 5000};
 static bool        zoneOn[NUM_ZONES]     = {true, true, false, false};
@@ -104,6 +104,44 @@ static void update_zone_visuals(int z) {
     if (zw[z].sldCTemp) {
         lv_obj_set_style_bg_color(zw[z].sldCTemp, col, LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(zw[z].sldCTemp, col, LV_PART_KNOB);
+    }
+}
+
+/** @brief Sync master controls (sliders + All On/Off buttons) from per-zone state. */
+static void sync_master_controls() {
+    // All On/Off button colours
+    bool anyOn  = false;
+    bool allOff = true;
+    for (int i = 0; i < NUM_ZONES; i++) {
+        if (zoneOn[i]) { anyOn = true; allOff = false; }
+    }
+    if (_btnAllOn)  lv_obj_set_style_bg_color(_btnAllOn,  anyOn  ? GUI_COLOR_ACCENT : GUI_COLOR_CARD_HOVER, 0);
+    if (_btnAllOff) lv_obj_set_style_bg_color(_btnAllOff, allOff ? GUI_COLOR_ACCENT : GUI_COLOR_CARD_HOVER, 0);
+
+    // If all zones share the same brightness, update master slider
+    bool sameBright = true;
+    for (int i = 1; i < NUM_ZONES; i++) {
+        if (zoneBright[i] != zoneBright[0]) { sameBright = false; break; }
+    }
+    if (sameBright && _sldMBright) {
+        lv_slider_set_value(_sldMBright, zoneBright[0], LV_ANIM_ON);
+        if (_lblMBright) {
+            char buf[8]; snprintf(buf, sizeof(buf), "%d", zoneBright[0]);
+            lv_label_set_text(_lblMBright, buf);
+        }
+    }
+
+    // If all zones share the same color temp, update master slider
+    bool sameCTemp = true;
+    for (int i = 1; i < NUM_ZONES; i++) {
+        if (zoneCTemp[i] != zoneCTemp[0]) { sameCTemp = false; break; }
+    }
+    if (sameCTemp && _sldMCTemp) {
+        lv_slider_set_value(_sldMCTemp, zoneCTemp[0], LV_ANIM_ON);
+        if (_lblMCTemp) {
+            char buf[8]; snprintf(buf, sizeof(buf), "%d", zoneCTemp[0]);
+            lv_label_set_text(_lblMCTemp, buf);
+        }
     }
 }
 
@@ -373,10 +411,13 @@ static lv_obj_t *create_zone_grid(lv_obj_t *parent) {
     lv_obj_set_grid_dsc_array(grid, col_dsc, row_dsc);
     lv_obj_set_style_pad_gap(grid, GUI_PAD_SM, 0);
 
+    // Grid layout: top row L→R (Ceiling, Counter), bottom row swapped
+    // so Under Bed (idx 3) is bottom-left and Drawers (idx 2) is bottom-right
+    static const int colMap[NUM_ZONES] = {0, 1, 1, 0};
     for (int i = 0; i < NUM_ZONES; i++) {
         lv_obj_t *card = create_zone_card(grid, i);
         lv_obj_set_grid_cell(card,
-            LV_GRID_ALIGN_STRETCH, i % 2, 1,
+            LV_GRID_ALIGN_STRETCH, colMap[i], 1,
             LV_GRID_ALIGN_STRETCH, i / 2, 1);
     }
 
@@ -550,6 +591,7 @@ void gui_tab_lights_set_zone(uint8_t zone, bool on, uint8_t brightness, uint16_t
         lv_label_set_text(zw[zone].lblCTemp, buf);
     }
     update_zone_visuals(zone);
+    sync_master_controls();
 }
 
 void gui_tab_lights_get_state(LightZonePreset out[LIGHT_ZONE_COUNT]) {

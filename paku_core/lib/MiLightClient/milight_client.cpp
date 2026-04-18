@@ -26,6 +26,13 @@
 #define MILIGHT_DRY_RUN 0
 #endif
 
+/// @brief Delay helper — skipped entirely in DRY_RUN mode (no radio to pace).
+static inline void ml_delay(unsigned long ms) {
+#if !MILIGHT_DRY_RUN
+    delay(ms);
+#endif
+}
+
 // CCT v1 Protocol Constants (7-byte packets)
 #define CCT_PACKET_SIZE 7
 #define CCT_PREAMBLE_SIZE 2
@@ -257,7 +264,7 @@ bool milight_send_state(const MiLightState& state) {
         cct_build_packet(packet, device_id, on_off_cmd, 0x00);
         log_packet_hex("[MILIGHT] CCT ON/OFF: ", packet, CCT_PACKET_SIZE);
         transmit_packet(packet, CCT_PACKET_SIZE);
-        delay(100);  // Delay between commands
+        ml_delay(100);  // Delay between commands
         
         if (state.on) {
             // Send brightness commands (CCT uses step commands)
@@ -267,7 +274,7 @@ bool milight_send_state(const MiLightState& state) {
             for (uint8_t i = 0; i < steps; i++) {
                 cct_build_packet(packet, device_id, CCT_BRIGHTNESS_UP, 0x00);
                 transmit_packet(packet, CCT_PACKET_SIZE);
-                delay(50);
+                ml_delay(50);
             }
             
             // Send color temperature commands
@@ -279,7 +286,7 @@ bool milight_send_state(const MiLightState& state) {
                 for (uint8_t i = 0; i < steps; i++) {
                     cct_build_packet(packet, device_id, CCT_TEMPERATURE_DOWN, 0x00);
                     transmit_packet(packet, CCT_PACKET_SIZE);
-                    delay(50);
+                    ml_delay(50);
                 }
             } else if (state.color_temp > 400) {
                 // Warmer - send temperature up commands
@@ -287,7 +294,7 @@ bool milight_send_state(const MiLightState& state) {
                 for (uint8_t i = 0; i < steps; i++) {
                     cct_build_packet(packet, device_id, CCT_TEMPERATURE_UP, 0x00);
                     transmit_packet(packet, CCT_PACKET_SIZE);
-                    delay(50);
+                    ml_delay(50);
                 }
             }
         }
@@ -302,14 +309,14 @@ bool milight_send_state(const MiLightState& state) {
         fut091_build_packet(packet, device_id, state.channel, 0x01, state.on ? 0x01 : 0x00);
         log_packet_hex("[MILIGHT] FUT091 ON/OFF: ", packet, 9);
         transmit_packet(packet, 9);
-        delay(100);
+        ml_delay(100);
         
         if (state.on) {
             // Brightness command (0-100)
             fut091_build_packet(packet, device_id, state.channel, 0x02, state.brightness);
             log_packet_hex("[MILIGHT] FUT091 BRIGHTNESS: ", packet, 9);
             transmit_packet(packet, 9);
-            delay(100);
+            ml_delay(100);
             
             // Color temperature command
             // Map mireds (153-500) to 0-100 (cool to warm)
@@ -353,7 +360,7 @@ bool milight_pair(uint8_t channel, MiLightProtocol protocol, uint16_t device_id)
             cct_build_packet(packet, device_id, on_cmd, 0x00);
             log_packet_hex("[MILIGHT] CCT PAIR: ", packet, CCT_PACKET_SIZE);
             transmit_packet(packet, CCT_PACKET_SIZE);
-            delay(200);
+            ml_delay(200);
         }
     } else if (protocol == PROTOCOL_FUT091) {
         // FUT091 pairing: Send ON command multiple times
@@ -362,7 +369,7 @@ bool milight_pair(uint8_t channel, MiLightProtocol protocol, uint16_t device_id)
             fut091_build_packet(packet, device_id, channel, 0x01, 0x01);
             log_packet_hex("[MILIGHT] FUT091 PAIR: ", packet, 9);
             transmit_packet(packet, 9);
-            delay(200);
+            ml_delay(200);
         }
     }
     
@@ -393,7 +400,7 @@ bool milight_unpair(uint8_t channel, MiLightProtocol protocol) {
             cct_build_packet(packet, current_device_id, off_cmd, 0x00);
             log_packet_hex("[MILIGHT] CCT UNPAIR: ", packet, CCT_PACKET_SIZE);
             transmit_packet(packet, CCT_PACKET_SIZE);
-            delay(200);
+            ml_delay(200);
         }
     } else if (protocol == PROTOCOL_FUT091) {
         // FUT091 unpairing: Send OFF command multiple times
@@ -402,7 +409,7 @@ bool milight_unpair(uint8_t channel, MiLightProtocol protocol) {
             fut091_build_packet(packet, current_device_id, channel, 0x01, 0x00);
             log_packet_hex("[MILIGHT] FUT091 UNPAIR: ", packet, 9);
             transmit_packet(packet, 9);
-            delay(200);
+            ml_delay(200);
         }
     }
     

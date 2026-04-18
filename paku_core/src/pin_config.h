@@ -116,6 +116,14 @@
 /* MaxxFan IR LED (connect external IR LED here) */
 #define PIN_IR_LED                   43   // GPIO43 (shared with UART header TX on 4.3")
 
+/* NRF24L01+ for MiLight/MIBO control (no dedicated pins on Waveshare —
+   reuse SD SPI bus when SD card is not active; CE/CSN on UART header) */
+#define PIN_NRF24_CE                 43   // GPIO43 (UART header TX)
+#define PIN_NRF24_CSN                44   // GPIO44 (UART header RX)
+#define PIN_NRF24_SCK                12   // SPI CLK (shared with SD_CLK)
+#define PIN_NRF24_MOSI               11   // SPI MOSI (shared with SD_CMD)
+#define PIN_NRF24_MISO               13   // SPI MISO (shared with SD_D0)
+
 /* ST7262 RGB LCD bus (800×480, RGB565 parallel)
    Defined here for reference; the RGB LCD driver is not yet implemented. */
 #define PIN_LCD_HSYNC                46

@@ -1635,6 +1635,11 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
       mqttClient.subscribe(lightCmdTopic.c_str());
       Serial.printf("  Subscribed to %s\n", lightCmdTopic.c_str());
     }
+    {
+      String lightAllTopic = String("paku/edge/") + deviceId + "/cmd/light/all";
+      mqttClient.subscribe(lightAllTopic.c_str());
+      Serial.printf("  Subscribed to %s\n", lightAllTopic.c_str());
+    }
 #endif
 
     // Publish device status (announce we're online)
@@ -4216,10 +4221,75 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 #if HAS_MILIGHT
   // Handle MiLight/MIBO light commands — per-zone topics: cmd/light/{1-4}
+  //                                     — broadcast topic: cmd/light/all
   String lightCmdPrefix = String("paku/edge/") + deviceId + "/cmd/light/";
   if (String(topic).startsWith(lightCmdPrefix)) {
+    String suffix = String(topic).substring(lightCmdPrefix.length());
+
+    // ── Broadcast: cmd/light/all ─────────────────────────────────────────
+    if (suffix == "all") {
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, message);
+      if (error) {
+        Serial.print("[MILIGHT] ALL parse error: ");
+        Serial.println(error.c_str());
+        return;
+      }
+
+      // Parse desired values from the single JSON payload
+      bool want_on  = false;
+      bool want_off = false;
+      if (doc["state"].is<const char*>()) {
+        const char* s = doc["state"];
+        if (strcasecmp(s, "on") == 0)       want_on  = true;
+        else if (strcasecmp(s, "off") == 0)  want_off = true;
+      }
+      int  new_brightness = doc["brightness"] | -1;   // -1 = not set
+      int  new_color_temp = doc["color_temp"]  | -1;
+
+      for (uint8_t ch = 1; ch <= 4; ch++) {
+        MiLightState state = milight_get_state(ch);
+        bool changed = false;
+
+        if (want_on)  { state.on = true;  changed = true; }
+        if (want_off) { state.on = false; changed = true; }
+        if (new_brightness >= 0 && new_brightness <= 100) {
+          state.brightness = new_brightness; changed = true;
+        }
+        if (new_color_temp >= 153 && new_color_temp <= 500) {
+          state.color_temp = new_color_temp; changed = true;
+        }
+
+        if (changed && milight_send_state(state)) {
+          Serial.printf("[MILIGHT] ALL zone %d → on:%d bright:%d temp:%d\n",
+                        ch, state.on, state.brightness, state.color_temp);
+#if HAS_RGB_LCD
+          uint16_t colorTempK = (state.color_temp > 0)
+              ? (uint16_t)(1000000UL / state.color_temp) : 4000;
+          gui_set_light_zone(ch - 1, state.on, state.brightness, colorTempK);
+#endif
+          // Publish per-zone status so HA sensors pick up each zone
+          String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + ch;
+          JsonDocument statusDoc;
+          statusDoc["state"]      = state.on ? "ON" : "OFF";
+          statusDoc["brightness"] = state.brightness;
+          statusDoc["color_mode"] = "color_temp";
+          statusDoc["color_temp"] = state.color_temp;
+          statusDoc["channel"]    = ch;
+          statusDoc["protocol"]   = milight_protocol_to_string(state.protocol);
+          statusDoc["device_id"]  = state.device_id;
+          statusDoc["timestamp"]  = getISO8601Timestamp();
+          String statusPayload;
+          serializeJson(statusDoc, statusPayload);
+          client.publish(statusTopic.c_str(), statusPayload.c_str());
+        }
+      }
+      return;
+    }
+
+    // ── Per-zone: cmd/light/{1-4} ────────────────────────────────────────
     // Extract channel from topic suffix
-    uint8_t channel = String(topic).substring(lightCmdPrefix.length()).toInt();
+    uint8_t channel = suffix.toInt();
     if (channel < 1 || channel > 4) {
       Serial.printf("[MILIGHT] Invalid channel in topic: %s\n", topic);
       return;
@@ -4307,6 +4377,12 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       if (milight_send_state(state)) {
         Serial.printf("[MILIGHT] Zone %d updated - on:%d bright:%d temp:%d\n",
                      channel, state.on, state.brightness, state.color_temp);
+
+#if HAS_RGB_LCD
+        // Sync Waveshare GUI — convert mireds (153-500) to Kelvin for GUI sliders
+        uint16_t colorTempK = (state.color_temp > 0) ? (uint16_t)(1000000UL / state.color_temp) : 4000;
+        gui_set_light_zone(channel - 1, state.on, state.brightness, colorTempK);
+#endif
         
         // Publish status to per-zone topic
         String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + channel;

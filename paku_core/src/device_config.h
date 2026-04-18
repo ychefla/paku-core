@@ -60,13 +60,6 @@
     #define LED_ON HIGH         // LED is active HIGH
     #define HAS_RGB_LED 1       // Addressable RGB LED (WS2812 style)
     // Note: For RGB LED control, use a NeoPixel or FastLED library
-    
-    // MiLight/MIBO light controller support (controlled by build flag)
-    #ifdef MILIGHT_ENABLED
-    #define HAS_MILIGHT 1
-    #else
-    #define HAS_MILIGHT 0
-    #endif
 
 // =============================================================================
 // Device Configuration: Waveshare ESP32-S3-Touch-LCD-4.3 (SKU: 25948)
@@ -186,8 +179,13 @@
 #define HAS_WIRED_SENSORS 0
 #endif
 
+// MiLight/MIBO light controller (enabled via MILIGHT_ENABLED build flag)
 #ifndef HAS_MILIGHT
-#define HAS_MILIGHT 0
+  #ifdef MILIGHT_ENABLED
+    #define HAS_MILIGHT 1
+  #else
+    #define HAS_MILIGHT 0
+  #endif
 #endif
 
 // MaxxFan IR control (enabled via FAN_IR_ENABLED build flag)
