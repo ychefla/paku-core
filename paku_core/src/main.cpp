@@ -1064,6 +1064,35 @@ void loop() {
       gui_set_mqtt_status(client.connected());
 #if HAS_BLE
       gui_set_ble_status(scanBT_enabled);
+
+      // Push latest Ruuvi sensor readings to the GUI graphs
+      {
+        const RuuviTag* freshTags[MAX_RUUVI_TAGS];
+        uint8_t freshCount = getFreshTags(freshTags, MAX_RUUVI_TAGS, millis());
+        for (uint8_t i = 0; i < freshCount && i < 4; i++) {
+          const RuuviTag* tag = freshTags[i];
+          if (!tag->hasData || !tag->lastData.valid) continue;
+          // Map tag index to GUI series (0-3 for temp, 0-2 for humidity)
+          gui_push_temperature(i, tag->lastData.temperature);
+          if (i < 3) gui_push_humidity(i, tag->lastData.humidity);
+        }
+      }
+#endif
+#ifdef HEATER_ENABLED
+      // Push heater telemetry to the GUI
+      {
+        JsonDocument hDoc;
+        heater_addon_telemetry(hDoc);
+        const char* stateStr = hDoc["heater"]["state"] | "unknown";
+        int hState = 0;
+        if (strcmp(stateStr, "starting") == 0 || strcmp(stateStr, "warming") == 0)
+          hState = 1;
+        else if (strcmp(stateStr, "running") == 0)
+          hState = 2;
+        float coolant = hDoc["heater"]["coolantTemp"] | 0.0f;
+        // Pass -1 as target to avoid overwriting the GUI's own target slider
+        gui_set_heater_data(hState, -1, coolant);
+      }
 #endif
       // Push time string from NTP (if available)
       struct tm timeinfo;
@@ -4149,6 +4178,24 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   if (String(topic) == heaterCmdTopic) {
     LOG_INFO("MQTT", "Heater command received: %s", message.c_str());
     heater_addon_command(message.c_str(), message.length());
+
+#if HAS_RGB_LCD
+    // Parse command to update Waveshare GUI immediately
+    {
+      JsonDocument cmdDoc;
+      if (!deserializeJson(cmdDoc, message)) {
+        const char* cmd = cmdDoc["cmd"] | "";
+        if (strcmp(cmd, "start") == 0) {
+          const char* mode = cmdDoc["mode"] | "power";
+          float target = cmdDoc["target_temp"] | 21;
+          gui_set_heater_data(1, target, 0);
+        } else if (strcmp(cmd, "stop") == 0) {
+          gui_set_heater_data(0, 0, 0);
+        }
+      }
+    }
+#endif
+
     return;
   }
 #endif // HEATER_ENABLED
@@ -4211,6 +4258,11 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     
     // Send IR command
     maxxfan_ir_send(state);
+
+#if HAS_RGB_LCD
+    // Sync Waveshare GUI to match the new fan state
+    gui_set_fan_data(state.speed, !state.exhaust, state.lid_open);
+#endif
     
     // Publish updated state
     String statusTopic = String("paku/edge/") + deviceId + "/status/fan";
