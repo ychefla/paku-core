@@ -11,6 +11,7 @@
 #include "gui_events.h"
 #include "gui_presets.h"
 #include "gui_tab_main.h"
+#include "paku_gui.h"   // HeaterMode enum
 #include <cstdio>
 
 // ---------------------------------------------------------------------------
@@ -26,15 +27,23 @@ static lv_obj_t *_lblSpeedVal  = nullptr;
 
 // Heater panel
 static lv_obj_t *_btnPower    = nullptr;
+static lv_obj_t *_btnModePwr  = nullptr;
+static lv_obj_t *_btnModeThm  = nullptr;
+static lv_obj_t *_btnModeVent = nullptr;
 static lv_obj_t *_lblTarget   = nullptr;
 static lv_obj_t *_sldTarget   = nullptr;
+static lv_obj_t *_lblPower    = nullptr;
+static lv_obj_t *_sldPower    = nullptr;
 static lv_obj_t *_lblActual   = nullptr;
-static lv_obj_t *_btnOverride = nullptr;
+static lv_obj_t *_pnlPowerMode = nullptr;
+static lv_obj_t *_pnlThermoMode = nullptr;
 
 static bool _heaterOn     = false;
 static int  _targetTemp   = 21;
+static int  _powerLevel   = 5;
 static bool _fanDirIn     = true;
 static bool _lidOpen      = true;
+static HeaterMode _heaterMode = HEATER_MODE_POWER;
 
 // ---------------------------------------------------------------------------
 //  Helpers
@@ -104,27 +113,95 @@ static void power_cb(lv_event_t *e) {
         _heaterOn ? GUI_COLOR_RED : GUI_COLOR_TEXT_MUTED, 0);
     lv_obj_set_style_border_width(_btnPower, 3, 0);
     if (_cb_heater) {
-        uint8_t pwrLevel = (uint8_t)map(_targetTemp, 10, 30, 1, 10);
-        _cb_heater(_heaterOn, pwrLevel, (uint8_t)_targetTemp);
+        _cb_heater(_heaterOn, _heaterMode, (uint8_t)_powerLevel, (uint8_t)_targetTemp);
     }
 }
 
-/** @brief Helper: notify heater of new target temp while running. */
-static void _notify_heater_temp() {
+/** @brief Helper: notify heater of settings change while running. */
+static void _notify_heater() {
     if (_heaterOn && _cb_heater) {
-        uint8_t pwrLevel = (uint8_t)map(_targetTemp, 10, 30, 1, 10);
-        _cb_heater(true, pwrLevel, (uint8_t)_targetTemp);
+        _cb_heater(true, _heaterMode, (uint8_t)_powerLevel, (uint8_t)_targetTemp);
     }
 }
 
-static void override_cb(lv_event_t *e) {
-    // Full Power Override — start heater at max power regardless of target temp
-    if (_cb_heater) _cb_heater(true, 10, (uint8_t)_targetTemp);
-    // Reflect running state in UI
-    _heaterOn = true;
+/** @brief Switch visible heater sub-panel based on active mode. */
+static void _update_mode_panels() {
+    if (_pnlPowerMode)  lv_obj_set_style_opa(_pnlPowerMode,
+        _heaterMode == HEATER_MODE_POWER ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    if (_pnlThermoMode) lv_obj_set_style_opa(_pnlThermoMode,
+        _heaterMode == HEATER_MODE_THERMOSTAT ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    // Hide/show via flag for layout
+    if (_pnlPowerMode) {
+        if (_heaterMode == HEATER_MODE_POWER)
+            lv_obj_clear_flag(_pnlPowerMode, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(_pnlPowerMode, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (_pnlThermoMode) {
+        if (_heaterMode == HEATER_MODE_THERMOSTAT)
+            lv_obj_clear_flag(_pnlThermoMode, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(_pnlThermoMode, LV_OBJ_FLAG_HIDDEN);
+    }
+    // Update mode button colors
+    if (_btnModePwr) lv_obj_set_style_bg_color(_btnModePwr,
+        _heaterMode == HEATER_MODE_POWER ? GUI_COLOR_ACCENT : GUI_COLOR_CARD_HOVER, 0);
+    if (_btnModeThm) lv_obj_set_style_bg_color(_btnModeThm,
+        _heaterMode == HEATER_MODE_THERMOSTAT ? GUI_COLOR_ACCENT : GUI_COLOR_CARD_HOVER, 0);
+    if (_btnModeVent) lv_obj_set_style_bg_color(_btnModeVent,
+        _heaterMode == HEATER_MODE_VENT ? GUI_COLOR_BLUE : GUI_COLOR_CARD_HOVER, 0);
+}
+
+static void mode_power_cb(lv_event_t *e) {
+    _heaterMode = HEATER_MODE_POWER;
+    _update_mode_panels();
+    _notify_heater();
+}
+
+static void mode_thermo_cb(lv_event_t *e) {
+    _heaterMode = HEATER_MODE_THERMOSTAT;
+    _update_mode_panels();
+    _notify_heater();
+}
+
+static void mode_vent_cb(lv_event_t *e) {
+    _heaterMode = HEATER_MODE_VENT;
+    _heaterOn = true;  // vent always means "on" (fan running)
+    _update_mode_panels();
     if (_btnPower) {
-        lv_obj_set_style_border_color(_btnPower, GUI_COLOR_RED, 0);
+        lv_obj_set_style_border_color(_btnPower, GUI_COLOR_BLUE, 0);
         lv_obj_set_style_border_width(_btnPower, 3, 0);
+    }
+    if (_cb_heater) {
+        _cb_heater(true, HEATER_MODE_VENT, (uint8_t)_powerLevel, 0);
+    }
+}
+
+static void power_slider_cb(lv_event_t *e) {
+    _powerLevel = lv_slider_get_value(_sldPower);
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", _powerLevel);
+    if (_lblPower) lv_label_set_text(_lblPower, buf);
+    _notify_heater();
+}
+
+static void power_minus_cb(lv_event_t *e) {
+    if (_powerLevel > 0) {
+        _powerLevel--;
+        lv_slider_set_value(_sldPower, _powerLevel, LV_ANIM_ON);
+        char buf[8]; snprintf(buf, sizeof(buf), "%d", _powerLevel);
+        if (_lblPower) lv_label_set_text(_lblPower, buf);
+        _notify_heater();
+    }
+}
+
+static void power_plus_cb(lv_event_t *e) {
+    if (_powerLevel < 9) {
+        _powerLevel++;
+        lv_slider_set_value(_sldPower, _powerLevel, LV_ANIM_ON);
+        char buf[8]; snprintf(buf, sizeof(buf), "%d", _powerLevel);
+        if (_lblPower) lv_label_set_text(_lblPower, buf);
+        _notify_heater();
     }
 }
 
@@ -133,16 +210,16 @@ static void temp_slider_cb(lv_event_t *e) {
     char buf[8];
     snprintf(buf, sizeof(buf), "%d\xC2\xB0""C", _targetTemp);
     lv_label_set_text(_lblTarget, buf);
-    _notify_heater_temp();
+    _notify_heater();
 }
 
 static void temp_minus_cb(lv_event_t *e) {
     if (_targetTemp > 10) {
         _targetTemp--;
         lv_slider_set_value(_sldTarget, _targetTemp, LV_ANIM_ON);
-        char buf[8]; snprintf(buf, sizeof(buf), "%d\xC2\xB0C", _targetTemp);
+        char buf[8]; snprintf(buf, sizeof(buf), "%d\xC2\xB0" "C", _targetTemp);
         lv_label_set_text(_lblTarget, buf);
-        _notify_heater_temp();
+        _notify_heater();
     }
 }
 
@@ -150,9 +227,9 @@ static void temp_plus_cb(lv_event_t *e) {
     if (_targetTemp < 30) {
         _targetTemp++;
         lv_slider_set_value(_sldTarget, _targetTemp, LV_ANIM_ON);
-        char buf[8]; snprintf(buf, sizeof(buf), "%d\xC2\xB0C", _targetTemp);
+        char buf[8]; snprintf(buf, sizeof(buf), "%d\xC2\xB0" "C", _targetTemp);
         lv_label_set_text(_lblTarget, buf);
-        _notify_heater_temp();
+        _notify_heater();
     }
 }
 
@@ -252,7 +329,26 @@ static lv_obj_t *create_heater_panel(lv_obj_t *parent) {
     lv_obj_set_style_text_font(title, GUI_FONT_LG, 0);
     lv_obj_set_style_text_color(title, GUI_COLOR_ACCENT, 0);
 
-    // Power button + target temp row
+    // Mode toggle row:  [Power] [Thermostat]
+    lv_obj_t *modeRow = lv_obj_create(card);
+    lv_obj_set_size(modeRow, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(modeRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(modeRow, 0, 0);
+    lv_obj_set_style_pad_all(modeRow, 0, 0);
+    lv_obj_clear_flag(modeRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(modeRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_gap(modeRow, GUI_PAD_SM, 0);
+
+    _btnModePwr = make_toggle_btn(modeRow, LV_SYMBOL_CHARGE " Power", true, GUI_COLOR_ACCENT);
+    lv_obj_add_event_cb(_btnModePwr, mode_power_cb, LV_EVENT_CLICKED, nullptr);
+
+    _btnModeThm = make_toggle_btn(modeRow, LV_SYMBOL_HOME " Thermo", false, GUI_COLOR_ACCENT);
+    lv_obj_add_event_cb(_btnModeThm, mode_thermo_cb, LV_EVENT_CLICKED, nullptr);
+
+    _btnModeVent = make_toggle_btn(modeRow, LV_SYMBOL_REFRESH " Vent", false, GUI_COLOR_BLUE);
+    lv_obj_add_event_cb(_btnModeVent, mode_vent_cb, LV_EVENT_CLICKED, nullptr);
+
+    // Power button + status row
     lv_obj_t *topRow = lv_obj_create(card);
     lv_obj_set_size(topRow, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(topRow, LV_OPA_TRANSP, 0);
@@ -262,7 +358,7 @@ static lv_obj_t *create_heater_panel(lv_obj_t *parent) {
     lv_obj_set_flex_flow(topRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(topRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    // Power button (circular 80×80)
+    // Power button (circular 80x80)
     _btnPower = lv_btn_create(topRow);
     lv_obj_set_size(_btnPower, 80, 80);
     lv_obj_set_style_radius(_btnPower, 40, 0);
@@ -275,28 +371,97 @@ static lv_obj_t *create_heater_panel(lv_obj_t *parent) {
     lv_obj_center(pwrIcon);
     lv_obj_add_event_cb(_btnPower, power_cb, LV_EVENT_CLICKED, nullptr);
 
-    // Target temp display
-    lv_obj_t *tempCol = lv_obj_create(topRow);
-    lv_obj_set_size(tempCol, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(tempCol, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(tempCol, 0, 0);
-    lv_obj_set_style_pad_all(tempCol, 0, 0);
-    lv_obj_clear_flag(tempCol, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(tempCol, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(tempCol, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    // Actual temperature label (read-only, updated via data push)
+    _lblActual = lv_label_create(topRow);
+    lv_label_set_text(_lblActual, "Actual: --\xC2\xB0""C");
+    lv_obj_set_style_text_font(_lblActual, GUI_FONT_LG, 0);
+    lv_obj_set_style_text_color(_lblActual, GUI_COLOR_TEXT_SEC, 0);
 
-    lv_obj_t *tgtLbl = lv_label_create(tempCol);
+    // ── Power Mode sub-panel ──
+    _pnlPowerMode = lv_obj_create(card);
+    lv_obj_set_size(_pnlPowerMode, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(_pnlPowerMode, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(_pnlPowerMode, 0, 0);
+    lv_obj_set_style_pad_all(_pnlPowerMode, 0, 0);
+    lv_obj_clear_flag(_pnlPowerMode, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(_pnlPowerMode, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(_pnlPowerMode, GUI_PAD_SM, 0);
+
+    // Power level label
+    lv_obj_t *pwrLbl = lv_label_create(_pnlPowerMode);
+    lv_label_set_text(pwrLbl, "Power Level");
+    lv_obj_set_style_text_font(pwrLbl, GUI_FONT_SM, 0);
+    lv_obj_set_style_text_color(pwrLbl, GUI_COLOR_TEXT_SEC, 0);
+
+    _lblPower = lv_label_create(_pnlPowerMode);
+    lv_label_set_text(_lblPower, "5");
+    lv_obj_set_style_text_font(_lblPower, GUI_FONT_XXL, 0);
+    lv_obj_set_style_text_color(_lblPower, GUI_COLOR_TEXT_PRI, 0);
+
+    // Power control row: [-] slider [+]
+    lv_obj_t *pwrCtrl = lv_obj_create(_pnlPowerMode);
+    lv_obj_set_size(pwrCtrl, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(pwrCtrl, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(pwrCtrl, 0, 0);
+    lv_obj_set_style_pad_all(pwrCtrl, 0, 0);
+    lv_obj_clear_flag(pwrCtrl, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(pwrCtrl, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(pwrCtrl, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(pwrCtrl, GUI_PAD_SM, 0);
+
+    lv_obj_t *pMinus = lv_btn_create(pwrCtrl);
+    lv_obj_set_size(pMinus, 56, 56);
+    lv_obj_set_style_radius(pMinus, 12, 0);
+    lv_obj_set_style_bg_color(pMinus, GUI_COLOR_CARD_HOVER, 0);
+    lv_obj_t *pMinLbl = lv_label_create(pMinus);
+    lv_label_set_text(pMinLbl, LV_SYMBOL_MINUS);
+    lv_obj_set_style_text_font(pMinLbl, GUI_FONT_LG, 0);
+    lv_obj_center(pMinLbl);
+    lv_obj_add_event_cb(pMinus, power_minus_cb, LV_EVENT_CLICKED, nullptr);
+
+    _sldPower = lv_slider_create(pwrCtrl);
+    lv_slider_set_range(_sldPower, 0, 9);
+    lv_slider_set_value(_sldPower, 5, LV_ANIM_OFF);
+    lv_obj_set_flex_grow(_sldPower, 1);
+    lv_obj_set_style_bg_color(_sldPower, GUI_COLOR_CARD_HOVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(_sldPower, GUI_COLOR_ACCENT, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(_sldPower, GUI_COLOR_ACCENT, LV_PART_KNOB);
+    lv_obj_add_event_cb(_sldPower, power_slider_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    lv_obj_t *pPlus = lv_btn_create(pwrCtrl);
+    lv_obj_set_size(pPlus, 56, 56);
+    lv_obj_set_style_radius(pPlus, 12, 0);
+    lv_obj_set_style_bg_color(pPlus, GUI_COLOR_CARD_HOVER, 0);
+    lv_obj_t *pPlusLbl = lv_label_create(pPlus);
+    lv_label_set_text(pPlusLbl, LV_SYMBOL_PLUS);
+    lv_obj_set_style_text_font(pPlusLbl, GUI_FONT_LG, 0);
+    lv_obj_center(pPlusLbl);
+    lv_obj_add_event_cb(pPlus, power_plus_cb, LV_EVENT_CLICKED, nullptr);
+
+    // ── Thermostat Mode sub-panel ──
+    _pnlThermoMode = lv_obj_create(card);
+    lv_obj_set_size(_pnlThermoMode, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(_pnlThermoMode, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(_pnlThermoMode, 0, 0);
+    lv_obj_set_style_pad_all(_pnlThermoMode, 0, 0);
+    lv_obj_clear_flag(_pnlThermoMode, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(_pnlThermoMode, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(_pnlThermoMode, GUI_PAD_SM, 0);
+    lv_obj_add_flag(_pnlThermoMode, LV_OBJ_FLAG_HIDDEN); // starts hidden
+
+    // Target temp label
+    lv_obj_t *tgtLbl = lv_label_create(_pnlThermoMode);
     lv_label_set_text(tgtLbl, "Target Temp");
     lv_obj_set_style_text_font(tgtLbl, GUI_FONT_SM, 0);
     lv_obj_set_style_text_color(tgtLbl, GUI_COLOR_TEXT_SEC, 0);
 
-    _lblTarget = lv_label_create(tempCol);
-    lv_label_set_text(_lblTarget, "21°C");
+    _lblTarget = lv_label_create(_pnlThermoMode);
+    lv_label_set_text(_lblTarget, "21\xC2\xB0""C");
     lv_obj_set_style_text_font(_lblTarget, GUI_FONT_XXL, 0);
     lv_obj_set_style_text_color(_lblTarget, GUI_COLOR_TEXT_PRI, 0);
 
-    // Temp control row:  [-]  slider  [+]
-    lv_obj_t *ctrlRow = lv_obj_create(card);
+    // Temp control row: [-] slider [+]
+    lv_obj_t *ctrlRow = lv_obj_create(_pnlThermoMode);
     lv_obj_set_size(ctrlRow, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(ctrlRow, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(ctrlRow, 0, 0);
@@ -306,7 +471,6 @@ static lv_obj_t *create_heater_panel(lv_obj_t *parent) {
     lv_obj_set_flex_align(ctrlRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_gap(ctrlRow, GUI_PAD_SM, 0);
 
-    // Minus button
     lv_obj_t *btnMinus = lv_btn_create(ctrlRow);
     lv_obj_set_size(btnMinus, 56, 56);
     lv_obj_set_style_radius(btnMinus, 12, 0);
@@ -317,7 +481,6 @@ static lv_obj_t *create_heater_panel(lv_obj_t *parent) {
     lv_obj_center(minLbl);
     lv_obj_add_event_cb(btnMinus, temp_minus_cb, LV_EVENT_CLICKED, nullptr);
 
-    // Slider
     _sldTarget = lv_slider_create(ctrlRow);
     lv_slider_set_range(_sldTarget, 10, 30);
     lv_slider_set_value(_sldTarget, 21, LV_ANIM_OFF);
@@ -327,7 +490,6 @@ static lv_obj_t *create_heater_panel(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(_sldTarget, GUI_COLOR_ACCENT, LV_PART_KNOB);
     lv_obj_add_event_cb(_sldTarget, temp_slider_cb, LV_EVENT_VALUE_CHANGED, nullptr);
 
-    // Plus button
     lv_obj_t *btnPlus = lv_btn_create(ctrlRow);
     lv_obj_set_size(btnPlus, 56, 56);
     lv_obj_set_style_radius(btnPlus, 12, 0);
@@ -337,26 +499,6 @@ static lv_obj_t *create_heater_panel(lv_obj_t *parent) {
     lv_obj_set_style_text_font(plusLbl, GUI_FONT_LG, 0);
     lv_obj_center(plusLbl);
     lv_obj_add_event_cb(btnPlus, temp_plus_cb, LV_EVENT_CLICKED, nullptr);
-
-    // Actual temperature label (read-only, updated via data push)
-    _lblActual = lv_label_create(card);
-    lv_label_set_text(_lblActual, "Actual: --°C");
-    lv_obj_set_style_text_font(_lblActual, GUI_FONT_MD, 0);
-    lv_obj_set_style_text_color(_lblActual, GUI_COLOR_TEXT_SEC, 0);
-
-    // Full Power Override toggle
-    _btnOverride = lv_btn_create(card);
-    lv_obj_set_width(_btnOverride, LV_PCT(100));
-    lv_obj_set_height(_btnOverride, GUI_TOUCH_MIN);
-    lv_obj_set_style_radius(_btnOverride, GUI_RADIUS, 0);
-    lv_obj_set_style_bg_color(_btnOverride, GUI_COLOR_CARD_HOVER, 0);
-    lv_obj_set_style_border_color(_btnOverride, GUI_COLOR_RED, 0);
-    lv_obj_set_style_border_width(_btnOverride, 2, 0);
-    lv_obj_t *ovrLbl = lv_label_create(_btnOverride);
-    lv_label_set_text(ovrLbl, LV_SYMBOL_CHARGE " Full Power Override");
-    lv_obj_set_style_text_font(ovrLbl, GUI_FONT_MD, 0);
-    lv_obj_center(ovrLbl);
-    lv_obj_add_event_cb(_btnOverride, override_cb, LV_EVENT_CLICKED, nullptr);
 
     return card;
 }
@@ -524,21 +666,25 @@ lv_obj_t *gui_tab_climate_create(lv_obj_t *parent) {
 
 void gui_tab_climate_set_heater(int state, float target, float actual) {
     _heaterOn = (state > 0);
-    _targetTemp = (int)target;
+
+    // Only update target if a valid value is provided (>= 0)
+    if (target >= 0) {
+        _targetTemp = (int)target;
+        if (_lblTarget) {
+            char buf[8]; snprintf(buf, sizeof(buf), "%d\xC2\xB0""C", _targetTemp);
+            lv_label_set_text(_lblTarget, buf);
+        }
+        if (_sldTarget) {
+            lv_slider_set_value(_sldTarget, _targetTemp, LV_ANIM_ON);
+        }
+    }
 
     if (_btnPower) {
         lv_obj_set_style_border_color(_btnPower,
             _heaterOn ? GUI_COLOR_RED : GUI_COLOR_TEXT_MUTED, 0);
     }
-    if (_lblTarget) {
-        char buf[8]; snprintf(buf, sizeof(buf), "%d°C", _targetTemp);
-        lv_label_set_text(_lblTarget, buf);
-    }
-    if (_sldTarget) {
-        lv_slider_set_value(_sldTarget, _targetTemp, LV_ANIM_ON);
-    }
     if (_lblActual) {
-        char buf[16]; snprintf(buf, sizeof(buf), "Actual: %.1f°C", actual);
+        char buf[16]; snprintf(buf, sizeof(buf), "Actual: %.1f\xC2\xB0""C", actual);
         lv_label_set_text(_lblActual, buf);
     }
 }
@@ -569,6 +715,8 @@ void gui_tab_climate_set_fan(int speed, bool dirIn, bool lidOpen) {
 void gui_tab_climate_get_state(ClimatePreset *out) {
     if (!out) return;
     out->heaterOn    = _heaterOn;
+    out->heaterMode  = (uint8_t)_heaterMode;
+    out->powerLevel  = (uint8_t)_powerLevel;
     out->targetTempC = (uint8_t)_targetTemp;
     out->fanPower    = _sldSpeed ? (lv_slider_get_value(_sldSpeed) > 0) : false;
     out->fanSpeed    = _sldSpeed ? (uint8_t)lv_slider_get_value(_sldSpeed) : 0;

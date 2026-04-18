@@ -41,7 +41,9 @@ struct LightPreset {
 struct ClimatePreset {
     char    name[PRESET_NAME_LEN];
     bool    heaterOn;
-    uint8_t targetTempC;     ///< 10-30
+    uint8_t heaterMode;      ///< 0=power, 1=thermostat (HeaterMode)
+    uint8_t powerLevel;      ///< 0-9 (power mode)
+    uint8_t targetTempC;     ///< 10-30 (thermostat mode)
     bool    fanPower;
     uint8_t fanSpeed;        ///< 0-100
     bool    fanDirIn;

@@ -88,11 +88,11 @@ static void apply_climate_preset(uint8_t idx) {
 
     // Notify external callbacks (MQTT etc.)
     if (_cb_heater) {
+        HeaterMode mode = (HeaterMode)p->heaterMode;
         if (p->heaterOn) {
-            uint8_t pwrLevel = (uint8_t)map(p->targetTempC, 10, 30, 1, 10);
-            _cb_heater(true, pwrLevel, p->targetTempC);
+            _cb_heater(true, mode, p->powerLevel, p->targetTempC);
         } else {
-            _cb_heater(false, 0, 0);
+            _cb_heater(false, mode, 0, 0);
         }
     }
     if (_cb_fan) {

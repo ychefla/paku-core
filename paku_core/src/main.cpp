@@ -655,21 +655,33 @@ static void on_gui_fan_changed(bool power, uint8_t speed, bool dirIn, bool lidOp
 #endif // HAS_FAN_IR
 }
 
-static void on_gui_heater_changed(bool on, uint8_t powerLevel, uint8_t targetTempC) {
+static void on_gui_heater_changed(bool on, HeaterMode mode, uint8_t powerLevel, uint8_t targetTempC) {
 #ifdef HEATER_ENABLED
     if (!client.connected()) return;
     String topic = String("paku/heater/") + deviceId + "/cmd";
     JsonDocument doc;
-    if (on) {
-        doc["cmd"]   = "start";
-        doc["power"] = (powerLevel > 0) ? powerLevel : 5;
+    if (mode == HEATER_MODE_VENT) {
+        doc["cmd"]   = "vent";
+        doc["power"] = (powerLevel <= 9) ? powerLevel : 5;
+    } else if (on) {
+        doc["cmd"] = "start";
+        if (mode == HEATER_MODE_POWER) {
+            doc["mode"]  = "power";
+            doc["power"] = (powerLevel <= 9) ? powerLevel : 5;
+        } else {
+            doc["mode"]        = "thermostat";
+            doc["target_temp"] = targetTempC;
+        }
     } else {
         doc["cmd"] = "stop";
     }
     String payload;
     serializeJson(doc, payload);
     client.publish(topic.c_str(), payload.c_str());
-    LOG_INFO("GUI", "Heater %s pwr=%u temp=%u", on ? "ON" : "OFF", powerLevel, targetTempC);
+    LOG_INFO("GUI", "Heater %s mode=%s pwr=%u temp=%u",
+             on ? "ON" : "OFF",
+             mode == HEATER_MODE_POWER ? "power" : (mode == HEATER_MODE_VENT ? "vent" : "thermostat"),
+             powerLevel, targetTempC);
 #endif // HEATER_ENABLED
 }
 

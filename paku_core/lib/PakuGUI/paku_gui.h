@@ -160,13 +160,21 @@ void gui_on_light_changed(GuiLightCb cb);
 typedef void (*GuiFanCb)(bool power, uint8_t speed, bool dirIn, bool lidOpen);
 void gui_on_fan_changed(GuiFanCb cb);
 
+/** Heater operating mode. */
+enum HeaterMode : uint8_t {
+    HEATER_MODE_POWER      = 0,   ///< Direct power level control (0-9)
+    HEATER_MODE_THERMOSTAT = 1,   ///< Target temperature control
+    HEATER_MODE_VENT       = 2    ///< Ventilation only (fan without combustion)
+};
+
 /**
- * Heater power or target temperature changed.
+ * Heater power, mode, or target temperature changed.
  * @param on          Heater requested on.
- * @param powerLevel  1-10 (derived from targetTempC).
- * @param targetTempC Target temperature in °C.
+ * @param mode        Operating mode (power or thermostat).
+ * @param powerLevel  0-9 (used in power mode).
+ * @param targetTempC Target temperature in °C (used in thermostat mode).
  */
-typedef void (*GuiHeaterCb)(bool on, uint8_t powerLevel, uint8_t targetTempC);
+typedef void (*GuiHeaterCb)(bool on, HeaterMode mode, uint8_t powerLevel, uint8_t targetTempC);
 void gui_on_heater_changed(GuiHeaterCb cb);
 
 /**
