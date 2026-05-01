@@ -38,8 +38,8 @@
 #include <PubSubClient.h>
 
 /// @brief TCP probe timeout for local broker reachability check (ms).
-///        Keep short to avoid blocking when RPi is on a different network.
-static constexpr uint16_t LOCAL_PROBE_TIMEOUT_MS = 2000;
+///        Keep short to avoid blocking the GUI when RPi is on a different network.
+static constexpr uint16_t LOCAL_PROBE_TIMEOUT_MS = 500;
 
 /// @brief Consecutive connection failures before switching to fallback broker.
 static constexpr uint8_t  MAX_CONNECT_FAILURES = 3;
