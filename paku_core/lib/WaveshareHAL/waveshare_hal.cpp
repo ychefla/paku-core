@@ -11,6 +11,7 @@
  */
 #include "waveshare_hal.h"
 #include "ch422g.h"
+#include "esp_task_wdt.h"
 
 /* --- Device / pin configuration from the main firmware --- */
 #include "pin_config.h"
@@ -294,6 +295,10 @@ static void lv_disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color
     uint32_t flush_size  = h * WS_LCD_WIDTH * sizeof(uint16_t);
     Cache_WriteBack_Addr(flush_start, flush_size);
 
+    // Feed the task watchdog during heavy renders (first frame draws
+    // all 6 tabs and can exceed the 5 s TWDT timeout).
+    esp_task_wdt_reset();
+
     lv_disp_flush_ready(drv);
 }
 
@@ -356,10 +361,50 @@ bool waveshare_hal_init() {
 }
 
 void waveshare_hal_loop() {
+    esp_task_wdt_reset();   // feed WDT before heavy first-frame render
     lv_timer_handler();
 }
 
+/// LVGL overlay object used to simulate brightness dimming.
+/// A full-screen black rectangle on lv_layer_top() with variable opacity.
+static lv_obj_t *_dimOverlay = nullptr;
+
 void waveshare_hal_set_backlight(uint8_t percent) {
-    // Digital backlight only — ON or OFF
-    ioExpander.digitalWrite(CH422G_EXIO_LCD_BL, percent > 0 ? HIGH : LOW);
+    // Simulate brightness with a black overlay on lv_layer_top().
+    // 100% → fully transparent (no dimming), 0% → fully opaque black.
+    if (!_dimOverlay) {
+        _dimOverlay = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(_dimOverlay);
+        lv_obj_set_size(_dimOverlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_style_bg_color(_dimOverlay, lv_color_black(), 0);
+        lv_obj_clear_flag(_dimOverlay, LV_OBJ_FLAG_CLICKABLE);
+    }
+
+    if (percent == 0) {
+        // Full blackout — opaque overlay absorbs all touches + HW off
+        lv_obj_clear_flag(_dimOverlay, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_opa(_dimOverlay, LV_OPA_COVER, 0);
+        lv_obj_add_flag(_dimOverlay, LV_OBJ_FLAG_CLICKABLE);
+        // Retry I2C write — bus may be contended with GT911 touch reads
+        for (int i = 0; i < 3; i++) {
+            ioExpander.digitalWrite(CH422G_EXIO_LCD_BL, LOW);
+            delay(5);
+        }
+        return;
+    }
+
+    // Ensure backlight is on and overlay doesn't block touches
+    for (int i = 0; i < 2; i++) {
+        ioExpander.digitalWrite(CH422G_EXIO_LCD_BL, HIGH);
+        delay(2);
+    }
+    lv_obj_clear_flag(_dimOverlay, LV_OBJ_FLAG_CLICKABLE);
+
+    if (percent >= 100) {
+        lv_obj_add_flag(_dimOverlay, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(_dimOverlay, LV_OBJ_FLAG_HIDDEN);
+        lv_opa_t opa = (lv_opa_t)((100 - percent) * 255 / 100);
+        lv_obj_set_style_bg_opa(_dimOverlay, opa, 0);
+    }
 }
