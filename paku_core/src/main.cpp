@@ -791,6 +791,10 @@ void setup() {
     // Preset callbacks removed — home tab now applies presets directly
     // via the individual light/heater/fan callbacks registered above.
     Serial.println("Waveshare GUI initialized");
+
+    // Show busy overlay while the rest of setup runs
+    gui_show_busy("Starting up\xE2\x80\xA6");
+    gui_update();  // Force render so overlay is visible during setup
 #endif // HAS_RGB_LCD
 
     Serial.println("Setup Wifi Connection...");
@@ -989,6 +993,10 @@ void setup() {
 
     Serial.println("Setup complete.");
 
+#if HAS_RGB_LCD
+    gui_hide_busy();
+#endif
+
   }
 
 /**
@@ -1075,6 +1083,19 @@ void loop() {
           // Map tag index to GUI series (0-3 for temp, 0-2 for humidity)
           gui_push_temperature(i, tag->lastData.temperature);
           if (i < 3) gui_push_humidity(i, tag->lastData.humidity);
+          // Push key readings to the header bar
+          // Series 0 = Indoor, 1 = Outdoor  (matches sensor graph convention)
+          if (i == 0) gui_set_header_indoor(tag->lastData.temperature, tag->lastData.humidity);
+          if (i == 1) gui_set_header_outdoor(tag->lastData.temperature, tag->lastData.humidity);
+        }
+      }
+
+      // Push fridge temperature to header
+      {
+        const FrezzerDevice* fDevices[MAX_FREZZER_DEVICES];
+        uint8_t fCount = getFreshFrezzerDevices(fDevices, MAX_FREZZER_DEVICES, millis());
+        if (fCount > 0 && fDevices[0]->hasData && fDevices[0]->lastData.valid) {
+          gui_set_header_fridge(fDevices[0]->lastData.currentTemp);
         }
       }
 #endif
@@ -1084,11 +1105,13 @@ void loop() {
         JsonDocument hDoc;
         heater_addon_telemetry(hDoc);
         const char* stateStr = hDoc["heater"]["state"] | "unknown";
-        int hState = 0;
-        if (strcmp(stateStr, "starting") == 0 || strcmp(stateStr, "warming") == 0)
+        int hState = 0;  // 0=OFF, 1=STARTING, 2=ON, 3=STOPPING
+        if (strcmp(stateStr, "Starting") == 0 || strcmp(stateStr, "Warming") == 0)
           hState = 1;
-        else if (strcmp(stateStr, "running") == 0)
+        else if (strcmp(stateStr, "Running") == 0)
           hState = 2;
+        else if (strcmp(stateStr, "Shutting Down") == 0 || strcmp(stateStr, "Cooling") == 0)
+          hState = 3;
         float coolant = hDoc["heater"]["coolantTemp"] | 0.0f;
         // Pass -1 as target to avoid overwriting the GUI's own target slider
         gui_set_heater_data(hState, -1, coolant);
@@ -1680,6 +1703,15 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
       String lightAllTopic = String("paku/edge/") + deviceId + "/cmd/light/all";
       mqttClient.subscribe(lightAllTopic.c_str());
       Serial.printf("  Subscribed to %s\n", lightAllTopic.c_str());
+    }
+#endif
+
+#if HAS_RGB_LCD
+    // Subscribe to EcoFlow power data for the Power tab
+    {
+      const char* ecoflowTopic = "paku/ecoflow/+/power";
+      mqttClient.subscribe(ecoflowTopic);
+      Serial.printf("  Subscribed to %s\n", ecoflowTopic);
     }
 #endif
 
@@ -3116,6 +3148,9 @@ void handleSystemState() {
           connectPhase = PHASE_SCAN_WAIT;
           phaseStartMs = now;
           Serial.println("Async WiFi scan started...");
+#if HAS_RGB_LCD
+          gui_show_busy("Scanning WiFi\xE2\x80\xA6");
+#endif
           break;
         }
 
@@ -3179,6 +3214,9 @@ void handleSystemState() {
 
           connectPhase = PHASE_WIFI_WAIT;
           phaseStartMs = now;
+#if HAS_RGB_LCD
+          gui_show_busy("Connecting WiFi\xE2\x80\xA6");
+#endif
           break;
         }
 
@@ -3208,6 +3246,10 @@ void handleSystemState() {
         case PHASE_MQTT_TRY: {
           // Single-attempt MQTT connect via failover manager
           // (probes local broker, falls back to cloud automatically)
+#if HAS_RGB_LCD
+          gui_show_busy("Connecting MQTT\xE2\x80\xA6");
+          gui_update();  // Render before potentially blocking connect
+#endif
           if (mqttMgr.tryConnectOnce()) {
             Serial.printf("MQTT connected to %s broker\n", mqttMgr.activeBrokerName());
 #if HAS_LED
@@ -3254,6 +3296,9 @@ void handleSystemState() {
             currentSystemState = SYS_STATE_TRANSMIT;
             stateEnteredAt = now;
             Serial.println("STATE: CONNECT_NETWORK -> TRANSMIT");
+#if HAS_RGB_LCD
+            gui_hide_busy();
+#endif
           }
           break;
         }
@@ -3303,6 +3348,9 @@ void handleSystemState() {
     }
       
     case SYS_STATE_DISCONNECT: {
+#if HAS_RGB_LCD
+      gui_hide_busy();
+#endif
       // Disconnect and turn off WiFi
       disconnectNetwork();
       
@@ -4188,9 +4236,9 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (strcmp(cmd, "start") == 0) {
           const char* mode = cmdDoc["mode"] | "power";
           float target = cmdDoc["target_temp"] | 21;
-          gui_set_heater_data(1, target, 0);
+          gui_set_heater_data(1, target, 0);  // 1=STARTING
         } else if (strcmp(cmd, "stop") == 0) {
-          gui_set_heater_data(0, 0, 0);
+          gui_set_heater_data(3, -1, 0);  // 3=STOPPING
         }
       }
     }
@@ -4261,7 +4309,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 #if HAS_RGB_LCD
     // Sync Waveshare GUI to match the new fan state
-    gui_set_fan_data(state.speed, !state.exhaust, state.lid_open);
+    // Pass speed=0 when fan is off so GUI _fanPower stays false
+    gui_set_fan_data(state.fan_on ? state.speed : 0, !state.exhaust, state.lid_open);
 #endif
     
     // Publish updated state
@@ -4471,6 +4520,25 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 #endif // HAS_MILIGHT
+
+#if HAS_RGB_LCD
+  // Handle EcoFlow power data — topic: paku/ecoflow/+/power
+  if (String(topic).startsWith("paku/ecoflow/") && String(topic).endsWith("/power")) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, message)) {
+      float solarW   = doc["solar_w"]  | 0.0f;
+      float acInW    = doc["ac_in_w"]  | 0.0f;
+      float acOutW   = doc["ac_out_w"] | 0.0f;
+      float dcOutW   = doc["dc_out_w"] | 0.0f;
+      int   soc      = doc["soc"]      | 0;
+      gui_set_power_data(solarW, acInW, acOutW, dcOutW);
+      gui_set_header_battery(soc);
+      LOG_INFO("ECOFLOW", "Power: solar=%.0fW acIn=%.0fW acOut=%.0fW dc=%.0fW soc=%d%%",
+               solarW, acInW, acOutW, dcOutW, soc);
+    }
+    return;
+  }
+#endif
 
   // Check if this is an OTA command
   String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
