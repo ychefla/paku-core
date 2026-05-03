@@ -10,3 +10,6 @@ lv_obj_t *gui_tab_settings_create(lv_obj_t *parent);
 
 /** Update firmware version string. */
 void gui_tab_settings_set_version(const char *ver);
+
+/** Call from the main loop to check sleep timer inactivity. */
+void gui_tab_settings_tick();

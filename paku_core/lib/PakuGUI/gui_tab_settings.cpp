@@ -18,6 +18,19 @@ static lv_obj_t *_ddSleep    = nullptr;
 static lv_obj_t *_lblVersion = nullptr;
 
 // ---------------------------------------------------------------------------
+//  Sleep timer state
+// ---------------------------------------------------------------------------
+
+/// Timeout durations matching dropdown indices (0=Never … 4=10 min).
+static const uint32_t _sleepMs[] = { 0, 30000, 60000, 300000, 600000 };
+static uint32_t _sleepTimeoutMs  = 0;   ///< 0 = disabled
+static bool     _sleeping        = false;
+static uint8_t  _savedBrightness = 100; ///< brightness before sleep
+
+/// Full-screen touch-absorber overlay used to swallow the wake-up touch.
+static lv_obj_t *_touchGuard = nullptr;
+
+// ---------------------------------------------------------------------------
 //  Helpers
 // ---------------------------------------------------------------------------
 
@@ -58,6 +71,18 @@ static void bright_cb(lv_event_t *e) {
 
 static void restart_cb(lv_event_t *e) {
     if (_cb_restart) _cb_restart();
+}
+
+static void sleep_cb(lv_event_t *e) {
+    uint16_t idx = lv_dropdown_get_selected(_ddSleep);
+    _sleepTimeoutMs = (idx < sizeof(_sleepMs)/sizeof(_sleepMs[0])) ? _sleepMs[idx] : 0;
+    Serial.printf("[SLEEP] dropdown changed: idx=%u  timeout=%lu ms\n",
+                  idx, (unsigned long)_sleepTimeoutMs);
+    // If user changed setting while sleeping, wake up immediately
+    if (_sleeping) {
+        _sleeping = false;
+        if (_cb_backlight) _cb_backlight(_savedBrightness);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +146,7 @@ lv_obj_t *gui_tab_settings_create(lv_obj_t *parent) {
         lv_obj_set_width(_ddSleep, 140);
         lv_obj_set_style_bg_color(_ddSleep, GUI_COLOR_CARD_HOVER, 0);
         lv_obj_set_style_text_font(_ddSleep, GUI_FONT_SM, 0);
+        lv_obj_add_event_cb(_ddSleep, sleep_cb, LV_EVENT_VALUE_CHANGED, nullptr);
     }
 
     // --- Firmware Version ---
@@ -155,5 +181,60 @@ lv_obj_t *gui_tab_settings_create(lv_obj_t *parent) {
 void gui_tab_settings_set_version(const char *ver) {
     if (_lblVersion && ver) {
         lv_label_set_text(_lblVersion, ver);
+    }
+}
+
+/**
+ * @brief Remove the touch-guard overlay (called on CLICKED or after timeout).
+ *
+ * Once the wake-up touch is released the guard is deleted so normal
+ * interaction resumes.
+ */
+static void _touch_guard_cb(lv_event_t *e) {
+    (void)e;
+    if (_touchGuard) {
+        lv_obj_del(_touchGuard);
+        _touchGuard = nullptr;
+    }
+}
+
+void gui_tab_settings_tick() {
+    // Visual debug: show sleep state on version label
+    static uint32_t lastDbg = 0;
+    if (_lblVersion && millis() - lastDbg > 1000) {
+        lastDbg = millis();
+        uint32_t idle = lv_disp_get_inactive_time(NULL);
+        static char buf[64];
+        snprintf(buf, sizeof(buf), "T=%lu I=%lu S=%d",
+                 (unsigned long)_sleepTimeoutMs/1000,
+                 (unsigned long)idle/1000, _sleeping);
+        lv_label_set_text(_lblVersion, buf);
+    }
+
+    if (_sleepTimeoutMs == 0) return;   // sleep disabled
+
+    uint32_t idle = lv_disp_get_inactive_time(NULL);
+
+    if (!_sleeping && idle >= _sleepTimeoutMs) {
+        // Enter sleep — save current brightness and turn off backlight
+        _savedBrightness = _sldBright ? (uint8_t)lv_slider_get_value(_sldBright) : 100;
+        _sleeping = true;
+        if (_cb_backlight) _cb_backlight(0);
+    } else if (_sleeping && idle < _sleepTimeoutMs) {
+        // Touch detected while sleeping — restore backlight
+        _sleeping = false;
+        if (_cb_backlight) _cb_backlight(_savedBrightness);
+
+        // Place an invisible touch-absorbing overlay on lv_layer_top()
+        // so the wake-up touch doesn't reach any widget underneath.
+        if (!_touchGuard) {
+            _touchGuard = lv_obj_create(lv_layer_top());
+            lv_obj_remove_style_all(_touchGuard);
+            lv_obj_set_size(_touchGuard, LV_PCT(100), LV_PCT(100));
+            lv_obj_set_style_bg_opa(_touchGuard, LV_OPA_TRANSP, 0);
+            lv_obj_add_flag(_touchGuard, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(_touchGuard, _touch_guard_cb,
+                                LV_EVENT_CLICKED, nullptr);
+        }
     }
 }
