@@ -21,6 +21,7 @@
 #include "paku_gui.h"
 #include "gui_theme.h"
 #include "waveshare_hal.h"
+#include <cstring>
 
 // Tab create & update headers
 #include "gui_header.h"
@@ -50,21 +51,25 @@ static GuiTab _activeTab = GUI_TAB_MAIN;
 // ---------------------------------------------------------------------------
 
 /// LVGL symbols for each tab.
-/// NOTE: LVGL 8.3 built-in symbol set is limited. Using best-fit substitutes.
-/// A custom icon font can replace these later (see gui_theme.h).
 static const char *_tabIcons[GUI_TAB_COUNT] = {
-    LV_SYMBOL_HOME,      // Main / Presets
-    LV_SYMBOL_CHARGE,    // Climate  (thermometer substitute)
-    LV_SYMBOL_IMAGE,     // Lights   (lightbulb substitute)
-    LV_SYMBOL_EYE_OPEN,  // Sensors  (chart substitute)
-    LV_SYMBOL_POWER,     // Power
-    LV_SYMBOL_SETTINGS,  // Settings
+    LV_SYMBOL_HOME,                            // Main / Presets
+    PAKU_SYMBOL_FIRE " " PAKU_SYMBOL_SNOWFLAKE, // Climate (fire + snowflake)
+    PAKU_SYMBOL_LIGHTBULB,                     // Lights  (lightbulb)
+    PAKU_SYMBOL_THERMO,                        // Sensors (thermometer)
+    LV_SYMBOL_CHARGE,                          // Power   (lightning bolt)
+    LV_SYMBOL_SETTINGS,                        // Settings
 };
 
 /// Short labels under icons (optional — hidden on small sidebar)
 static const char *_tabLabels[GUI_TAB_COUNT] = {
     "Home", "Climate", "Lights", "Sensors", "Power", "Settings",
 };
+
+/// Mutable copy of Montserrat 28 with paku_icons_28 as fallback.
+/// Built-in LVGL fonts are const (in flash) — writing to their fallback
+/// pointer causes a hardware exception on ESP32.  This runtime copy lives
+/// in RAM and is safe to modify.
+static lv_font_t _fontXlWithIcons;
 
 // ---------------------------------------------------------------------------
 //  Forward declarations
@@ -124,7 +129,7 @@ static lv_obj_t *create_sidebar(lv_obj_t *parent) {
 
         lv_obj_t *icon = lv_label_create(btn);
         lv_label_set_text(icon, _tabIcons[i]);
-        lv_obj_set_style_text_font(icon, GUI_FONT_XL, 0);
+        lv_obj_set_style_text_font(icon, &_fontXlWithIcons, 0);
         lv_obj_set_style_text_color(icon, GUI_COLOR_TEXT_SEC, 0);
 
         lv_obj_t *lbl = lv_label_create(btn);
@@ -266,6 +271,11 @@ void gui_init() {
     // Initialise hardware (display, touch, LVGL drivers)
     waveshare_hal_init();
 
+    // Build a mutable font = Montserrat 28 with paku_icons_28 fallback.
+    // Cannot modify the built-in const font directly (flash memory).
+    memcpy(&_fontXlWithIcons, GUI_FONT_XL, sizeof(lv_font_t));
+    _fontXlWithIcons.fallback = GUI_FONT_ICONS;
+
     // Load presets from NVS before building UI
     gui_presets_init();
 
@@ -292,6 +302,7 @@ void gui_init() {
 
 void gui_update() {
     waveshare_hal_loop();
+    gui_tab_settings_tick();
 }
 
 // ============================================================================
@@ -312,6 +323,22 @@ void gui_set_ble_status(bool active) {
 
 void gui_set_time(const char *timeStr) {
     gui_header_set_time(timeStr);
+}
+
+void gui_set_header_outdoor(float tempC, float humidity) {
+    gui_header_set_outdoor(tempC, humidity);
+}
+
+void gui_set_header_indoor(float tempC, float humidity) {
+    gui_header_set_indoor(tempC, humidity);
+}
+
+void gui_set_header_fridge(float tempC) {
+    gui_header_set_fridge(tempC);
+}
+
+void gui_set_header_battery(int soc) {
+    gui_header_set_battery(soc);
 }
 
 void gui_set_heater_data(int state, float targetTemp, float actualTemp) {
@@ -343,4 +370,69 @@ void gui_set_light_zone(uint8_t zone, bool on, uint8_t brightness,
 
 void gui_set_firmware_version(const char *ver) {
     gui_tab_settings_set_version(ver);
+}
+
+// ============================================================================
+//  Busy overlay implementation
+// ============================================================================
+
+static lv_obj_t *_busyOverlay = nullptr;
+static lv_obj_t *_busyLabel   = nullptr;
+static lv_obj_t *_busySpinner = nullptr;
+
+void gui_show_busy(const char *msg) {
+    if (_busyOverlay) {
+        // Already visible — just update the message
+        if (_busyLabel) lv_label_set_text(_busyLabel, msg ? msg : "");
+        return;
+    }
+
+    // Full-screen overlay on lv_layer_top() so it covers everything
+    _busyOverlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(_busyOverlay, 800, 480);
+    lv_obj_set_pos(_busyOverlay, 0, 0);
+    lv_obj_set_style_bg_color(_busyOverlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(_busyOverlay, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(_busyOverlay, 0, 0);
+    lv_obj_set_style_radius(_busyOverlay, 0, 0);
+    lv_obj_add_flag(_busyOverlay, LV_OBJ_FLAG_CLICKABLE);   // absorb touch
+    lv_obj_clear_flag(_busyOverlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Centred card
+    lv_obj_t *card = lv_obj_create(_busyOverlay);
+    lv_obj_set_size(card, 320, 140);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(card, GUI_COLOR_CARD, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, GUI_RADIUS, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(card, GUI_PAD_MD, 0);
+
+    // Spinner (animated arc)
+    _busySpinner = lv_spinner_create(card, 1000, 60);
+    lv_obj_set_size(_busySpinner, 48, 48);
+    lv_obj_set_style_arc_width(_busySpinner, 6, 0);
+    lv_obj_set_style_arc_color(_busySpinner, GUI_COLOR_TEXT_MUTED, 0);
+    lv_obj_set_style_arc_width(_busySpinner, 6, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(_busySpinner, GUI_COLOR_ACCENT, LV_PART_INDICATOR);
+
+    // Message label
+    _busyLabel = lv_label_create(card);
+    lv_label_set_text(_busyLabel, msg ? msg : "");
+    lv_obj_set_style_text_font(_busyLabel, GUI_FONT_MD, 0);
+    lv_obj_set_style_text_color(_busyLabel, GUI_COLOR_TEXT_PRI, 0);
+    lv_obj_set_style_text_align(_busyLabel, LV_TEXT_ALIGN_CENTER, 0);
+}
+
+void gui_hide_busy() {
+    if (_busyOverlay) {
+        lv_obj_del(_busyOverlay);
+        _busyOverlay = nullptr;
+        _busyLabel   = nullptr;
+        _busySpinner = nullptr;
+    }
 }

@@ -59,6 +59,26 @@ void gui_set_ble_status(bool active);
  */
 void gui_set_time(const char *timeStr);
 
+/**
+ * @brief Update outdoor sensor reading in the header.
+ */
+void gui_set_header_outdoor(float tempC, float humidity);
+
+/**
+ * @brief Update indoor sensor reading in the header.
+ */
+void gui_set_header_indoor(float tempC, float humidity);
+
+/**
+ * @brief Update fridge temperature in the header.
+ */
+void gui_set_header_fridge(float tempC);
+
+/**
+ * @brief Update battery SoC in the header.
+ */
+void gui_set_header_battery(int soc);
+
 // ============================================================================
 //  Climate tab data
 // ============================================================================
@@ -203,3 +223,26 @@ void gui_on_light_preset(GuiLightPresetCb cb);
  */
 typedef void (*GuiClimatePresetCb)(uint8_t presetIdx);
 void gui_on_climate_preset(GuiClimatePresetCb cb);
+
+// ============================================================================
+//  Busy overlay — modal status message on top of the GUI
+// ============================================================================
+
+/**
+ * @brief Show a modal busy overlay with a status message and spinner.
+ *
+ * The overlay covers the entire screen, absorbs all touch input,
+ * and displays a centred message with a spinning arc.
+ * Call gui_update() or lv_refr_now(NULL) after this to render immediately
+ * before any blocking operation.
+ *
+ * Calling gui_show_busy() again while already visible updates the message.
+ *
+ * @param msg  Short status text, e.g. "Connecting WiFi…"
+ */
+void gui_show_busy(const char *msg);
+
+/**
+ * @brief Hide the busy overlay (if visible).
+ */
+void gui_hide_busy();

@@ -97,6 +97,18 @@
 #define GUI_FONT_DEFAULT       GUI_FONT_MD
 
 // ============================================================================
+//  Custom icon font  (extra FontAwesome 4 glyphs via paku_icons_28.c)
+// ============================================================================
+LV_FONT_DECLARE(paku_icons_28);
+#define GUI_FONT_ICONS         &paku_icons_28
+
+// Custom FA4 symbols not in the built-in LVGL set
+#define PAKU_SYMBOL_LIGHTBULB  "\xEF\x83\xAB"   /* 0xF0EB  fa-lightbulb-o  */
+#define PAKU_SYMBOL_FIRE       "\xEF\x81\xAD"   /* 0xF06D  fa-fire         */
+#define PAKU_SYMBOL_SNOWFLAKE  "\xEF\x8B\x9C"   /* 0xF2DC  fa-snowflake-o  */
+#define PAKU_SYMBOL_THERMO     "\xEF\x8B\x89"   /* 0xF2C9  fa-thermometer-half */
+
+// ============================================================================
 //  Tab identifiers (maps to sidebar order)
 // ============================================================================
 enum GuiTab : uint8_t {

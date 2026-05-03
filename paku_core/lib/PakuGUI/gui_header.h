@@ -27,3 +27,15 @@ void gui_header_set_time(const char *timeStr);
 
 /** Update heater status badge in header */
 void gui_header_set_heater(int state);
+
+/** Update outdoor sensor reading (temperature + humidity) */
+void gui_header_set_outdoor(float tempC, float humidity);
+
+/** Update indoor sensor reading (temperature + humidity) */
+void gui_header_set_indoor(float tempC, float humidity);
+
+/** Update fridge temperature reading */
+void gui_header_set_fridge(float tempC);
+
+/** Update battery state of charge (0-100%) */
+void gui_header_set_battery(int soc);
