@@ -307,23 +307,23 @@ static lv_obj_t *create_master_panel(lv_obj_t *parent) {
 
     _btnAllOff = lv_btn_create(btnRow);
     lv_obj_set_flex_grow(_btnAllOff, 1);
-    lv_obj_set_height(_btnAllOff, 36);
+    lv_obj_set_height(_btnAllOff, 40);
     lv_obj_set_style_bg_color(_btnAllOff, GUI_COLOR_CARD_HOVER, 0);
     lv_obj_set_style_radius(_btnAllOff, GUI_RADIUS, 0);
     lv_obj_t *lbl2 = lv_label_create(_btnAllOff);
     lv_label_set_text(lbl2, "ALL OFF");
-    lv_obj_set_style_text_font(lbl2, GUI_FONT_SM, 0);
+    lv_obj_set_style_text_font(lbl2, GUI_FONT_LG, 0);
     lv_obj_center(lbl2);
     lv_obj_add_event_cb(_btnAllOff, all_off_cb, LV_EVENT_CLICKED, nullptr);
 
     _btnAllOn = lv_btn_create(btnRow);
     lv_obj_set_flex_grow(_btnAllOn, 1);
-    lv_obj_set_height(_btnAllOn, 36);
+    lv_obj_set_height(_btnAllOn, 40);
     lv_obj_set_style_bg_color(_btnAllOn, GUI_COLOR_ACCENT, 0);
     lv_obj_set_style_radius(_btnAllOn, GUI_RADIUS, 0);
     lv_obj_t *lbl1 = lv_label_create(_btnAllOn);
     lv_label_set_text(lbl1, "ALL ON");
-    lv_obj_set_style_text_font(lbl1, GUI_FONT_SM, 0);
+    lv_obj_set_style_text_font(lbl1, GUI_FONT_LG, 0);
     lv_obj_center(lbl1);
     lv_obj_add_event_cb(_btnAllOn, all_on_cb, LV_EVENT_CLICKED, nullptr);
 

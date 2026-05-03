@@ -10,6 +10,7 @@
  */
 #include "gui_tab_sensors.h"
 #include "gui_theme.h"
+#include <cmath>
 #include <cstdio>
 
 // ---------------------------------------------------------------------------
@@ -51,9 +52,9 @@ static const lv_color_t humColors[HUM_SERIES_COUNT] = {
     GUI_COLOR_HUM_REPPU,
 };
 
-// Most-recent values for legend display
-static float _lastTemp[TEMP_SERIES_COUNT] = {22.4f, 8.1f, 4.5f, 15.2f};
-static float _lastHum[HUM_SERIES_COUNT]   = {45.0f, 82.0f, 55.0f};
+// Most-recent values for legend display (NAN = no data yet)
+static float _lastTemp[TEMP_SERIES_COUNT] = {NAN, NAN, NAN, NAN};
+static float _lastHum[HUM_SERIES_COUNT]   = {NAN, NAN, NAN};
 
 // ---------------------------------------------------------------------------
 //  Helpers
@@ -72,7 +73,10 @@ static void update_temp_legend() {
     for (int i = 0; i < TEMP_SERIES_COUNT; i++) {
         if (_legendTemp[i]) {
             char buf[24];
-            snprintf(buf, sizeof(buf), "%s: %.1f°", tempNames[i], _lastTemp[i]);
+            if (std::isnan(_lastTemp[i]))
+                snprintf(buf, sizeof(buf), "%s: --", tempNames[i]);
+            else
+                snprintf(buf, sizeof(buf), "%s: %.1f°", tempNames[i], _lastTemp[i]);
             lv_label_set_text(_legendTemp[i], buf);
         }
     }
@@ -82,7 +86,10 @@ static void update_hum_legend() {
     for (int i = 0; i < HUM_SERIES_COUNT; i++) {
         if (_legendHum[i]) {
             char buf[24];
-            snprintf(buf, sizeof(buf), "%s: %.0f%%", humNames[i], _lastHum[i]);
+            if (std::isnan(_lastHum[i]))
+                snprintf(buf, sizeof(buf), "%s: --", humNames[i]);
+            else
+                snprintf(buf, sizeof(buf), "%s: %.0f%%", humNames[i], _lastHum[i]);
             lv_label_set_text(_legendHum[i], buf);
         }
     }
