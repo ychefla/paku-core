@@ -138,6 +138,44 @@ The light controller adds a new screen to the display UI:
 
 The MiLight protocol supports 4 channels (groups) per controller. This allows controlling up to 4 separate receivers or receiver groups from a single device.
 
+## Protocol Notes (CCT V2 / FUT091)
+
+These are non-obvious facts verified by RF sniffing — they affect both this firmware and any
+raw nRF24 port of the MiLight protocol.
+
+### Channel offset: +2 MHz
+
+`esp8266_milight_hub`'s `MiLightRadioConfig` stores `{4, 39, 74}` for CCT, but
+`PL1167_nRF24::recalc_parameters` writes `setChannel(2 + ch)`. The actual on-air channels
+are `{6, 41, 76}` (2.406 / 2.441 / 2.476 GHz). Using the config-table values with a raw
+nRF24 causes every syncword match to be missed. The same +2 offset applies to all protocol
+families (RGBW, FUT089, RGB, FUT020).
+
+### Bit order
+
+PL1167 sends bytes LSB-first; nRF24 sends/receives MSB-first. Every byte in the frame
+(length, payload, CRC trailer) must be bit-reversed when crossing between the two.
+
+### Frame lengths
+
+- **Remote → receiver**: 10 bytes (1 length + 9 V2 payload). No PL1167 CRC trailer.
+  A sniffer must use `payloadSize=10`; asking for 12 makes the nRF24 wait forever.
+- **Hub/firmware → receiver**: 12 bytes (same + 2-byte PL1167 CRC appended). Receivers
+  accept both, but including the CRC is preferred.
+
+### V2 command / argument map (FUT091/MIBO, empirically verified)
+
+| Command | Name    | Arg |
+|---------|---------|-----|
+| `0x11`  | GRP-ON  | group 1–4 |
+| `0x12`  | GRP-OFF | group 1–4 |
+| `0x1C`  | BRIGHT  | 0–100 absolute |
+| `0x19`  | TEMP    | 0–100 (0 = cool, 100 = warm) |
+
+BRIGHT and TEMP use absolute values, not step/relative commands.
+
+---
+
 ## Troubleshooting
 
 ### DRY_RUN Mode

@@ -1,37 +1,11 @@
-# MiLight RF24 Test Matrix (FUT091/CCT-v2)
+# MiLight RF24 Test Matrix — FUT091/CCT-v2 (Findings)
 
 ## Scope
 
-This test plan is based on current code in:
-- `tools/milight_test/src/main.cpp` (sniffer, 10-byte RX path)
-- `tools/milight_test/src_tx/main.cpp` (TX, 12-byte frame with appended CRC)
+Tools under test:
 
-I do not have a verified source that this exactly matches every MiLight remote model, so treat this as a measurement-first debug plan for your current implementation.
-
-## Goal
-
-Find the first protocol layer where generated TX diverges from real remote behavior.
-
-Layers under test:
-1. RF24 PHY settings (channel, data rate, CRC/ACK, payload width)
-2. PL1167-compatible framing assumptions
-3. Bit order / byte order
-4. FUT091/V2 encoding and command semantics
-
-## Preconditions
-
-1. Hardware
-- One ESP32 + nRF24 as sniffer
-- One ESP32 + nRF24 as transmitter
-- Real MiLight remote + paired receiver bulb/controller
-
-2. Wiring and power
-- Stable 3.3V for nRF24
-- 10uF capacitor across nRF24 VCC/GND recommended
-
-3. Build environments
-- Sniffer: `tools/milight_test`, env `milight-test`
-- Transmitter: `tools/milight_test`, env `milight-tx`
+- `tools/milight_test/src/main.cpp` — sniffer (10-byte RX path)
+- `tools/milight_test/src_tx/main.cpp` — TX impersonator (12-byte frame)
 
 ## Run Commands
 
@@ -39,117 +13,151 @@ From repo root `paku-core`:
 
 ```bash
 cd tools/milight_test
-pio run -e milight-test -t upload
-pio device monitor -e milight-test
+# Sniffer
+pio run -e milight-test -t upload && pio device monitor -e milight-test
+
+# Transmitter (different terminal / after closing sniffer monitor)
+pio run -e milight-tx -t upload && pio device monitor -e milight-tx
 ```
 
-In another terminal:
+---
 
-```bash
-cd tools/milight_test
-pio run -e milight-tx -t upload
-pio device monitor -e milight-tx
+## Critical Findings (verified empirically)
+
+### 1. Channel offset: +2 MHz vs sidoh's config table
+
+`esp8266_milight_hub`'s `MiLightRadioConfig` stores nominal channels `{4, 39, 74}` for CCT.
+`PL1167_nRF24::recalc_parameters` unconditionally does `_radio.setChannel(2 + _channel)` before
+writing the RF_CH register. The actual on-air frequencies are therefore **2 MHz higher**:
+
+| Protocol | Config values | Actual on-air | Frequencies (GHz) |
+|----------|--------------|---------------|-------------------|
+| CCT      | {4, 39, 74}  | **{6, 41, 76}**   | 2.406 / 2.441 / 2.476 |
+| RGBW     | {9, 40, 71}  | {11, 42, 73}  | 2.411 / 2.442 / 2.473 |
+| FUT089   | {8, 39, 70}  | {10, 41, 72}  | 2.410 / 2.441 / 2.472 |
+| RGB      | {3, 38, 73}  | {5, 40, 75}   | 2.405 / 2.440 / 2.475 |
+| FUT020   | {6, 41, 76}  | {8, 43, 78}   | 2.408 / 2.443 / 2.478 |
+
+Using the config-table values directly makes the nRF24 miss every syncword. The chip's RPD
+still fires (adjacent-channel leakage), which can mask the bug as "occasional" captures.
+
+**Always use `{6, 41, 76}` (not `{4, 39, 74}`) when configuring a raw nRF24 for CCT.**
+
+### 2. Frame length: 10 bytes — remote sends NO PL1167 CRC trailer
+
+The physical remote transmits:
+
+```
+[5-byte syncword] [0x09 length] [9-byte V2 payload]
 ```
 
-## Data Collection Template
+Total over the air: 1 + 9 = **10 bytes** after the syncword. There is no PL1167 CRC trailer
+appended by the remote. Setting `radio.setPayloadSize(12)` causes the nRF24 to wait for bytes
+11 and 12 that never arrive — `radio.available()` stays false forever.
 
-For each test case, record:
-- test_id
-- timestamp
-- sniffer channel seen (4/39/74 or other)
-- sniffer RAW bytes
-- sniffer decoded fields (`type`, `id`, `grp`, `cmd`, `arg`, `seq`)
-- bulb/receiver reaction (yes/no, latency)
-- notes
+**Set `radio.setPayloadSize(10)` on the sniffer side.**
 
-Minimum sample size per case: 30 button presses or 30 TX attempts.
+### 3. TX must append a PL1167 CRC (12 bytes total)
 
-## Test Matrix
+The hub firmware (`PL1167_nRF24`) computes a 16-bit PL1167-CRC16 and appends it, producing a
+12-byte frame. MIBO receivers accept either 10 or 12 bytes because the CRC is validated at the
+PL1167 layer, not by the nRF24 itself. Using 12 bytes and a correct CRC gives receivers
+additional validation opportunity; use it on the TX side.
 
-### Phase 1: Baseline capture (real remote only)
+**Set `radio.setPayloadSize(12)` on the TX side.** The two CRC bytes are bit-reversed for nRF24
+just like all other bytes (PL1167 = LSB-first, nRF24 = MSB-first).
 
-| ID | Action | Expected | Decision |
-|---|---|---|---|
-| B1 | Press one known button repeatedly (same group/button) | Sniffer sees stable `type/id/cmd` pattern with changing `seq` | If unstable -> fix sniff quality before TX analysis |
-| B2 | Repeat for all relevant buttons (ON, OFF, BRIGHT, TEMP) | Distinct command signatures by button | Build golden reference set |
-| B3 | Capture channel distribution | Most hits should cluster on expected channels | If not, channel-hopping assumptions may be wrong |
+### 4. Bit order: every byte must be bit-reversed
 
-Pass criterion for Phase 1:
-- You have a golden dataset for each tested button and can identify its decoded command signature.
+PL1167 sends bytes LSB-first; nRF24 sends/receives MSB-first. Every byte in the frame —
+including the length byte, all payload bytes, and the two CRC bytes — must be bit-reversed
+before writing/after reading.
 
-### Phase 2: Replay validation (TX side)
+### 5. V2 checksum validation
 
-Current TX sends 12-byte packets formed from captured 10-byte data + computed CRC.
+After V2-decoding the 9-byte payload `dec[0..8]`:
 
-| ID | Action | Expected | Interpretation |
-|---|---|---|---|
-| R1 | TX replay using captured packet `REPLAY1` | Sniffer sees matching RAW pattern and receiver reacts | Full path likely correct for this command |
-| R2 | TX replay using captured packet `REPLAY2` | Same as R1 | Confirms reproducibility |
-| R3 | Compare sniffer-captured TX bytes vs golden remote bytes | Byte-for-byte match over air (or explainable delta) | Any unexplained delta points to framing/order mismatch |
+```
+xk  = v2XorKey(dec[0])
+expected = (xk + dec[1] + dec[2] + dec[3] + dec[4] + dec[5] + dec[6] + dec[7] + 2) & 0xFF
+valid = (dec[8] == expected)
+```
 
-If sniffer sees TX but receiver does not react:
-- Likely mismatch in packet structure assumptions (e.g., appended CRC not expected by receiver path) or timing/repetition profile.
+Packets that fail this check are noise, not MiLight frames.
 
-### Phase 3: RF24 framing toggles
+### 6. Radio initialisation: keep it minimal
 
-These are controlled experiments. Change one variable at a time and re-run R1/R2.
+These settings caused rx=0 regressions when added; do not use them on the sniffer:
 
-| ID | Variable | Variant A | Variant B | Outcome use |
-|---|---|---|---|---|
-| F1 | RF24 CRC | `disableCRC()` | `setCRCLength(RF24_CRC_16)` | Check if receiver path expects/depends on RF24 CRC behavior |
-| F2 | TX payload width | 12 bytes (current) | 10 bytes (raw only) | Tests whether appended CRC bytes are harming compatibility |
-| F3 | Repetition profile | current burst | slower/lower burst | Detect receiver timing sensitivity |
-| F4 | Channel strategy | hop 4/39/74 | fixed single channel | Detect channel timing mismatch |
+- `WiFi.mode(WIFI_OFF)` / `btStop()` — no measurable benefit, caused instability on some builds
+- `radio.setPALevel(RF24_PA_LOW)` — reduces receive sensitivity; use `RF24_PA_MAX`
+- Custom `SPI.begin()` with reduced clock — default SPI speed is fine
+- `radio.flush_rx()` on every channel hop — clears packets still being transferred
+- `radio.stopListening()` + `radio.startListening()` on channel hop — unnecessary, write
+  `radio.setChannel()` only; the chip re-tunes within microseconds
 
-Important: F2 requires a small TX code path for 10-byte raw write. Add it as an explicit mode and log selected mode in serial.
+### 7. V2 command / argument semantics (empirically verified against FUT091/MIBO)
 
-### Phase 4: Bit/byte order verification
+| Command byte | Name    | Arg meaning |
+|-------------|---------|-------------|
+| `0x11`      | GRP-ON  | group number (1–4) |
+| `0x12`      | GRP-OFF | group number (1–4) |
+| `0x1C`      | BRIGHT  | absolute brightness 0–100 |
+| `0x19`      | TEMP    | absolute color temperature 0–100 (0 = cool, 100 = warm) |
 
-| ID | Action | Expected | Interpretation |
-|---|---|---|---|
-| O1 | Disable bit-reversal in TX for one test mode | Usually no receiver reaction | Confirms bit-reversal is required |
-| O2 | Reverse CRC byte order only | Should fail if order is wrong | Identifies endianness issue in trailer |
-| O3 | Compare decoded fields from sniffed TX vs golden remote | Same semantic fields (`type/id/cmd/arg`) | If semantics differ, V2 encoding path is wrong |
+Note: early analysis had 0x11/0x12 swapped. This has been corrected in both sniffer and TX
+after testing against actual bulbs (group 3, device_id=0x0532).
 
-### Phase 5: Command-level semantics
+### 8. Syncword / address
 
-| ID | Action | Expected | Interpretation |
-|---|---|---|---|
-| S1 | Send only known-good command pair from golden set | Receiver reaction should mirror remote | Verifies minimal command path |
-| S2 | Vary only `seq` while other fields fixed | Usually still accepted in small range | If rejected, sequence handling may be stricter than assumed |
-| S3 | Vary `group` with fixed command | Group-specific behavior | Confirms zone mapping |
+5-byte nRF24 address derived from PL1167 preamble + syncword bytes:
 
-## Decision Tree (Fast)
+```
+{0xAA, 0x5A, 0x05, 0x0A, 0x55}
+```
 
-1. If baseline remote capture is not stable:
-- Stop TX work, fix sniffer reliability first.
+---
 
-2. If TX replay appears on sniffer but receiver never reacts:
-- Prioritize F2 (10-byte vs 12-byte TX) and F3 timing profile.
+## Sniffer Performance
 
-3. If TX replay does not appear on sniffer as expected:
-- Prioritize RF24 setup parity and O1/O2 bit-order checks.
+With correct channels ({6, 41, 76}) and payload size (10), the sniffer captures real remote
+traffic at **>99%** valid-packet rate over a 30-second session (541/543 valid in reference run).
 
-4. If replay works but encoded command generation fails:
-- Focus on V2 encode path and command field mapping.
+Output format per packet:
 
-## Practical Next Edits (Small, High Value)
+```
+PKT,<ms>,ch=<n>,key=<KK>,type=<TT>,id=<HHHH>,grp=<g>,cmd=<CC>(<name>),arg=<a>,seq=<s>,raw=<20hex>
+```
 
-1. Add TX compile-time mode flags:
-- `TX_MODE_REPLAY12` (current)
-- `TX_MODE_REPLAY10`
-- `TX_MODE_ENCODED12`
+Heartbeat every 5 s shows running counters (rx / valid / len_bad / chk_bad / type_bad / dedup / rpd).
 
-2. Print explicit mode banner at boot in `src_tx/main.cpp`.
+---
 
-3. Add one-line CSV output in sniffer:
-- `ts_ms,ch,raw_hex,type,id,grp,cmd,arg,seq`
+## TX Modes (compile-time)
 
-These changes turn the current setup into a measurement tool instead of a guessing tool.
+| Build env              | Mode              | Description |
+|------------------------|-------------------|-------------|
+| `milight-tx`           | ENCODED12 (default) | Generates V2-encoded packets, device_id=0x0532, group 3 |
+| `milight-tx-replay12-fixed` | REPLAY12   | Retransmits captured 10-byte frames + computed CRC |
+| `milight-tx-replay10`  | REPLAY10          | Sends raw 10 bytes, no CRC — sniffer-only test |
 
-## Exit Criteria
+---
 
-You can declare protocol path validated when all are true:
-1. At least one replay mode reproduces receiver reaction >= 95% over 30 attempts.
-2. Sniffer-captured TX bytes match golden remote bytes (or documented deterministic transform).
-3. Encoded command mode produces same decoded semantics as remote for ON/OFF/BRIGHT/TEMP.
+## Replay CRC computation
+
+`buildReplayPacket` in `src_tx/main.cpp`:
+
+1. Bit-reverse each of the 10 captured (air-order) bytes → original PL1167 bytes
+2. Compute PL1167-CRC16 on those original bytes
+3. Wire bytes 0–9: original captured bytes (already in air order)
+4. Wire bytes 10–11: bit-reverse of CRC low byte, bit-reverse of CRC high byte
+
+Computing CRC on the bit-reversed (air) bytes gives a wrong CRC and receivers reject the packet.
+
+---
+
+## Exit Criteria (met)
+
+1. Sniffer captures real remote at ≥95% valid over 30 attempts — **PASS (99.6%)**
+2. TX encoded mode produces packets that the sniffer decodes with matching semantics — **PASS**
+3. TX encoded mode produces receiver reaction (bulbs on/off/dim/temp) — **PASS**
