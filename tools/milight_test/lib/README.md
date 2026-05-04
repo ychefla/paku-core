@@ -8,42 +8,20 @@ This library provides a lightweight interface for controlling MiLight/MIBO CCT (
 
 ## Supported Protocols
 
-- **FUT091 (CCT v2)** — The confirmed target protocol. Uses V2 RF encoding with a per-packet
-  key byte, V2 offset table, bit-reversal, and `sum+2` checksum. 9-byte payload wrapped in
-  a 10-byte NRF24 packet (1 length byte + 9 bytes).
-- **CCT v1** (FUT007/FUT011) — Older 7-byte protocol, present in code but not verified against
-  real hardware.
-
-> **Note:** The current `fut091_build_packet()` implementation is **incomplete** — it does not
-> apply V2 RF encoding (`v2Encode()`). Packets built by this function will not be accepted by
-> FUT091 receivers. V2 encoding must be added before TX works. See `tools/milight_test/` for
-> the verified sniffer/encoder reference implementation.
-
-## Confirmed Protocol Details (from RF sniffing)
-
-| Parameter | Value |
-|---|---|
-| RF channels | 4, 39, 74 (2.404 / 2.439 / 2.474 GHz) |
-| NRF24 address | `AA:5A:05:0A:55` |
-| Data rate | 1 Mbps |
-| CRC | None (PL1167 layer handles it) |
-| Payload size | 10 bytes (1 len + 9 data) |
-| Request type byte | `0x45` |
-| Checksum formula | `v2XorKey(p[0]) + sum(p[1..7]) + 2` |
-| Tested remote device_id | `0x0532` |
+- **CCT v1** (FUT007/FUT011) - Original CCT protocol with 7-byte packets
+- **FUT091** (CCT v2) - Newer CCT protocol with encoded packets
 
 ## Hardware Requirements
 
 - ESP32-S3 (LilyGo T-Display S3)
-- NRF24L01+ radio module with adapter board (e.g. piikauppa.fi NRF24L01 adapteri)
-  — adapter provides 3.3V regulation and decoupling, no external capacitor needed
+- NRF24L01+ radio module
 - Wiring:
   - SCK  → GPIO 11
   - MOSI → GPIO 13
   - MISO → GPIO 12
   - CE   → GPIO 1
   - CSN  → GPIO 2
-  - VCC  → 3.3V (via adapter board)
+  - VCC  → 3.3V (add 10µF capacitor across VCC/GND)
   - GND  → GND
 
 ## Dependencies

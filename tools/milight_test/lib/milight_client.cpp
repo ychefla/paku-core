@@ -61,11 +61,8 @@ static inline void ml_delay(unsigned long ms) {
 #define FUT091_PACKET_ID 0x21  // Protocol identifier for CCT v2
 
 // NRF24 Configuration
-// CCT syncword: 0x050A / 0x55AA, preamble=0xAA, trailer=0x05
-// Address bytes computed per esp8266_milight_hub MiLightRadioConfig (5-byte, bit-reversed)
 #define MILIGHT_RF_CHANNELS 3
-static const uint8_t MILIGHT_CHANNELS[MILIGHT_RF_CHANNELS] = {4, 39, 74};  // CCT: 2.404, 2.439, 2.474 GHz
-static const uint8_t MILIGHT_CCT_ADDRESS[5] = {0xAA, 0x5A, 0x05, 0x0A, 0x55};  // Derived from syncword 0x050A/0x55AA
+static const uint8_t MILIGHT_CHANNELS[MILIGHT_RF_CHANNELS] = {9, 40, 71};  // 2.409, 2.440, 2.471 GHz
 
 // Static variables
 static RF24* radio = nullptr;
@@ -123,8 +120,8 @@ bool milight_init(uint8_t ce_pin, uint8_t csn_pin, uint8_t sck_pin, uint8_t mosi
     radio->setAutoAck(false);
     radio->setDataRate(RF24_1MBPS);
     radio->setPALevel(RF24_PA_MAX);  // Maximum transmit power
-    radio->setAddressWidth(5);
-    radio->openWritingPipe(MILIGHT_CCT_ADDRESS);
+    radio->setPayloadSize(CCT_PACKET_SIZE);
+    radio->openWritingPipe(0x4C494748);  // "LIGH" in hex
     radio->stopListening();
     
     // Set initial channel
