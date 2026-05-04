@@ -51,6 +51,31 @@ struct DeviceConfig {
         bool light_sleep_during_wait;       // Use light sleep during short waits
         bool battery_monitor_enabled;       // Monitor and report battery level
     } power;
+
+    /**
+     * @brief Runtime peripheral manifest — which hardware is physically connected.
+     *
+     * Complements compile-time HAS_xxx macros: the code must be compiled in,
+     * but these flags let you activate only what is wired without a reflash.
+     * Defaults all true so existing boards behave unchanged until overridden
+     * via paku/edge/{device_id}/config/set.  Takes effect on next reboot.
+     */
+    struct {
+        bool ble_ruuvi;     // Ruuvi BLE tag scanning
+        bool ble_moko;      // MoKo BLE sensor scanning
+        bool ble_frezzer;   // Frezzer compressor fridge BLE control
+        bool wired_ds18b20; // DS18B20 1-Wire temperature sensors
+        bool heater;        // Hydronic heater (Autoterm UART)
+        bool fan_ir;        // MaxxFan IR control
+        bool milight;       // MiLight/MIBO NRF24L01+ lights
+    } peripherals;
+
+    /**
+     * @brief Home Assistant integration settings.
+     */
+    struct {
+        bool enabled;       // Connect to local HA MQTT broker (mDNS discovery)
+    } ha;
     
     /**
      * @brief Load default configuration
@@ -82,6 +107,18 @@ struct DeviceConfig {
         power.deep_sleep_enabled = false;  // Disabled by default for safety
         power.light_sleep_during_wait = true;
         power.battery_monitor_enabled = false;
+
+        // Peripheral defaults — all enabled so existing boards behave unchanged
+        peripherals.ble_ruuvi    = true;
+        peripherals.ble_moko     = true;
+        peripherals.ble_frezzer  = true;
+        peripherals.wired_ds18b20 = true;
+        peripherals.heater       = true;
+        peripherals.fan_ir       = true;
+        peripherals.milight      = true;
+
+        // HA integration default — use local broker when available
+        ha.enabled = true;
     }
     
     /**

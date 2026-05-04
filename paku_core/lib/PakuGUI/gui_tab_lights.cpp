@@ -24,10 +24,10 @@ struct ZoneWidgets {
     lv_obj_t *lblCTemp;
 };
 
-static const char *zoneNames[NUM_ZONES]  = {"Ceiling", "Counter", "Drawers", "Under Bed"};
-static const char *zoneIcons[NUM_ZONES]  = {LV_SYMBOL_HOME, LV_SYMBOL_LIST, LV_SYMBOL_IMAGE, LV_SYMBOL_EYE_CLOSE};
-static uint8_t     zoneBright[NUM_ZONES] = {80, 65, 40, 100};
-static uint16_t    zoneCTemp[NUM_ZONES]  = {4000, 3500, 2700, 5000};
+static const char *zoneNames[NUM_ZONES]  = {"Ceiling", "Counter", "Under Bed", "Drawers"};
+static const char *zoneIcons[NUM_ZONES]  = {LV_SYMBOL_HOME, LV_SYMBOL_LIST, LV_SYMBOL_EYE_CLOSE, LV_SYMBOL_IMAGE};
+static uint8_t     zoneBright[NUM_ZONES] = {80, 65, 100, 40};
+static uint16_t    zoneCTemp[NUM_ZONES]  = {4000, 3500, 5000, 2700};
 static bool        zoneOn[NUM_ZONES]     = {true, true, false, false};
 
 static ZoneWidgets zw[NUM_ZONES];

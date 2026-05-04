@@ -298,6 +298,44 @@ unsigned long sensorInterval;
 // Controlled via MQTT paku/control topic: {"heater": 1} on, {"heater": 0} off
 int heaterStatus = 1;
 
+// Tracks whether optional add-ons were actually initialised (depends on runtime peripheral config).
+// Set during setup(); checked in loop() and MQTT handlers to guard add-on calls.
+#ifdef HEATER_ENABLED
+bool heaterAddonActive = false;
+#endif
+#if HAS_FAN_IR
+bool fanIrActive = false;
+#endif
+#if HAS_MILIGHT
+bool milightActive = false;
+#endif
+
+// GUI board sensor-slot table: maps incoming sensor_id strings to GUI series indices.
+// First sensor seen → series 0 (Indoor), second → series 1 (Outdoor), etc.
+#if HAS_RGB_LCD
+struct GuiSensorSlot {
+    char id[36];
+    float lastTemp;
+    float lastHum;
+};
+static GuiSensorSlot guiSensorSlots[4] = {};
+static uint8_t guiSensorSlotCount = 0;
+
+static uint8_t getOrAssignGuiSlot(const char* sensorId) {
+    for (uint8_t i = 0; i < guiSensorSlotCount; i++) {
+        if (strcmp(guiSensorSlots[i].id, sensorId) == 0) return i;
+    }
+    if (guiSensorSlotCount < 4) {
+        strncpy(guiSensorSlots[guiSensorSlotCount].id, sensorId, 35);
+        guiSensorSlots[guiSensorSlotCount].id[35] = '\0';
+        guiSensorSlots[guiSensorSlotCount].lastTemp = NAN;
+        guiSensorSlots[guiSensorSlotCount].lastHum  = NAN;
+        return guiSensorSlotCount++;
+    }
+    return 255;
+}
+#endif
+
 // ============================================================================
 // MQTT Payload Buffer
 // ============================================================================
@@ -872,10 +910,15 @@ void setup() {
     client.setCallback(handleMqttMessage);  // Set MQTT message callback
     client.setBufferSize(1024);  // Increase from default 256 bytes to handle larger config messages
     
-    // Initialize MQTT broker failover manager
-    // MqttManager owns WiFiClient (plain) and WiFiClientSecure (TLS) internally,
-    // switching PubSubClient's transport automatically per broker.
-    mqttMgr.begin(client, deviceId, primaryBroker, fallbackBroker, onMqttConnect);
+    // Initialize MQTT broker failover manager.
+    // When HA integration is disabled, skip local broker discovery by using
+    // the cloud broker as both primary and fallback.
+    if (deviceConfig.ha.enabled) {
+        mqttMgr.begin(client, deviceId, primaryBroker, fallbackBroker, onMqttConnect);
+    } else {
+        Serial.println("  HA integration disabled — connecting cloud-only");
+        mqttMgr.begin(client, deviceId, fallbackBroker, fallbackBroker, onMqttConnect);
+    }
 
 #ifndef ESP8266
     // Initialize mDNS for local broker resolution (homeassistant.local)
@@ -934,12 +977,16 @@ void setup() {
     Serial.println("Flow Sensor: DISABLED (future development)");
     
 #if HAS_MILIGHT
-    // Initialize MiLight/MIBO light controller (NRF24L01+)
-    Serial.println("Setup MiLight Light Controller...");
-    if (milight_init(PIN_NRF24_CE, PIN_NRF24_CSN, PIN_NRF24_SCK, PIN_NRF24_MOSI, PIN_NRF24_MISO)) {
-        Serial.println("  MiLight controller initialized");
+    if (deviceConfig.peripherals.milight) {
+        Serial.println("Setup MiLight Light Controller...");
+        if (milight_init(PIN_NRF24_CE, PIN_NRF24_CSN, PIN_NRF24_SCK, PIN_NRF24_MOSI, PIN_NRF24_MISO)) {
+            Serial.println("  MiLight controller initialized");
+            milightActive = true;
+        } else {
+            Serial.println("  Warning: MiLight initialization failed");
+        }
     } else {
-        Serial.println("  Warning: MiLight initialization failed");
+        Serial.println("MiLight: disabled by peripheral config");
     }
 #endif // HAS_MILIGHT
     
@@ -980,15 +1027,23 @@ void setup() {
 #endif // HAS_BLE
 
 #ifdef HEATER_ENABLED
-    // Initialize hydronic heater add-on (Autoterm UART, safety, sensors)
-    heater_addon_setup();
-    Serial.println("Heater add-on initialized");
+    if (deviceConfig.peripherals.heater) {
+        heater_addon_setup();
+        heaterAddonActive = true;
+        Serial.println("Heater add-on initialized");
+    } else {
+        Serial.println("Heater: disabled by peripheral config");
+    }
 #endif
 
 #if HAS_FAN_IR
-    // Initialize MaxxFan IR transmitter
-    maxxfan_ir_init(PIN_IR_LED);
-    Serial.println("MaxxFan IR initialized");
+    if (deviceConfig.peripherals.fan_ir) {
+        maxxfan_ir_init(PIN_IR_LED);
+        fanIrActive = true;
+        Serial.println("MaxxFan IR initialized");
+    } else {
+        Serial.println("MaxxFan IR: disabled by peripheral config");
+    }
 #endif
 
     Serial.println("Setup complete.");
@@ -1100,8 +1155,7 @@ void loop() {
       }
 #endif
 #ifdef HEATER_ENABLED
-      // Push heater telemetry to the GUI
-      {
+      if (heaterAddonActive) {
         JsonDocument hDoc;
         heater_addon_telemetry(hDoc);
         const char* stateStr = hDoc["heater"]["state"] | "unknown";
@@ -1113,7 +1167,6 @@ void loop() {
         else if (strcmp(stateStr, "Shutting Down") == 0 || strcmp(stateStr, "Cooling") == 0)
           hState = 3;
         float coolant = hDoc["heater"]["coolantTemp"] | 0.0f;
-        // Pass -1 as target to avoid overwriting the GUI's own target slider
         gui_set_heater_data(hState, -1, coolant);
       }
 #endif
@@ -1129,8 +1182,7 @@ void loop() {
 #endif
 
 #ifdef HEATER_ENABLED
-  // Update heater: UART comm, sensor reads, safety checks, MQTT publish
-  heater_addon_loop();
+  if (heaterAddonActive) heater_addon_loop();
 #endif
 
   // Phase 2: State machine-based operation
@@ -1713,6 +1765,13 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
       mqttClient.subscribe(ecoflowTopic);
       Serial.printf("  Subscribed to %s\n", ecoflowTopic);
     }
+    // Subscribe to sensor data from data-acquisition boards for GUI display.
+    // Waveshare boards have HAS_BLE=0 so they receive sensor readings via MQTT
+    // rather than by scanning BLE directly.
+    mqttClient.subscribe("paku/sensors/+/data");
+    mqttClient.subscribe("paku/heater/+/data");
+    Serial.println("  Subscribed to paku/sensors/+/data (GUI sensor feed)");
+    Serial.println("  Subscribed to paku/heater/+/data (GUI heater feed)");
 #endif
 
     // Publish device status (announce we're online)
@@ -2461,7 +2520,19 @@ void publishDeviceConfig() {
   doc["power"]["deep_sleep_enabled"] = deviceConfig.power.deep_sleep_enabled;
   doc["power"]["light_sleep_during_wait"] = deviceConfig.power.light_sleep_during_wait;
   doc["power"]["battery_monitor_enabled"] = deviceConfig.power.battery_monitor_enabled;
-  
+
+  // Peripheral manifest
+  doc["peripherals"]["ble_ruuvi"]     = deviceConfig.peripherals.ble_ruuvi;
+  doc["peripherals"]["ble_moko"]      = deviceConfig.peripherals.ble_moko;
+  doc["peripherals"]["ble_frezzer"]   = deviceConfig.peripherals.ble_frezzer;
+  doc["peripherals"]["wired_ds18b20"] = deviceConfig.peripherals.wired_ds18b20;
+  doc["peripherals"]["heater"]        = deviceConfig.peripherals.heater;
+  doc["peripherals"]["fan_ir"]        = deviceConfig.peripherals.fan_ir;
+  doc["peripherals"]["milight"]       = deviceConfig.peripherals.milight;
+
+  // HA integration
+  doc["ha"]["enabled"] = deviceConfig.ha.enabled;
+
 #if HAS_BLE
   // Ruuvi tag whitelist
   doc["ruuvi"]["mode"] = (getWhitelistMode() == RuuviWhitelistMode::WHITELIST)
@@ -2550,7 +2621,21 @@ void printConfig(const char* context) {
   Serial.println(deviceConfig.power.light_sleep_during_wait ? "true" : "false");
   Serial.print("  battery_monitor_enabled: ");
   Serial.println(deviceConfig.power.battery_monitor_enabled ? "true" : "false");
-  
+
+  Serial.println("Peripherals:");
+  Serial.printf("  ble_ruuvi: %s  ble_moko: %s  ble_frezzer: %s\n",
+                deviceConfig.peripherals.ble_ruuvi   ? "on" : "off",
+                deviceConfig.peripherals.ble_moko    ? "on" : "off",
+                deviceConfig.peripherals.ble_frezzer ? "on" : "off");
+  Serial.printf("  wired_ds18b20: %s  heater: %s  fan_ir: %s  milight: %s\n",
+                deviceConfig.peripherals.wired_ds18b20 ? "on" : "off",
+                deviceConfig.peripherals.heater        ? "on" : "off",
+                deviceConfig.peripherals.fan_ir        ? "on" : "off",
+                deviceConfig.peripherals.milight       ? "on" : "off");
+
+  Serial.println("HA:");
+  Serial.printf("  enabled: %s\n", deviceConfig.ha.enabled ? "true" : "false");
+
   Serial.println("========================================");
 }
 
@@ -2591,7 +2676,17 @@ void saveConfig() {
   preferences.putBool("deep_sl", deviceConfig.power.deep_sleep_enabled);
   preferences.putBool("light_sl", deviceConfig.power.light_sleep_during_wait);
   preferences.putBool("batt_mon", deviceConfig.power.battery_monitor_enabled);
-  
+
+  preferences.putBool("p_ruuvi", deviceConfig.peripherals.ble_ruuvi);
+  preferences.putBool("p_moko",  deviceConfig.peripherals.ble_moko);
+  preferences.putBool("p_frez",  deviceConfig.peripherals.ble_frezzer);
+  preferences.putBool("p_ds18",  deviceConfig.peripherals.wired_ds18b20);
+  preferences.putBool("p_heat",  deviceConfig.peripherals.heater);
+  preferences.putBool("p_fan",   deviceConfig.peripherals.fan_ir);
+  preferences.putBool("p_mil",   deviceConfig.peripherals.milight);
+
+  preferences.putBool("ha_en",   deviceConfig.ha.enabled);
+
   preferences.end();
   Serial.println("Config saved to Preferences");
   printConfig("Saved to NVS");
@@ -2652,7 +2747,17 @@ void loadConfig() {
     deviceConfig.power.deep_sleep_enabled = preferences.getBool("deep_sl", false);
     deviceConfig.power.light_sleep_during_wait = preferences.getBool("light_sl", true);
     deviceConfig.power.battery_monitor_enabled = preferences.getBool("batt_mon", false);
-    
+
+    deviceConfig.peripherals.ble_ruuvi    = preferences.getBool("p_ruuvi", true);
+    deviceConfig.peripherals.ble_moko     = preferences.getBool("p_moko",  true);
+    deviceConfig.peripherals.ble_frezzer  = preferences.getBool("p_frez",  true);
+    deviceConfig.peripherals.wired_ds18b20 = preferences.getBool("p_ds18", true);
+    deviceConfig.peripherals.heater       = preferences.getBool("p_heat",  true);
+    deviceConfig.peripherals.fan_ir       = preferences.getBool("p_fan",   true);
+    deviceConfig.peripherals.milight      = preferences.getBool("p_mil",   true);
+
+    deviceConfig.ha.enabled = preferences.getBool("ha_en", true);
+
     Serial.println("Config loaded from Preferences");
     printConfig("Loaded from NVS");
   } else {
@@ -2747,9 +2852,8 @@ void collectSensorData() {
   // BLE Sensor Collection
   if (deviceConfig.sensors.ble.enabled) {
     Serial.println("Scanning BLE sensors...");
-    // Capture BLE sensor snapshots with current timestamp
-    createRuuviPayloads(timestamp);
-    createMoKoPayloads(timestamp);
+    if (deviceConfig.peripherals.ble_ruuvi)   createRuuviPayloads(timestamp);
+    if (deviceConfig.peripherals.ble_moko)    createMoKoPayloads(timestamp);
   }
 #endif
 
@@ -3768,6 +3872,52 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
+#if HAS_RGB_LCD
+  // Handle sensor telemetry from data-acquisition boards — update GUI display.
+  // Topics: paku/sensors/{sensor_id}/data  and  paku/heater/{device_id}/data
+  if (strncmp(topic, "paku/sensors/", 13) == 0 && strstr(topic, "/data") != nullptr) {
+    JsonDocument sDoc;
+    if (!deserializeJson(sDoc, message)) {
+      const char* sensorId = sDoc["sensor_id"] | topic;  // fall back to topic as key
+      uint8_t slot = getOrAssignGuiSlot(sensorId);
+      if (slot < 4) {
+        if (!sDoc["temperature"].isNull()) {
+          float t = sDoc["temperature"];
+          guiSensorSlots[slot].lastTemp = t;
+          gui_push_temperature(slot, t);
+        }
+        if (!sDoc["humidity"].isNull()) {
+          float h = sDoc["humidity"];
+          guiSensorSlots[slot].lastHum = h;
+          if (slot < 3) gui_push_humidity(slot, h);
+        }
+        // Update header bar for first two slots (Indoor / Outdoor)
+        float t = guiSensorSlots[slot].lastTemp;
+        float h = guiSensorSlots[slot].lastHum;
+        if (!isnan(t) && !isnan(h)) {
+          if (slot == 0) gui_set_header_indoor(t, h);
+          if (slot == 1) gui_set_header_outdoor(t, h);
+        }
+      }
+    }
+    return;
+  }
+
+  if (strncmp(topic, "paku/heater/", 12) == 0 && strstr(topic, "/data") != nullptr) {
+    JsonDocument hDoc;
+    if (!deserializeJson(hDoc, message)) {
+      const char* stateStr = hDoc["metrics"]["heater_state"] | "unknown";
+      int hState = 0;
+      if (strcmp(stateStr, "Starting") == 0 || strcmp(stateStr, "Warming") == 0)  hState = 1;
+      else if (strcmp(stateStr, "Running") == 0)                                   hState = 2;
+      else if (strcmp(stateStr, "Shutting Down") == 0 || strcmp(stateStr, "Cooling") == 0) hState = 3;
+      float coolant = hDoc["metrics"]["coolant_temp_c"] | 0.0f;
+      gui_set_heater_data(hState, -1, coolant);
+    }
+    return;
+  }
+#endif  // HAS_RGB_LCD
+
   // Phase 2: Check for configuration command topic (config/set)
   String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
   if (String(topic) == edgeConfigTopic) {
@@ -3988,6 +4138,39 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       }
     }
     
+    // Update peripheral manifest if present
+    if (!doc["peripherals"].isNull()) {
+      auto parsePeriphBool = [&](const char* key, bool& field) {
+        if (!doc["peripherals"][key].isNull()) {
+          bool newValue = doc["peripherals"][key];
+          if (newValue != field) {
+            Serial.printf("Config change: peripherals.%s %s -> %s\n",
+                          key, field ? "true" : "false", newValue ? "true" : "false");
+            field = newValue;
+            configChanged = true;
+          }
+        }
+      };
+      parsePeriphBool("ble_ruuvi",    deviceConfig.peripherals.ble_ruuvi);
+      parsePeriphBool("ble_moko",     deviceConfig.peripherals.ble_moko);
+      parsePeriphBool("ble_frezzer",  deviceConfig.peripherals.ble_frezzer);
+      parsePeriphBool("wired_ds18b20",deviceConfig.peripherals.wired_ds18b20);
+      parsePeriphBool("heater",       deviceConfig.peripherals.heater);
+      parsePeriphBool("fan_ir",       deviceConfig.peripherals.fan_ir);
+      parsePeriphBool("milight",      deviceConfig.peripherals.milight);
+    }
+
+    // Update HA integration flag if present (takes effect after reboot)
+    if (!doc["ha"].isNull() && !doc["ha"]["enabled"].isNull()) {
+      bool newValue = doc["ha"]["enabled"];
+      if (newValue != deviceConfig.ha.enabled) {
+        Serial.printf("Config change: ha.enabled %s -> %s (takes effect after reboot)\n",
+                      deviceConfig.ha.enabled ? "true" : "false", newValue ? "true" : "false");
+        deviceConfig.ha.enabled = newValue;
+        configChanged = true;
+      }
+    }
+
     // Only save and republish if config actually changed
     if (configChanged) {
       Serial.println("========================================");
@@ -4225,7 +4408,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
   if (String(topic) == heaterCmdTopic) {
     LOG_INFO("MQTT", "Heater command received: %s", message.c_str());
-    heater_addon_command(message.c_str(), message.length());
+    if (heaterAddonActive) heater_addon_command(message.c_str(), message.length());
 
 #if HAS_RGB_LCD
     // Parse command to update Waveshare GUI immediately
@@ -4252,12 +4435,13 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   // Route fan commands to the MaxxFan IR controller
   String fanCmdTopic = String("paku/edge/") + deviceId + "/cmd/fan";
   if (String(topic) == fanCmdTopic) {
+    if (!fanIrActive) return;
     LOG_INFO("MQTT", "Fan command received: %s", message.c_str());
-    
+
     // Parse JSON command
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
-    
+
     if (error) {
       Serial.print("Fan CMD: Parse error: ");
       Serial.println(error.c_str());
@@ -4268,15 +4452,14 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     MaxxFanState& state = maxxfan_ir_get_state();
     
     // Update only provided fields
-    if (doc.containsKey("power")) {
+    if (!doc["power"].isNull()) {
       state.fan_on = doc["power"].as<bool>();
     }
-    if (doc.containsKey("speed")) {
+    if (!doc["speed"].isNull()) {
       state.speed = doc["speed"].as<uint8_t>();
-      // Clamp to valid range
       if (state.speed > 100) state.speed = 100;
     }
-    if (doc.containsKey("direction")) {
+    if (!doc["direction"].isNull()) {
       const char* dir = doc["direction"];
       if (strcmp(dir, "exhaust") == 0) {
         state.exhaust = true;
@@ -4284,7 +4467,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         state.exhaust = false;
       }
     }
-    if (doc.containsKey("lid")) {
+    if (!doc["lid"].isNull()) {
       const char* lid = doc["lid"];
       if (strcmp(lid, "open") == 0) {
         state.lid_open = true;
@@ -4292,7 +4475,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         state.lid_open = false;
       }
     }
-    if (doc.containsKey("mode")) {
+    if (!doc["mode"].isNull()) {
       const char* mode = doc["mode"];
       if (strcmp(mode, "auto") == 0) {
         state.auto_mode = true;
@@ -4300,7 +4483,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         state.auto_mode = false;
       }
     }
-    if (doc.containsKey("auto_temp_f")) {
+    if (!doc["auto_temp_f"].isNull()) {
       state.auto_temp_f = doc["auto_temp_f"].as<uint8_t>();
     }
     
@@ -4336,7 +4519,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   // Handle MiLight/MIBO light commands — per-zone topics: cmd/light/{1-4}
   //                                     — broadcast topic: cmd/light/all
   String lightCmdPrefix = String("paku/edge/") + deviceId + "/cmd/light/";
-  if (String(topic).startsWith(lightCmdPrefix)) {
+  if (milightActive && String(topic).startsWith(lightCmdPrefix)) {
     String suffix = String(topic).substring(lightCmdPrefix.length());
 
     // ── Broadcast: cmd/light/all ─────────────────────────────────────────

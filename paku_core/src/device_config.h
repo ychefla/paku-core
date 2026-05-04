@@ -75,7 +75,7 @@
     #define HAS_TOUCH 0         // CST mutual touch (not used — GT911 via HAS_RGB_LCD)
     #define HAS_PSRAM 1
     #define HAS_LED 0           // No simple onboard LED (backlight via CH422G)
-    #define HAS_BLE 1
+    #define HAS_BLE 0           // GUI board — no BLE scanning; receives sensor data via MQTT
     #define HAS_WIRED_SENSORS 0
     #define HAS_RGB_LCD 1       // ST7262 RGB parallel LCD hardware present
     #define HAS_IO_EXPANDER 1   // CH422G I2C IO expander (addr 0x24)
@@ -99,7 +99,7 @@
     #define HAS_TOUCH 0         // CST mutual touch (not used — GT911 via HAS_RGB_LCD)
     #define HAS_PSRAM 1
     #define HAS_LED 0           // No simple onboard LED (backlight via CH422G)
-    #define HAS_BLE 1
+    #define HAS_BLE 0           // GUI board — no BLE scanning; receives sensor data via MQTT
     #define HAS_WIRED_SENSORS 0
     #define HAS_RGB_LCD 1       // ST7262 RGB parallel LCD hardware present
     #define HAS_IO_EXPANDER 1   // CH422G I2C IO expander (addr 0x24)
