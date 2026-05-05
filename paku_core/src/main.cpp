@@ -224,6 +224,7 @@ bool otaUpdatePending = false;
 String pendingOtaUrl = "";
 String pendingOtaChecksum = "";
 String pendingOtaVersion = "";
+bool everConnected = false;  // true after first successful MQTT connect
 
 // ============================================================================
 // Timing Configuration and State Management
@@ -671,7 +672,8 @@ static void on_gui_light_changed(uint8_t zone, bool on, uint8_t brightness, uint
     doc["color_temp"] = mired;
     String payload;
     serializeJson(doc, payload);
-    client.publish(topic.c_str(), payload.c_str());
+    if (!client.publish(topic.c_str(), payload.c_str()))
+      Serial.printf("[WARN] GUI: publish failed (%s)\n", topic.c_str());
     LOG_INFO("GUI", "Light z%u %s bri=%u ct=%u", zone + 1, on ? "ON" : "OFF", brightness, mired);
 }
 
@@ -685,7 +687,8 @@ static void on_gui_fan_changed(bool power, uint8_t speed, bool dirIn, bool lidOp
     doc["lid"]       = lidOpen ? "open" : "closed";
     String payload;
     serializeJson(doc, payload);
-    client.publish(topic.c_str(), payload.c_str());
+    if (!client.publish(topic.c_str(), payload.c_str()))
+      Serial.printf("[WARN] GUI: publish failed (%s)\n", topic.c_str());
     LOG_INFO("GUI", "Fan on=%d spd=%u dir=%s lid=%s", power, speed,
              dirIn ? "in" : "out", lidOpen ? "open" : "closed");
 }
@@ -711,7 +714,8 @@ static void on_gui_heater_changed(bool on, HeaterMode mode, uint8_t powerLevel, 
     }
     String payload;
     serializeJson(doc, payload);
-    client.publish(topic.c_str(), payload.c_str());
+    if (!client.publish(topic.c_str(), payload.c_str()))
+      Serial.printf("[WARN] GUI: publish failed (%s)\n", topic.c_str());
     LOG_INFO("GUI", "Heater %s mode=%s pwr=%u temp=%u",
              on ? "ON" : "OFF",
              mode == HEATER_MODE_POWER ? "power" : (mode == HEATER_MODE_VENT ? "vent" : "thermostat"),
@@ -833,13 +837,11 @@ void setup() {
     Serial.println("Setup Wifi Connection...");
     WiFi.mode(WIFI_STA);
 #ifndef ESP8266
-    // Enable WiFi modem sleep — radio powers down between DTIM beacons
-    // Saves ~80 mA when idle, with negligible latency impact for MQTT
-    WiFi.setSleep(true);
+    // Modem sleep is enabled after WiFi connects (PHASE_WIFI_WAIT) so the
+    // radio stays fully awake during the initial scan and association.
     // Reduce TX power from default 20 dBm to 8 dBm (~6 mW vs ~100 mW)
-    // Sufficient for typical indoor range to the access point
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
-    Serial.println("WiFi power saving: modem sleep ON, TX power 8.5 dBm");
+    Serial.println("WiFi power saving: modem sleep deferred, TX power 8.5 dBm");
 #endif
 #ifdef ESP8266
     // ESP8266-specific WiFi settings for improved stability
@@ -3070,17 +3072,42 @@ void handleSystemState() {
   switch (currentSystemState) {
     
     case SYS_STATE_IDLE: {
-      // Keep processing MQTT messages while connected (local broker stay-alive)
       if (client.connected()) {
         client.loop();
+      } else if (everConnected) {
+        // MQTT dropped after a successful connection — reconnect immediately.
+        currentSystemState = SYS_STATE_CONNECT_NETWORK;
+        stateEnteredAt = now;
+        Serial.println("STATE: IDLE -> CONNECT_NETWORK (connection dropped)");
+        break;
+      } else if (now >= 3000) {
+        // First boot: connect after 3 s to give the WiFi stack time to init.
+        currentSystemState = SYS_STATE_CONNECT_NETWORK;
+        stateEnteredAt = now;
+        Serial.println("STATE: IDLE -> CONNECT_NETWORK (initial)");
+        break;
       }
 
-      // Wait for sensor collection interval
+      // Process a pending OTA update without waiting for the next transmit cycle.
+      if (otaUpdatePending) {
+        processOtaUpdate();
+        break;
+      }
+
+#if HAS_RGB_LCD
+      // GUI-only board: no local sensors to collect or transmit.
+      // Publish device status on the normal interval and stay in IDLE.
+      if (now - lastSensorCollection >= (deviceConfig.timing.wake_interval_s * 1000)) {
+        lastSensorCollection = now;
+        publishDeviceStatus();
+      }
+#else
       if (now - lastSensorCollection >= (deviceConfig.timing.wake_interval_s * 1000)) {
         currentSystemState = SYS_STATE_COLLECT_SENSORS;
         stateEnteredAt = now;
         Serial.println("STATE: IDLE -> COLLECT_SENSORS");
       }
+#endif
       break;
     }
       
@@ -3247,102 +3274,68 @@ void handleSystemState() {
       static ConnectPhase connectPhase = PHASE_SCAN_START;
       static unsigned long phaseStartMs = 0;
       static int           settleLoops  = 0;
+      static int           ssidIndex    = 0;  // cycles through known SSIDs on WiFi timeout
 
       switch (connectPhase) {
 
         case PHASE_SCAN_START: {
-          // If WiFi is already up, skip the scan/disconnect cycle and go
-          // straight to MQTT — avoids unnecessary WiFi cycling on GUI boards.
+          // Connect directly without a WiFi scan — scanning is unreliable on
+          // some hardware (Waveshare S3 RGB LCD) and unnecessary for a fixed
+          // set of home SSIDs.  ssidIndex cycles on each WiFi timeout.
           if (WiFi.status() == WL_CONNECTED) {
             connectPhase = PHASE_MQTT_TRY;
             phaseStartMs = now;
-            Serial.println("WiFi already connected, skipping scan");
+            Serial.println("WiFi already connected, skipping to MQTT");
 #if HAS_RGB_LCD
             gui_show_busy("Connecting MQTT\xE2\x80\xA6");
 #endif
             break;
           }
-          // After WiFi.mode(WIFI_OFF) the radio needs ~200 ms to reinitialise
-          // before scanNetworks() will complete. Set mode on the first entry,
-          // then yield; start the scan once the radio is ready.
-          static bool wifiModeReady = false;
-          static unsigned long modeSetAt = 0;
-          if (!wifiModeReady) {
-            WiFi.mode(WIFI_STA);
-            wifiModeReady = true;
-            modeSetAt = now;
-            break;
-          }
-          if (now - modeSetAt < 200) break;
-          wifiModeReady = false;
-          WiFi.scanNetworks(true);
-          connectPhase = PHASE_SCAN_WAIT;
-          phaseStartMs = now;
-          Serial.println("Async WiFi scan started...");
-#if HAS_RGB_LCD
-          gui_show_busy("Scanning WiFi\xE2\x80\xA6");
-#endif
-          break;
-        }
 
-        case PHASE_SCAN_WAIT: {
-          int found = WiFi.scanComplete();
-          if (found == WIFI_SCAN_RUNNING) {
-            // Still scanning — check for timeout (5 s)
-            if (now - phaseStartMs > 5000) {
-              Serial.println("WiFi scan timeout");
-              WiFi.scanDelete();
-              connectPhase = PHASE_SCAN_START;
-              currentSystemState = SYS_STATE_DISCONNECT;
-              stateEnteredAt = now;
-            }
-            break;  // yield to loop()
-          }
-          if (found <= 0) {
-            Serial.println("No networks found — skipping connect");
-            WiFi.scanDelete();
-            connectPhase = PHASE_SCAN_START;
-            currentSystemState = SYS_STATE_DISCONNECT;
-            stateEnteredAt = now;
-            break;
-          }
-
-          // Pick first configured SSID that is in range
           extern WiFiManager wifiManager;
-          bool begun = false;
           int nvsCount = wifiManager.getStoredNetworkCount();
+          int totalCount = nvsCount + WIFI_COUNT;
 
-          for (int n = 0; n < nvsCount + WIFI_COUNT && !begun; n++) {
-            String ssid, pass;
-            if (n < nvsCount) {
-              WiFiCredential cred = wifiManager.getNetwork(n);
-              if (!cred.valid) continue;
-              ssid = String(cred.ssid);
-              pass = String(cred.password);
-            } else {
-              int fi = n - nvsCount;
-              ssid = String(WIFI_SSIDS[fi]);
-              pass = String(WIFI_PASSWORDS[fi]);
-            }
-            for (int j = 0; j < found; j++) {
-              if (WiFi.SSID(j) == ssid) {
-                Serial.printf("Trying %s...\n", ssid.c_str());
-                WiFi.begin(ssid.c_str(), pass.c_str());
-                begun = true;
-                break;
-              }
-            }
-          }
-          WiFi.scanDelete();
-
-          if (!begun) {
-            Serial.println("No configured network in range");
+          if (totalCount == 0) {
+            Serial.println("No WiFi credentials configured");
             connectPhase = PHASE_SCAN_START;
             currentSystemState = SYS_STATE_DISCONNECT;
             stateEnteredAt = now;
             break;
           }
 
+          // Tried all SSIDs without a successful WiFi connection — give up.
+          if (ssidIndex >= totalCount) {
+            ssidIndex = 0;
+            Serial.println("All SSIDs tried — backing off");
+            connectPhase = PHASE_SCAN_START;
+            currentSystemState = SYS_STATE_DISCONNECT;
+            stateEnteredAt = now;
+            break;
+          }
+
+          // Skip invalid NVS entries
+          if (ssidIndex < nvsCount) {
+            WiFiCredential cred = wifiManager.getNetwork(ssidIndex);
+            if (!cred.valid) { ssidIndex++; break; }
+          }
+
+          String ssid, pass;
+          if (ssidIndex < nvsCount) {
+            WiFiCredential cred = wifiManager.getNetwork(ssidIndex);
+            ssid = String(cred.ssid);
+            pass = String(cred.password);
+          } else {
+            int fi = ssidIndex - nvsCount;
+            ssid = String(WIFI_SSIDS[fi]);
+            pass = String(WIFI_PASSWORDS[fi]);
+          }
+
+          if (WiFi.getMode() != WIFI_STA) WiFi.mode(WIFI_STA);
+          WiFi.setAutoReconnect(false);
+          WiFi.disconnect(false);
+          Serial.printf("Connecting WiFi: %s\n", ssid.c_str());
+          WiFi.begin(ssid.c_str(), pass.c_str());
           connectPhase = PHASE_WIFI_WAIT;
           phaseStartMs = now;
 #if HAS_RGB_LCD
@@ -3351,20 +3344,30 @@ void handleSystemState() {
           break;
         }
 
+        case PHASE_SCAN_WAIT: {
+          // Unused — scan replaced by direct connect in PHASE_SCAN_START.
+          connectPhase = PHASE_SCAN_START;
+          break;
+        }
+
         case PHASE_WIFI_WAIT: {
           if (WiFi.status() == WL_CONNECTED) {
             Serial.printf("WiFi connected: %s\n", WiFi.localIP().toString().c_str());
             wifi_status = "WiFi connected (" + WiFi.localIP().toString() + ")";
+#ifndef ESP8266
+            WiFi.setSleep(true);  // Enable modem sleep now that we're associated
+#endif
 #if HAS_LED
             ledWifiConnected();
 #endif
+            ssidIndex = 0;  // Reset so reconnects start from the best SSID again
             connectPhase = PHASE_MQTT_TRY;
             phaseStartMs = now;
           } else if (now - phaseStartMs >= (deviceConfig.timing.wifi_connect_timeout_s * 1000UL)) {
             Serial.println("WiFi connect timeout");
+            ssidIndex++;  // Try next SSID on next PHASE_SCAN_START entry
             connectPhase = PHASE_SCAN_START;
-            currentSystemState = SYS_STATE_DISCONNECT;
-            stateEnteredAt = now;
+            // Stay in CONNECT_NETWORK to try next SSID before giving up
           }
 #if HAS_LED
           else {
@@ -3406,6 +3409,7 @@ void handleSystemState() {
           if (!client.connected() &&
               stateElapsed >= (deviceConfig.timing.mqtt_connect_timeout_s * 1000UL)) {
             Serial.println("MQTT connect timeout — will retry next cycle");
+            ssidIndex = 0;  // retry from best SSID on next cycle
             connectPhase = PHASE_SCAN_START;
             currentSystemState = SYS_STATE_DISCONNECT;
             stateEnteredAt = now;
@@ -3421,6 +3425,7 @@ void handleSystemState() {
 
           if (settleLoops >= 10) {
             // Done settling — publish status & config, move to TRANSMIT
+            everConnected = true;
             publishDeviceStatus();
             publishDeviceConfig();
             connectPhase = PHASE_SCAN_START;  // reset for next time
