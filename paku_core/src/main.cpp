@@ -3884,7 +3884,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   if (strncmp(topic, "paku/sensors/", 13) == 0 && strstr(topic, "/data") != nullptr) {
     JsonDocument sDoc;
     if (!deserializeJson(sDoc, message)) {
-      const char* sensorId = sDoc["sensor_id"] | topic;  // fall back to topic as key
+      const char* sensorId = sDoc["sensor_id"] | (const char*)topic;
       uint8_t slot = getOrAssignGuiSlot(sensorId);
       if (slot < 4) {
         if (!sDoc["temperature"].isNull()) {
