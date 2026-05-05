@@ -3268,7 +3268,6 @@ void handleSystemState() {
           static bool wifiModeReady = false;
           static unsigned long modeSetAt = 0;
           if (!wifiModeReady) {
-            WiFi.disconnect();
             WiFi.mode(WIFI_STA);
             wifiModeReady = true;
             modeSetAt = now;
