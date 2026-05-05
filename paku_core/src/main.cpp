@@ -3251,6 +3251,17 @@ void handleSystemState() {
       switch (connectPhase) {
 
         case PHASE_SCAN_START: {
+          // If WiFi is already up, skip the scan/disconnect cycle and go
+          // straight to MQTT — avoids unnecessary WiFi cycling on GUI boards.
+          if (WiFi.status() == WL_CONNECTED) {
+            connectPhase = PHASE_MQTT_TRY;
+            phaseStartMs = now;
+            Serial.println("WiFi already connected, skipping scan");
+#if HAS_RGB_LCD
+            gui_show_busy("Connecting MQTT\xE2\x80\xA6");
+#endif
+            break;
+          }
           WiFi.disconnect();
           WiFi.mode(WIFI_STA);
           // Start ASYNC scan (first param true = async)

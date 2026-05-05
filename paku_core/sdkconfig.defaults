@@ -1,0 +1,5 @@
+# Reduce mbedTLS record buffer sizes to free heap for OTA SSL handshake.
+# Default is 16384 bytes each; 4096 is sufficient for chunked firmware download.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=4096
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
