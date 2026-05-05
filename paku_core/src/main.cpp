@@ -658,9 +658,9 @@ String getISO8601Timestamp() {
 #if HAS_RGB_LCD
 
 static void on_gui_light_changed(uint8_t zone, bool on, uint8_t brightness, uint16_t colorTempK) {
-#if HAS_MILIGHT
     if (!client.connected()) return;
-    String topic = String("paku/edge/") + deviceId + "/cmd/light/" + (zone + 1);
+    // Publish to shared topic so data board receives regardless of which board HA points to
+    String topic = String("paku/cmd/light/") + (zone + 1);
     JsonDocument doc;
     doc["state"]      = on ? "ON" : "OFF";
     doc["brightness"] = brightness;
@@ -673,13 +673,11 @@ static void on_gui_light_changed(uint8_t zone, bool on, uint8_t brightness, uint
     serializeJson(doc, payload);
     client.publish(topic.c_str(), payload.c_str());
     LOG_INFO("GUI", "Light z%u %s bri=%u ct=%u", zone + 1, on ? "ON" : "OFF", brightness, mired);
-#endif // HAS_MILIGHT
 }
 
 static void on_gui_fan_changed(bool power, uint8_t speed, bool dirIn, bool lidOpen) {
-#if HAS_FAN_IR
     if (!client.connected()) return;
-    String topic = String("paku/edge/") + deviceId + "/cmd/fan";
+    String topic = "paku/cmd/fan";
     JsonDocument doc;
     doc["power"]     = power;
     doc["speed"]     = speed;
@@ -690,13 +688,11 @@ static void on_gui_fan_changed(bool power, uint8_t speed, bool dirIn, bool lidOp
     client.publish(topic.c_str(), payload.c_str());
     LOG_INFO("GUI", "Fan on=%d spd=%u dir=%s lid=%s", power, speed,
              dirIn ? "in" : "out", lidOpen ? "open" : "closed");
-#endif // HAS_FAN_IR
 }
 
 static void on_gui_heater_changed(bool on, HeaterMode mode, uint8_t powerLevel, uint8_t targetTempC) {
-#ifdef HEATER_ENABLED
     if (!client.connected()) return;
-    String topic = String("paku/heater/") + deviceId + "/cmd";
+    String topic = "paku/cmd/heater";
     JsonDocument doc;
     if (mode == HEATER_MODE_VENT) {
         doc["cmd"]   = "vent";
@@ -720,7 +716,6 @@ static void on_gui_heater_changed(bool on, HeaterMode mode, uint8_t powerLevel, 
              on ? "ON" : "OFF",
              mode == HEATER_MODE_POWER ? "power" : (mode == HEATER_MODE_VENT ? "vent" : "thermostat"),
              powerLevel, targetTempC);
-#endif // HEATER_ENABLED
 }
 
 static void on_gui_backlight_changed(uint8_t percent) {
@@ -1736,13 +1731,20 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
 #endif
 
 #ifdef HEATER_ENABLED
-    String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
-    mqttClient.subscribe(heaterCmdTopic.c_str());
+    {
+      String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
+      mqttClient.subscribe(heaterCmdTopic.c_str());
+      // Shared topic so GUI boards and HA can send without knowing device_id
+      mqttClient.subscribe("paku/cmd/heater");
+    }
 #endif
 
 #if HAS_FAN_IR
-    String fanCmdTopic = String("paku/edge/") + deviceId + "/cmd/fan";
-    mqttClient.subscribe(fanCmdTopic.c_str());
+    {
+      String fanCmdTopic = String("paku/edge/") + deviceId + "/cmd/fan";
+      mqttClient.subscribe(fanCmdTopic.c_str());
+      mqttClient.subscribe("paku/cmd/fan");
+    }
 #endif
 
 #if HAS_MILIGHT
@@ -1750,11 +1752,15 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
       String lightCmdTopic = String("paku/edge/") + deviceId + "/cmd/light/" + ch;
       mqttClient.subscribe(lightCmdTopic.c_str());
       Serial.printf("  Subscribed to %s\n", lightCmdTopic.c_str());
+      // Shared per-zone topic
+      String sharedLightTopic = String("paku/cmd/light/") + ch;
+      mqttClient.subscribe(sharedLightTopic.c_str());
     }
     {
       String lightAllTopic = String("paku/edge/") + deviceId + "/cmd/light/all";
       mqttClient.subscribe(lightAllTopic.c_str());
       Serial.printf("  Subscribed to %s\n", lightAllTopic.c_str());
+      mqttClient.subscribe("paku/cmd/light/all");
     }
 #endif
 
@@ -4404,9 +4410,9 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 #endif // HAS_BLE
 
 #ifdef HEATER_ENABLED
-  // Route heater commands to the HeaterAddon
+  // Route heater commands — device-specific or shared broadcast topic
   String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
-  if (String(topic) == heaterCmdTopic) {
+  if (String(topic) == heaterCmdTopic || String(topic) == "paku/cmd/heater") {
     LOG_INFO("MQTT", "Heater command received: %s", message.c_str());
     if (heaterAddonActive) heater_addon_command(message.c_str(), message.length());
 
@@ -4432,9 +4438,9 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 #endif // HEATER_ENABLED
 
 #if HAS_FAN_IR
-  // Route fan commands to the MaxxFan IR controller
+  // Route fan commands — device-specific or shared broadcast topic
   String fanCmdTopic = String("paku/edge/") + deviceId + "/cmd/fan";
-  if (String(topic) == fanCmdTopic) {
+  if (String(topic) == fanCmdTopic || String(topic) == "paku/cmd/fan") {
     if (!fanIrActive) return;
     LOG_INFO("MQTT", "Fan command received: %s", message.c_str());
 
@@ -4516,11 +4522,15 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 #endif // HAS_FAN_IR
 
 #if HAS_MILIGHT
-  // Handle MiLight/MIBO light commands — per-zone topics: cmd/light/{1-4}
-  //                                     — broadcast topic: cmd/light/all
-  String lightCmdPrefix = String("paku/edge/") + deviceId + "/cmd/light/";
-  if (milightActive && String(topic).startsWith(lightCmdPrefix)) {
-    String suffix = String(topic).substring(lightCmdPrefix.length());
+  // Handle MiLight/MIBO light commands — device-specific or shared topics
+  {
+  String lightCmdPrefix  = String("paku/edge/") + deviceId + "/cmd/light/";
+  String sharedLightPfx  = "paku/cmd/light/";
+  String topicStr        = String(topic);
+  bool isDeviceLight  = topicStr.startsWith(lightCmdPrefix);
+  bool isSharedLight  = topicStr.startsWith(sharedLightPfx);
+  if (milightActive && (isDeviceLight || isSharedLight)) {
+    String suffix = topicStr.substring(isDeviceLight ? lightCmdPrefix.length() : sharedLightPfx.length());
 
     // ── Broadcast: cmd/light/all ─────────────────────────────────────────
     if (suffix == "all") {
@@ -4702,6 +4712,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     
     return;
   }
+  } // end shared/device light cmd block
 #endif // HAS_MILIGHT
 
 #if HAS_RGB_LCD
