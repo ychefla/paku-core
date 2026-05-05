@@ -27,13 +27,15 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def run(cmd):
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=REPO_ROOT)
+    if isinstance(cmd, str):
+        cmd = cmd.split()
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT)
     return result.stdout.strip()
 
 
 def get_latest_tag():
     """Return the most recent semver tag, or None."""
-    tags = run("git tag --list 'v*' --sort=-version:refname")
+    tags = run(["git", "tag", "--list", "v*", "--sort=-version:refname"])
     if not tags:
         return None
     for tag in tags.split("\n"):
@@ -55,10 +57,11 @@ def parse_version(tag):
 
 def get_commits_since(tag):
     """Return list of (subject, body) tuples since the given tag."""
+    fmt = "--pretty=format:%s|||%b|||END"
     if tag:
-        log = run(f"git log {tag}..HEAD --pretty=format:%s|||%b|||END")
+        log = run(["git", "log", f"{tag}..HEAD", fmt])
     else:
-        log = run("git log --pretty=format:%s|||%b|||END")
+        log = run(["git", "log", fmt])
     if not log:
         return []
 
