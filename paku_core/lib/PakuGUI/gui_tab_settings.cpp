@@ -199,18 +199,6 @@ static void _touch_guard_cb(lv_event_t *e) {
 }
 
 void gui_tab_settings_tick() {
-    // Visual debug: show sleep state on version label
-    static uint32_t lastDbg = 0;
-    if (_lblVersion && millis() - lastDbg > 1000) {
-        lastDbg = millis();
-        uint32_t idle = lv_disp_get_inactive_time(NULL);
-        static char buf[64];
-        snprintf(buf, sizeof(buf), "T=%lu I=%lu S=%d",
-                 (unsigned long)_sleepTimeoutMs/1000,
-                 (unsigned long)idle/1000, _sleeping);
-        lv_label_set_text(_lblVersion, buf);
-    }
-
     if (_sleepTimeoutMs == 0) return;   // sleep disabled
 
     uint32_t idle = lv_disp_get_inactive_time(NULL);
