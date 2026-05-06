@@ -1780,6 +1780,12 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
     mqttClient.subscribe("paku/heater/+/data");
     Serial.println("  Subscribed to paku/sensors/+/data (GUI sensor feed)");
     Serial.println("  Subscribed to paku/heater/+/data (GUI heater feed)");
+    // Subscribe to state feedback from data boards so GUI stays in sync when
+    // HA or another client changes the state of lights or the fan.
+    mqttClient.subscribe("paku/edge/+/status/light/+");
+    mqttClient.subscribe("paku/edge/+/status/fan");
+    Serial.println("  Subscribed to paku/edge/+/status/light/+ (GUI light sync)");
+    Serial.println("  Subscribed to paku/edge/+/status/fan (GUI fan sync)");
 #endif
 
     // Publish device status (announce we're online)
@@ -2512,31 +2518,44 @@ void publishDeviceConfig() {
   doc["timing"]["mqtt_connect_timeout_s"] = deviceConfig.timing.mqtt_connect_timeout_s;
   doc["timing"]["timezone"] = deviceConfig.timing.timezone;
   
-  // Sensor configuration
-  doc["sensors"]["ble"]["enabled"] = deviceConfig.sensors.ble.enabled;
-  doc["sensors"]["ble"]["scan_duration_s"] = deviceConfig.sensors.ble.scan_duration_s;
-  doc["sensors"]["ble"]["scan_active"] = deviceConfig.sensors.ble.scan_active;
-  
-  doc["sensors"]["wired"]["enabled"] = deviceConfig.sensors.wired.enabled;
-  doc["sensors"]["wired"]["sample_count"] = deviceConfig.sensors.wired.sample_count;
-  doc["sensors"]["wired"]["sample_interval_ms"] = deviceConfig.sensors.wired.sample_interval_ms;
-  
-  doc["sensors"]["flow"]["enabled"] = deviceConfig.sensors.flow.enabled;
+  // Sensor configuration — AND with compile-time flags so boards without
+  // hardware don't report sensors as enabled.
+  doc["sensors"]["ble"]["enabled"]           = deviceConfig.sensors.ble.enabled && (HAS_BLE != 0);
+  doc["sensors"]["ble"]["scan_duration_s"]   = deviceConfig.sensors.ble.scan_duration_s;
+  doc["sensors"]["ble"]["scan_active"]       = deviceConfig.sensors.ble.scan_active;
+
+  doc["sensors"]["wired"]["enabled"]             = deviceConfig.sensors.wired.enabled && (HAS_WIRED_SENSORS != 0);
+  doc["sensors"]["wired"]["sample_count"]        = deviceConfig.sensors.wired.sample_count;
+  doc["sensors"]["wired"]["sample_interval_ms"]  = deviceConfig.sensors.wired.sample_interval_ms;
+
+  doc["sensors"]["flow"]["enabled"]              = deviceConfig.sensors.flow.enabled;
   doc["sensors"]["flow"]["measurement_duration_s"] = deviceConfig.sensors.flow.measurement_duration_s;
-  
+
   // Power configuration
-  doc["power"]["deep_sleep_enabled"] = deviceConfig.power.deep_sleep_enabled;
+  doc["power"]["deep_sleep_enabled"]      = deviceConfig.power.deep_sleep_enabled;
   doc["power"]["light_sleep_during_wait"] = deviceConfig.power.light_sleep_during_wait;
   doc["power"]["battery_monitor_enabled"] = deviceConfig.power.battery_monitor_enabled;
 
-  // Peripheral manifest
-  doc["peripherals"]["ble_ruuvi"]     = deviceConfig.peripherals.ble_ruuvi;
-  doc["peripherals"]["ble_moko"]      = deviceConfig.peripherals.ble_moko;
-  doc["peripherals"]["ble_frezzer"]   = deviceConfig.peripherals.ble_frezzer;
-  doc["peripherals"]["wired_ds18b20"] = deviceConfig.peripherals.wired_ds18b20;
-  doc["peripherals"]["heater"]        = deviceConfig.peripherals.heater;
-  doc["peripherals"]["fan_ir"]        = deviceConfig.peripherals.fan_ir;
-  doc["peripherals"]["milight"]       = deviceConfig.peripherals.milight;
+  // Peripheral manifest — only report peripherals compiled into this firmware.
+  doc["peripherals"]["ble_ruuvi"]     = deviceConfig.peripherals.ble_ruuvi     && (HAS_BLE != 0);
+  doc["peripherals"]["ble_moko"]      = deviceConfig.peripherals.ble_moko      && (HAS_BLE != 0);
+  doc["peripherals"]["ble_frezzer"]   = deviceConfig.peripherals.ble_frezzer   && (HAS_BLE != 0);
+  doc["peripherals"]["wired_ds18b20"] = deviceConfig.peripherals.wired_ds18b20 && (HAS_WIRED_SENSORS != 0);
+#ifdef HEATER_ENABLED
+  doc["peripherals"]["heater"]  = deviceConfig.peripherals.heater;
+#else
+  doc["peripherals"]["heater"]  = false;
+#endif
+#if HAS_FAN_IR
+  doc["peripherals"]["fan_ir"]  = deviceConfig.peripherals.fan_ir;
+#else
+  doc["peripherals"]["fan_ir"]  = false;
+#endif
+#if HAS_MILIGHT
+  doc["peripherals"]["milight"] = deviceConfig.peripherals.milight;
+#else
+  doc["peripherals"]["milight"] = false;
+#endif
 
   // HA integration
   doc["ha"]["enabled"] = deviceConfig.ha.enabled;
@@ -2606,13 +2625,13 @@ void printConfig(const char* context) {
   
   Serial.println("Sensors:");
   Serial.print("  ble.enabled: ");
-  Serial.println(deviceConfig.sensors.ble.enabled ? "true" : "false");
+  Serial.println((deviceConfig.sensors.ble.enabled && HAS_BLE) ? "true" : "false");
   Serial.print("  ble.scan_duration_s: ");
   Serial.println(deviceConfig.sensors.ble.scan_duration_s);
   Serial.print("  ble.scan_active: ");
   Serial.println(deviceConfig.sensors.ble.scan_active ? "true" : "false");
   Serial.print("  wired.enabled: ");
-  Serial.println(deviceConfig.sensors.wired.enabled ? "true" : "false");
+  Serial.println((deviceConfig.sensors.wired.enabled && HAS_WIRED_SENSORS) ? "true" : "false");
   Serial.print("  wired.sample_count: ");
   Serial.println(deviceConfig.sensors.wired.sample_count);
   Serial.print("  wired.sample_interval_ms: ");
@@ -2621,7 +2640,7 @@ void printConfig(const char* context) {
   Serial.println(deviceConfig.sensors.flow.enabled ? "true" : "false");
   Serial.print("  flow.measurement_duration_s: ");
   Serial.println(deviceConfig.sensors.flow.measurement_duration_s);
-  
+
   Serial.println("Power:");
   Serial.print("  deep_sleep_enabled: ");
   Serial.println(deviceConfig.power.deep_sleep_enabled ? "true" : "false");
@@ -2632,14 +2651,26 @@ void printConfig(const char* context) {
 
   Serial.println("Peripherals:");
   Serial.printf("  ble_ruuvi: %s  ble_moko: %s  ble_frezzer: %s\n",
-                deviceConfig.peripherals.ble_ruuvi   ? "on" : "off",
-                deviceConfig.peripherals.ble_moko    ? "on" : "off",
-                deviceConfig.peripherals.ble_frezzer ? "on" : "off");
+                (deviceConfig.peripherals.ble_ruuvi   && HAS_BLE) ? "on" : "off",
+                (deviceConfig.peripherals.ble_moko    && HAS_BLE) ? "on" : "off",
+                (deviceConfig.peripherals.ble_frezzer && HAS_BLE) ? "on" : "off");
   Serial.printf("  wired_ds18b20: %s  heater: %s  fan_ir: %s  milight: %s\n",
-                deviceConfig.peripherals.wired_ds18b20 ? "on" : "off",
-                deviceConfig.peripherals.heater        ? "on" : "off",
-                deviceConfig.peripherals.fan_ir        ? "on" : "off",
-                deviceConfig.peripherals.milight       ? "on" : "off");
+                (deviceConfig.peripherals.wired_ds18b20 && HAS_WIRED_SENSORS) ? "on" : "off",
+#ifdef HEATER_ENABLED
+                deviceConfig.peripherals.heater  ? "on" : "off",
+#else
+                "off",
+#endif
+#if HAS_FAN_IR
+                deviceConfig.peripherals.fan_ir  ? "on" : "off",
+#else
+                "off",
+#endif
+#if HAS_MILIGHT
+                deviceConfig.peripherals.milight ? "on" : "off");
+#else
+                "off");
+#endif
 
   Serial.println("HA:");
   Serial.printf("  enabled: %s\n", deviceConfig.ha.enabled ? "true" : "false");
@@ -3910,25 +3941,37 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   if (strncmp(topic, "paku/sensors/", 13) == 0 && strstr(topic, "/data") != nullptr) {
     JsonDocument sDoc;
     if (!deserializeJson(sDoc, message)) {
-      const char* sensorId = sDoc["sensor_id"] | (const char*)topic;
+      // Modern payloads use device_id; legacy flat payloads use sensor_id.
+      const char* sensorId = sDoc["device_id"] | sDoc["sensor_id"] | (const char*)topic;
       uint8_t slot = getOrAssignGuiSlot(sensorId);
       if (slot < 4) {
-        if (!sDoc["temperature"].isNull()) {
-          float t = sDoc["temperature"];
+        // Modern format: metrics.temperature_c / metrics.humidity_percent
+        // Legacy flat format: temperature / humidity at top level
+        float t = NAN, h = NAN;
+        if (!sDoc["metrics"]["temperature_c"].isNull())
+          t = sDoc["metrics"]["temperature_c"].as<float>();
+        else if (!sDoc["temperature"].isNull())
+          t = sDoc["temperature"].as<float>();
+
+        if (!sDoc["metrics"]["humidity_percent"].isNull())
+          h = sDoc["metrics"]["humidity_percent"].as<float>();
+        else if (!sDoc["humidity"].isNull())
+          h = sDoc["humidity"].as<float>();
+
+        if (!isnan(t)) {
           guiSensorSlots[slot].lastTemp = t;
           gui_push_temperature(slot, t);
         }
-        if (!sDoc["humidity"].isNull()) {
-          float h = sDoc["humidity"];
+        if (!isnan(h)) {
           guiSensorSlots[slot].lastHum = h;
           if (slot < 3) gui_push_humidity(slot, h);
         }
         // Update header bar for first two slots (Indoor / Outdoor)
-        float t = guiSensorSlots[slot].lastTemp;
-        float h = guiSensorSlots[slot].lastHum;
-        if (!isnan(t) && !isnan(h)) {
-          if (slot == 0) gui_set_header_indoor(t, h);
-          if (slot == 1) gui_set_header_outdoor(t, h);
+        float lt = guiSensorSlots[slot].lastTemp;
+        float lh = guiSensorSlots[slot].lastHum;
+        if (!isnan(lt) && !isnan(lh)) {
+          if (slot == 0) gui_set_header_indoor(lt, lh);
+          if (slot == 1) gui_set_header_outdoor(lt, lh);
         }
       }
     }
@@ -3947,6 +3990,39 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       gui_set_heater_data(hState, -1, coolant);
     }
     return;
+  }
+
+  // Sync GUI light zones when a data board reports its state.
+  // Topic: paku/edge/{data_board_id}/status/light/{1-4}
+  if (strncmp(topic, "paku/edge/", 10) == 0) {
+    String topicStr = String(topic);
+    int lightIdx = topicStr.indexOf("/status/light/");
+    if (lightIdx > 0) {
+      JsonDocument doc;
+      if (!deserializeJson(doc, message)) {
+        uint8_t channel = (doc["channel"] | 0);
+        if (channel >= 1 && channel <= 4) {
+          bool on = strcmp(doc["state"] | "OFF", "ON") == 0;
+          uint8_t brightness = doc["brightness"] | 100;
+          uint16_t mired = doc["color_temp"] | 370;
+          uint16_t colorTempK = (mired > 0) ? (uint16_t)(1000000UL / mired) : 4000;
+          gui_set_light_zone(channel - 1, on, brightness, colorTempK);
+        }
+      }
+      return;
+    }
+    if (topicStr.endsWith("/status/fan")) {
+      JsonDocument doc;
+      if (!deserializeJson(doc, message)) {
+        bool power   = doc["power"] | false;
+        uint8_t speed = doc["speed"] | 0;
+        const char* dir = doc["direction"] | "exhaust";
+        bool dirIn   = (strcmp(dir, "intake") == 0);
+        bool lidOpen = (strcmp(doc["lid"] | "closed", "open") == 0);
+        gui_set_fan_data(power ? speed : 0, dirIn, lidOpen);
+      }
+      return;
+    }
   }
 #endif  // HAS_RGB_LCD
 
