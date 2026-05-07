@@ -19,8 +19,21 @@ System design of paku-core (EDGE firmware) and its integration with the Paku IoT
     └───────────────────┘
 ```
 
-- **paku-core (EDGE)** — ESP32 firmware: sensor collection, MQTT publishing
+- **paku-core (EDGE)** — ESP32 firmware: sensor collection, MQTT publishing, actuator control
 - **paku-iot (HOST)** — Collector, PostgreSQL, Grafana, OTA service (Docker Compose)
+
+## Device Roles
+
+Boards are assigned one of two roles at compile time via `device_config.h`:
+
+| Role | Boards | Responsibilities |
+|------|--------|-----------------|
+| **Data board** | ESP32 CH340C, ESP8266, LilyGo T-Display S3 | BLE/wired sensor acquisition; heater, fan, and light actuator control |
+| **GUI board** | Waveshare 4.3" / 5" | LVGL touch display; receives sensor data via MQTT; forwards control commands to shared topics |
+
+GUI boards have `HAS_BLE 0` — they never scan BLE directly. Sensor data reaches them by subscribing to `paku/sensors/+/data` and `paku/heater/+/data`.
+
+Active peripherals on data boards are configurable at runtime without reflash via `paku/edge/{device_id}/config/set` (`peripherals.*` fields).
 
 ## EDGE Component Architecture
 
@@ -75,8 +88,39 @@ in paku-iot's [mqtt_schema.md](https://github.com/ychefla/paku-iot/blob/main/doc
 |-------|-----------|-------------|
 | `paku/devices/{device_id}/cmd/wifi` | HOST → EDGE | WiFi scan command |
 | `paku/devices/{device_id}/cmd/ruuvi` | HOST → EDGE | Ruuvi scan command |
-| `paku/heater/{device_id}/cmd` | HOST → EDGE | Heater control |
 | `paku/control` | HOST → EDGE | Legacy broadcast control |
+
+### Actuator Control (shared topics)
+
+Commands for lights, fan, and heater use **shared topics** so that HA and Waveshare
+touchscreen can send commands without knowing which specific data board has the hardware,
+and without caring whether the GUI board is online.
+
+Data boards subscribe to both the shared topic and their device-specific equivalent;
+either will trigger the same handler.
+
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `paku/cmd/light/{1-4}` | ANY → DATA | MiLight zone on/off/brightness/color_temp |
+| `paku/cmd/light/all` | ANY → DATA | Apply to all 4 MiLight zones atomically |
+| `paku/cmd/fan` | ANY → DATA | MaxxFan power/speed/direction/lid/mode |
+| `paku/cmd/heater` | ANY → DATA | Heater start/stop/vent with mode and target |
+
+Device-specific equivalents (still subscribed, kept for direct targeting):
+
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `paku/edge/{device_id}/cmd/light/{1-4\|all}` | HOST → EDGE | Per-device light command |
+| `paku/edge/{device_id}/cmd/fan` | HOST → EDGE | Per-device fan command |
+| `paku/heater/{device_id}/cmd` | HOST → EDGE | Per-device heater command |
+
+### Actuator Status (device-specific)
+
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `paku/edge/{device_id}/status/light/{1-4}` | EDGE → HOST | Light zone state (retained) |
+| `paku/edge/{device_id}/status/fan` | EDGE → HOST | Fan state |
+| `paku/heater/{device_id}/data` | EDGE → HOST | Heater metrics JSON |
 
 ### Payload Format
 
