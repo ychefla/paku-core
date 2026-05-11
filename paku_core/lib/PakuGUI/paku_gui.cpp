@@ -269,7 +269,15 @@ static void sidebar_long_press_cb(lv_event_t *e) {
 
 void gui_init() {
     // Initialise hardware (display, touch, LVGL drivers)
-    waveshare_hal_init();
+    if (!waveshare_hal_init()) {
+        // HAL init can fail after a warm restart (e.g. OTA reboot) if the
+        // I2C bus is left in a held-LOW state by CH422G or GT911.  LVGL is
+        // not initialised in that case, so calling any lv_* function would
+        // crash.  Force a clean cold-boot cycle instead.
+        Serial.println("[GUI] FATAL: waveshare_hal_init failed — restarting");
+        delay(1000);
+        ESP.restart();
+    }
 
     // Build a mutable font = Montserrat 28 with paku_icons_28 fallback.
     // Cannot modify the built-in const font directly (flash memory).

@@ -31,6 +31,9 @@
 #include "esp32s3/rom/cache.h"
 extern int Cache_WriteBack_Addr(uint32_t addr, uint32_t size);
 
+/* --- Reset reason (warm vs cold boot detection) --- */
+#include "esp_system.h"
+
 /* --- FreeRTOS semaphore for VBlank sync --- */
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -105,17 +108,33 @@ static bool on_vsync_ready(esp_lcd_panel_handle_t panel,
  *
  * Pulse LCD_RST and TP_RST LOW for ~20 ms then release HIGH.
  * Backlight is also turned on at the end.
+ * On warm restart (software reset / OTA reboot) the ST7262 panel needs
+ * a longer reset time to fully return to an idle state.
  */
 static void hw_reset_sequence() {
+    // Use longer reset delays after a software reset (e.g. post-OTA reboot).
+    // After ESP.restart() the panel is still powered but the DMA engine was
+    // torn down; a short pulse may not be enough to return the panel to idle.
+    esp_reset_reason_t reason = esp_reset_reason();
+    bool warmBoot = (reason == ESP_RST_SW || reason == ESP_RST_PANIC ||
+                     reason == ESP_RST_INT_WDT || reason == ESP_RST_TASK_WDT);
+
+    uint32_t rstLowMs    = warmBoot ? 100 : 20;
+    uint32_t rstSettleMs = warmBoot ? 200 : 50;
+
+    if (warmBoot) {
+        Serial.println("[WS_HAL] Warm restart detected — using extended panel reset timing");
+    }
+
     // All outputs LOW initially
     ioExpander.writeOutputs(0x00);
-    delay(20);
+    delay(rstLowMs);
 
     // Bring LCD_RST and TP_RST HIGH, enable backlight
     ioExpander.digitalWrite(CH422G_EXIO_LCD_RST, HIGH);
     ioExpander.digitalWrite(CH422G_EXIO_TP_RST,  HIGH);
     ioExpander.digitalWrite(CH422G_EXIO_LCD_BL,   HIGH);
-    delay(50);
+    delay(rstSettleMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -337,11 +356,31 @@ static void lv_touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
 bool waveshare_hal_init() {
     Serial.println("[WS_HAL] Initialising Waveshare display HAL...");
 
-    // 1. I2C bus — 100 kHz standard mode.
-    // 400 kHz Fast-mode makes each touch read ~250 µs shorter, but the
-    // burst of fast PSRAM-contending traffic worsens screen drift.
-    // At 100 kHz each I2C transaction is longer (~1 ms) but lower
-    // peak bus bandwidth, spreading the PSRAM impact more evenly.
+    // 1. I2C bus recovery + init.
+    //
+    // After a software reset (e.g. OTA reboot) the I2C bus can be left in a
+    // stuck state: CH422G or GT911 may hold SDA LOW because an in-flight
+    // transaction was interrupted by the reset.  The ESP32 I2C peripheral
+    // does not automatically recover this.  Clock out 9 SCL pulses to flush
+    // the stuck slave, then generate a STOP condition before Wire.begin().
+    {
+        pinMode(PIN_IIC_SCL, OUTPUT);
+        pinMode(PIN_IIC_SDA, INPUT_PULLUP);
+        for (int i = 0; i < 9; i++) {
+            digitalWrite(PIN_IIC_SCL, HIGH); delayMicroseconds(5);
+            digitalWrite(PIN_IIC_SCL, LOW);  delayMicroseconds(5);
+        }
+        // STOP: SDA LOW → SCL HIGH → SDA HIGH
+        pinMode(PIN_IIC_SDA, OUTPUT);
+        digitalWrite(PIN_IIC_SDA, LOW);
+        delayMicroseconds(5);
+        digitalWrite(PIN_IIC_SCL, HIGH);
+        delayMicroseconds(5);
+        digitalWrite(PIN_IIC_SDA, HIGH);
+        delayMicroseconds(5);
+    }
+
+    // 100 kHz standard mode — see comment in original code re. drift.
     Wire.begin(PIN_IIC_SDA, PIN_IIC_SCL);
     Wire.setClock(100000);  // 100 kHz standard mode (drift mitigation)
 

@@ -8,6 +8,7 @@
 // Platform-specific WiFi includes
 #ifdef ESP32
 #include <WiFi.h>
+#include "esp_task_wdt.h"
 #elif defined(ESP8266)
 #include <ESP8266WiFi.h>
 #endif
@@ -554,6 +555,13 @@ OtaResult OtaClient::downloadFirmware() {
                 bytesWritten += written;
                 updateProgress(bytesWritten, contentLength);
                 lastUpdate = millis();
+
+#ifdef ESP32
+                // Feed the task watchdog — the download is blocking and
+                // the regular waveshare_hal_loop() / lv_timer_handler()
+                // that normally resets the WDT is not called here.
+                esp_task_wdt_reset();
+#endif
             }
         } else {
             yield(); // Allow other tasks to run
