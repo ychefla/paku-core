@@ -177,8 +177,8 @@
 #define PIN_IR_LED                   25   // GPIO25 — connect IR LED here
 
 /* NRF24L01+ for MiLight/MIBO control (VSPI bus) */
-#define PIN_NRF24_CE                 5    // Chip Enable
-#define PIN_NRF24_CSN                15   // SPI Chip Select
+#define PIN_NRF24_CE                 22   // Chip Enable
+#define PIN_NRF24_CSN                21   // SPI Chip Select
 #define PIN_NRF24_SCK                18   // VSPI SCK
 #define PIN_NRF24_MOSI               23   // VSPI MOSI
 #define PIN_NRF24_MISO               19   // VSPI MISO
