@@ -18,6 +18,7 @@
 
 struct ZoneWidgets {
     lv_obj_t *card;
+    lv_obj_t *sw;        // ON/OFF toggle switch
     lv_obj_t *sldBright;
     lv_obj_t *lblBright;
     lv_obj_t *sldCTemp;
@@ -149,10 +150,32 @@ static void sync_master_controls() {
 //  Callbacks
 // ---------------------------------------------------------------------------
 
+// Guard against re-entrant switch updates from programmatic state changes
+static bool _ignoring_sw_cb = false;
+
+static void zone_switch_cb(lv_event_t *e) {
+    Serial.printf("[LIGHTS] zone_switch_cb idx=%d\n", (int)(intptr_t)lv_event_get_user_data(e));
+    if (_ignoring_sw_cb) return;
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    lv_obj_t *sw = lv_event_get_target(e);
+    zoneOn[idx] = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    update_zone_visuals(idx);
+    sync_master_controls();
+    if (_cb_light) _cb_light((uint8_t)idx, zoneOn[idx], zoneBright[idx], zoneCTemp[idx]);
+}
+
 static void zone_card_toggle_cb(lv_event_t *e) {
+    Serial.printf("[LIGHTS] zone_card_toggle_cb idx=%d\n", (int)(intptr_t)lv_event_get_user_data(e));
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     zoneOn[idx] = !zoneOn[idx];
+    _ignoring_sw_cb = true;
+    if (zw[idx].sw) {
+        if (zoneOn[idx]) lv_obj_add_state(zw[idx].sw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(zw[idx].sw, LV_STATE_CHECKED);
+    }
+    _ignoring_sw_cb = false;
     update_zone_visuals(idx);
+    sync_master_controls();
     if (_cb_light) _cb_light((uint8_t)idx, zoneOn[idx], zoneBright[idx], zoneCTemp[idx]);
 }
 
@@ -162,7 +185,9 @@ static void zone_bright_cb(lv_event_t *e) {
     zoneBright[idx] = (uint8_t)val;
     char buf[8]; snprintf(buf, sizeof(buf), "%d", val);
     lv_label_set_text(zw[idx].lblBright, buf);
-    if (_cb_light) _cb_light((uint8_t)idx, zoneOn[idx], zoneBright[idx], zoneCTemp[idx]);
+    // Only publish MQTT on release, not every drag tick
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED && _cb_light)
+        _cb_light((uint8_t)idx, zoneOn[idx], zoneBright[idx], zoneCTemp[idx]);
 }
 
 static void zone_ctemp_cb(lv_event_t *e) {
@@ -172,14 +197,14 @@ static void zone_ctemp_cb(lv_event_t *e) {
     char buf[8]; snprintf(buf, sizeof(buf), "%d", val);
     lv_label_set_text(zw[idx].lblCTemp, buf);
     update_zone_visuals(idx);
-    if (_cb_light) _cb_light((uint8_t)idx, zoneOn[idx], zoneBright[idx], zoneCTemp[idx]);
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED && _cb_light)
+        _cb_light((uint8_t)idx, zoneOn[idx], zoneBright[idx], zoneCTemp[idx]);
 }
 
 static void master_bright_cb(lv_event_t *e) {
     int val = lv_slider_get_value(_sldMBright);
     char buf[8]; snprintf(buf, sizeof(buf), "%d", val);
     lv_label_set_text(_lblMBright, buf);
-    // Apply to all zones
     for (int i = 0; i < NUM_ZONES; i++) {
         zoneBright[i] = (uint8_t)val;
         if (zw[i].sldBright) lv_slider_set_value(zw[i].sldBright, val, LV_ANIM_OFF);
@@ -187,7 +212,10 @@ static void master_bright_cb(lv_event_t *e) {
             char tb[8]; snprintf(tb, sizeof(tb), "%d", val);
             lv_label_set_text(zw[i].lblBright, tb);
         }
-        if (_cb_light) _cb_light((uint8_t)i, zoneOn[i], zoneBright[i], zoneCTemp[i]);
+    }
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED && _cb_light) {
+        for (int i = 0; i < NUM_ZONES; i++)
+            _cb_light((uint8_t)i, zoneOn[i], zoneBright[i], zoneCTemp[i]);
     }
 }
 
@@ -195,7 +223,6 @@ static void master_ctemp_cb(lv_event_t *e) {
     int val = lv_slider_get_value(_sldMCTemp);
     char buf[8]; snprintf(buf, sizeof(buf), "%d", val);
     lv_label_set_text(_lblMCTemp, buf);
-    // Apply to all zones
     for (int i = 0; i < NUM_ZONES; i++) {
         zoneCTemp[i] = (uint16_t)val;
         if (zw[i].sldCTemp) lv_slider_set_value(zw[i].sldCTemp, val, LV_ANIM_OFF);
@@ -204,13 +231,19 @@ static void master_ctemp_cb(lv_event_t *e) {
             lv_label_set_text(zw[i].lblCTemp, tb);
         }
         update_zone_visuals(i);
-        if (_cb_light) _cb_light((uint8_t)i, zoneOn[i], zoneBright[i], zoneCTemp[i]);
+    }
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED && _cb_light) {
+        for (int i = 0; i < NUM_ZONES; i++)
+            _cb_light((uint8_t)i, zoneOn[i], zoneBright[i], zoneCTemp[i]);
     }
 }
 
 static void all_on_cb(lv_event_t *e) {
     for (int i = 0; i < NUM_ZONES; i++) {
         zoneOn[i] = true;
+        _ignoring_sw_cb = true;
+        if (zw[i].sw) lv_obj_add_state(zw[i].sw, LV_STATE_CHECKED);
+        _ignoring_sw_cb = false;
         update_zone_visuals(i);
         if (_cb_light) _cb_light((uint8_t)i, true, zoneBright[i], zoneCTemp[i]);
     }
@@ -221,6 +254,9 @@ static void all_on_cb(lv_event_t *e) {
 static void all_off_cb(lv_event_t *e) {
     for (int i = 0; i < NUM_ZONES; i++) {
         zoneOn[i] = false;
+        _ignoring_sw_cb = true;
+        if (zw[i].sw) lv_obj_clear_state(zw[i].sw, LV_STATE_CHECKED);
+        _ignoring_sw_cb = false;
         update_zone_visuals(i);
         if (_cb_light) _cb_light((uint8_t)i, false, zoneBright[i], zoneCTemp[i]);
     }
@@ -331,11 +367,13 @@ static lv_obj_t *create_master_panel(lv_obj_t *parent) {
     create_overlay_slider(panel, "Brightness", 0, 100, 75,
                           &_sldMBright, &_lblMBright, GUI_COLOR_ACCENT);
     lv_obj_add_event_cb(_sldMBright, master_bright_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(_sldMBright, master_bright_cb, LV_EVENT_RELEASED, nullptr);
 
     // Master color temp slider with overlay
     create_overlay_slider(panel, "Color Temp", 2700, 6500, 4000,
                           &_sldMCTemp, &_lblMCTemp, GUI_COLOR_ACCENT);
     lv_obj_add_event_cb(_sldMCTemp, master_ctemp_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(_sldMCTemp, master_ctemp_cb, LV_EVENT_RELEASED, nullptr);
 
     return panel;
 }
@@ -380,16 +418,36 @@ static lv_obj_t *create_zone_card(lv_obj_t *grid, int idx) {
     lv_obj_clear_flag(nameLbl, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(nameLbl, LV_OBJ_FLAG_EVENT_BUBBLE);
 
+    // Spacer pushes switch to right edge
+    lv_obj_t *hdrSpacer = lv_obj_create(header);
+    lv_obj_set_size(hdrSpacer, 0, 0);
+    lv_obj_set_flex_grow(hdrSpacer, 1);
+    lv_obj_set_style_bg_opa(hdrSpacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hdrSpacer, 0, 0);
+    lv_obj_set_style_pad_all(hdrSpacer, 0, 0);
+    lv_obj_clear_flag(hdrSpacer, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    // ON/OFF toggle switch — primary toggle control for the zone
+    lv_obj_t *sw = lv_switch_create(header);
+    lv_obj_set_size(sw, 44, 22);
+    if (zoneOn[idx]) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, GUI_COLOR_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_clear_flag(sw, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_event_cb(sw, zone_switch_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)idx);
+    zw[idx].sw = sw;
+
     // Brightness slider with overlay (at bottom of card)
     lv_color_t zoneCol = ctemp_to_color(zoneCTemp[idx]);
     create_overlay_slider(card, "Bright", 0, 100, zoneBright[idx],
                           &zw[idx].sldBright, &zw[idx].lblBright, zoneCol);
     lv_obj_add_event_cb(zw[idx].sldBright, zone_bright_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)idx);
+    lv_obj_add_event_cb(zw[idx].sldBright, zone_bright_cb, LV_EVENT_RELEASED, (void *)(intptr_t)idx);
 
     // Color temp slider with overlay (at bottom of card)
     create_overlay_slider(card, "Color", 2700, 6500, zoneCTemp[idx],
                           &zw[idx].sldCTemp, &zw[idx].lblCTemp, zoneCol);
     lv_obj_add_event_cb(zw[idx].sldCTemp, zone_ctemp_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)idx);
+    lv_obj_add_event_cb(zw[idx].sldCTemp, zone_ctemp_cb, LV_EVENT_RELEASED, (void *)(intptr_t)idx);
 
     // Active border
     update_zone_visuals(idx);
@@ -411,9 +469,10 @@ static lv_obj_t *create_zone_grid(lv_obj_t *parent) {
     lv_obj_set_grid_dsc_array(grid, col_dsc, row_dsc);
     lv_obj_set_style_pad_gap(grid, GUI_PAD_SM, 0);
 
-    // Grid layout: top row L→R (Ceiling, Counter), bottom row swapped
-    // so Under Bed (idx 3) is bottom-left and Drawers (idx 2) is bottom-right
-    static const int colMap[NUM_ZONES] = {0, 1, 1, 0};
+    // Grid layout matches the MiLight remote: Ceiling top-left (zone 1),
+    // Counter top-right (zone 2), Under Bed bottom-left (zone 3), Drawers
+    // bottom-right (zone 4). Index = zone - 1.
+    static const int colMap[NUM_ZONES] = {0, 1, 0, 1};
     for (int i = 0; i < NUM_ZONES; i++) {
         lv_obj_t *card = create_zone_card(grid, i);
         lv_obj_set_grid_cell(card,
@@ -579,6 +638,13 @@ void gui_tab_lights_set_zone(uint8_t zone, bool on, uint8_t brightness, uint16_t
     zoneOn[zone] = on;
     zoneBright[zone] = brightness;
     zoneCTemp[zone] = colorTemp;
+
+    if (zw[zone].sw) {
+        _ignoring_sw_cb = true;
+        if (on) lv_obj_add_state(zw[zone].sw, LV_STATE_CHECKED);
+        else    lv_obj_clear_state(zw[zone].sw, LV_STATE_CHECKED);
+        _ignoring_sw_cb = false;
+    }
 
     if (zw[zone].sldBright) lv_slider_set_value(zw[zone].sldBright, brightness, LV_ANIM_ON);
     if (zw[zone].lblBright) {

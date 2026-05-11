@@ -966,7 +966,7 @@ namespace LightScreenLayout {
 }
 
 // Zone names for the 4 MiLight channels
-static const char* LIGHT_ZONE_NAMES[] = { nullptr, "Ceiling", "Counter", "Drawers", "Under Bed" };
+static const char* LIGHT_ZONE_NAMES[] = { nullptr, "Ceiling", "Counter", "Under Bed", "Drawers" };
 static uint8_t displayLightZone = 1; // Currently displayed zone (1-4)
 
 void DisplayUI::renderLightScreen() {
