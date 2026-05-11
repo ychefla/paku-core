@@ -384,6 +384,8 @@ void waveshare_hal_set_wake_callback(WaveshareWakeCallback cb) {
 
 static void _dim_overlay_pressed_cb(lv_event_t *e) {
     (void)e;
+    Serial.printf("[WS_HAL] dim overlay PRESSED → wakeCb=%s\n",
+                  _wakeCb ? "set" : "NULL");
     if (_wakeCb) _wakeCb();
 }
 
@@ -405,6 +407,7 @@ void waveshare_hal_set_backlight(uint8_t percent) {
 
     if (percent == 0) {
         // Full blackout — opaque overlay absorbs all touches + HW off
+        Serial.println("[WS_HAL] backlight 0% → dim overlay opaque + clickable, BL low");
         lv_obj_clear_flag(_dimOverlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_bg_opa(_dimOverlay, LV_OPA_COVER, 0);
         lv_obj_add_flag(_dimOverlay, LV_OBJ_FLAG_CLICKABLE);

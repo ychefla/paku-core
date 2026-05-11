@@ -201,11 +201,22 @@ static void _touch_guard_cb(lv_event_t *e) {
 /**
  * @brief Restore backlight and install a touch guard. Shared by tick() and
  * the explicit wake() path used by waveshare_hal's dim overlay handler.
+ *
+ * Called from two paths:
+ *   - tick(): only when _sleeping is true and inactivity dropped below timeout.
+ *   - waveshare_hal dim-overlay PRESSED: only when the user manually slid
+ *     brightness to 0 % (or the screen blacked out via tick); in that case
+ *     _sleeping may still be false because the slider handler doesn't set it.
+ *     So no _sleeping guard here — the PRESSED event itself is the trigger.
  */
 static void _do_wake() {
-    if (!_sleeping) return;
     _sleeping = false;
-    if (_cb_backlight) _cb_backlight(_savedBrightness);
+    // Restore to a useful brightness. If the user slid brightness to 0 %
+    // manually, _savedBrightness still holds whatever the previous value was
+    // (100 on cold boot, or the last non-zero level after a tick-based sleep).
+    uint8_t restore = _savedBrightness > 0 ? _savedBrightness : 100;
+    Serial.printf("[GUI] wake → backlight=%u%%\n", restore);
+    if (_cb_backlight) _cb_backlight(restore);
 
     // Invisible touch-absorbing overlay so the wake-up touch doesn't reach
     // any widget underneath. Removed on next CLICKED.
