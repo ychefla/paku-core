@@ -112,6 +112,7 @@ lcd_cmd_t lcd_st7789v[] = {
 #if HAS_RGB_LCD
 #include "paku_gui.h"
 #include "waveshare_hal.h"
+#include "gui_tab_settings.h"
 #endif
 
 // BLE settings (ESP32 only)
@@ -659,16 +660,18 @@ String getISO8601Timestamp() {
 #if HAS_RGB_LCD
 
 static void on_gui_light_changed(uint8_t zone, bool on, uint8_t brightness, uint16_t colorTempK) {
+    Serial.printf("[DBG] GUI light cb zone=%u conn=%d\n", zone + 1, client.connected());
     if (!client.connected()) return;
     // Publish to shared topic so data board receives regardless of which board HA points to
     String topic = String("paku/cmd/light/") + (zone + 1);
     JsonDocument doc;
     doc["state"]      = on ? "ON" : "OFF";
     doc["brightness"] = brightness;
-    // Convert Kelvin to Mired (153-500); clamp to valid HA range
+    // Convert Kelvin to Mired and clamp to the bulb's spec'd 2700-6500 K range
+    // (= 153..370 mireds). Anything outside saturates to the closest endpoint.
     uint16_t mired = (colorTempK > 0) ? (uint16_t)(1000000UL / colorTempK) : 370;
     if (mired < 153) mired = 153;
-    if (mired > 500) mired = 500;
+    if (mired > 370) mired = 370;
     doc["color_temp"] = mired;
     String payload;
     serializeJson(doc, payload);
@@ -825,6 +828,8 @@ void setup() {
     gui_on_heater_changed(on_gui_heater_changed);
     gui_on_backlight_changed(on_gui_backlight_changed);
     gui_on_restart(on_gui_restart);
+    // Wake the screen instantly on a touch while it's blacked-out.
+    waveshare_hal_set_wake_callback(gui_tab_settings_wake);
     // Preset callbacks removed — home tab now applies presets directly
     // via the individual light/heater/fan callbacks registered above.
     Serial.println("Waveshare GUI initialized");
@@ -977,6 +982,9 @@ void setup() {
     if (deviceConfig.peripherals.milight) {
         Serial.println("Setup MiLight Light Controller...");
         if (milight_init(PIN_NRF24_CE, PIN_NRF24_CSN, PIN_NRF24_SCK, PIN_NRF24_MOSI, PIN_NRF24_MISO)) {
+#ifdef MILIGHT_DEVICE_ID
+            milight_set_device_id(MILIGHT_DEVICE_ID);
+#endif
             Serial.println("  MiLight controller initialized");
             milightActive = true;
         } else {
@@ -1784,8 +1792,10 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
     // HA or another client changes the state of lights or the fan.
     mqttClient.subscribe("paku/edge/+/status/light/+");
     mqttClient.subscribe("paku/edge/+/status/fan");
+    mqttClient.subscribe("paku/edge/+/status/heater");
     Serial.println("  Subscribed to paku/edge/+/status/light/+ (GUI light sync)");
     Serial.println("  Subscribed to paku/edge/+/status/fan (GUI fan sync)");
+    Serial.println("  Subscribed to paku/edge/+/status/heater (GUI heater sync)");
 #endif
 
     // Publish device status (announce we're online)
@@ -4023,6 +4033,15 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       }
       return;
     }
+    if (topicStr.endsWith("/status/heater")) {
+      JsonDocument doc;
+      if (!deserializeJson(doc, message)) {
+        int hState     = doc["state"] | 0;
+        float target   = doc["target_temp"] | -1.0f;
+        gui_set_heater_data(hState, target, 0);
+      }
+      return;
+    }
   }
 #endif  // HAS_RGB_LCD
 
@@ -4518,22 +4537,38 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     LOG_INFO("MQTT", "Heater command received: %s", message.c_str());
     if (heaterAddonActive) heater_addon_command(message.c_str(), message.length());
 
-#if HAS_RGB_LCD
-    // Parse command to update Waveshare GUI immediately
+    // Parse command → publish status feedback for GUI board and HA sync
     {
       JsonDocument cmdDoc;
       if (!deserializeJson(cmdDoc, message)) {
-        const char* cmd = cmdDoc["cmd"] | "";
-        if (strcmp(cmd, "start") == 0) {
-          const char* mode = cmdDoc["mode"] | "power";
-          float target = cmdDoc["target_temp"] | 21;
-          gui_set_heater_data(1, target, 0);  // 1=STARTING
-        } else if (strcmp(cmd, "stop") == 0) {
-          gui_set_heater_data(3, -1, 0);  // 3=STOPPING
+        const char* cmd_str = cmdDoc["cmd"] | "";
+        JsonDocument statusDoc;
+        statusDoc["cmd"] = cmd_str;
+        if (strcmp(cmd_str, "start") == 0) {
+          statusDoc["state"] = 1;  // STARTING
+          statusDoc["mode"]  = cmdDoc["mode"] | "power";
+          if (!cmdDoc["target_temp"].isNull()) statusDoc["target_temp"] = cmdDoc["target_temp"].as<float>();
+          if (!cmdDoc["power"].isNull())       statusDoc["power"]       = cmdDoc["power"].as<int>();
+        } else if (strcmp(cmd_str, "stop") == 0) {
+          statusDoc["state"] = 3;  // STOPPING
+        } else if (strcmp(cmd_str, "vent") == 0) {
+          statusDoc["state"] = 1;
+          statusDoc["mode"]  = "vent";
+          if (!cmdDoc["power"].isNull()) statusDoc["power"] = cmdDoc["power"].as<int>();
         }
+        statusDoc["timestamp"] = getISO8601Timestamp();
+        String statusPayload;
+        serializeJson(statusDoc, statusPayload);
+        String heaterStatusTopic = String("paku/edge/") + deviceId + "/status/heater";
+        client.publish(heaterStatusTopic.c_str(), statusPayload.c_str(), true);  // retained
+
+#if HAS_RGB_LCD
+        int hState   = statusDoc["state"] | 0;
+        float target = cmdDoc["target_temp"] | -1.0f;
+        gui_set_heater_data(hState, target, 0);
+#endif
       }
     }
-#endif
 
     return;
   }
@@ -4617,8 +4652,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     
     String statusPayload;
     serializeJson(statusDoc, statusPayload);
-    client.publish(statusTopic.c_str(), statusPayload.c_str());
-    
+    client.publish(statusTopic.c_str(), statusPayload.c_str(), true);  // retained so GUI gets state on subscribe
+
     return;
   }
 #endif // HAS_FAN_IR
@@ -4689,11 +4724,11 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           statusDoc["timestamp"]  = getISO8601Timestamp();
           String statusPayload;
           serializeJson(statusDoc, statusPayload);
-          client.publish(statusTopic.c_str(), statusPayload.c_str());
-        }
-      }
+          client.publish(statusTopic.c_str(), statusPayload.c_str(), true);
+        }  // if (changed && milight_send_state)
+      }  // for ch
       return;
-    }
+    }  // if (suffix == "all")
 
     // ── Per-zone: cmd/light/{1-4} ────────────────────────────────────────
     // Extract channel from topic suffix
