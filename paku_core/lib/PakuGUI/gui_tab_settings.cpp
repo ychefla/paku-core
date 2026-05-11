@@ -198,6 +198,32 @@ static void _touch_guard_cb(lv_event_t *e) {
     }
 }
 
+/**
+ * @brief Restore backlight and install a touch guard. Shared by tick() and
+ * the explicit wake() path used by waveshare_hal's dim overlay handler.
+ */
+static void _do_wake() {
+    if (!_sleeping) return;
+    _sleeping = false;
+    if (_cb_backlight) _cb_backlight(_savedBrightness);
+
+    // Invisible touch-absorbing overlay so the wake-up touch doesn't reach
+    // any widget underneath. Removed on next CLICKED.
+    if (!_touchGuard) {
+        _touchGuard = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(_touchGuard);
+        lv_obj_set_size(_touchGuard, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_style_bg_opa(_touchGuard, LV_OPA_TRANSP, 0);
+        lv_obj_add_flag(_touchGuard, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(_touchGuard, _touch_guard_cb,
+                            LV_EVENT_CLICKED, nullptr);
+    }
+}
+
+void gui_tab_settings_wake() {
+    _do_wake();
+}
+
 void gui_tab_settings_tick() {
     if (_sleepTimeoutMs == 0) return;   // sleep disabled
 
@@ -210,19 +236,6 @@ void gui_tab_settings_tick() {
         if (_cb_backlight) _cb_backlight(0);
     } else if (_sleeping && idle < _sleepTimeoutMs) {
         // Touch detected while sleeping — restore backlight
-        _sleeping = false;
-        if (_cb_backlight) _cb_backlight(_savedBrightness);
-
-        // Place an invisible touch-absorbing overlay on lv_layer_top()
-        // so the wake-up touch doesn't reach any widget underneath.
-        if (!_touchGuard) {
-            _touchGuard = lv_obj_create(lv_layer_top());
-            lv_obj_remove_style_all(_touchGuard);
-            lv_obj_set_size(_touchGuard, LV_PCT(100), LV_PCT(100));
-            lv_obj_set_style_bg_opa(_touchGuard, LV_OPA_TRANSP, 0);
-            lv_obj_add_flag(_touchGuard, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(_touchGuard, _touch_guard_cb,
-                                LV_EVENT_CLICKED, nullptr);
-        }
+        _do_wake();
     }
 }

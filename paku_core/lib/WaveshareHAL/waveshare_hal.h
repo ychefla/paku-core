@@ -54,3 +54,14 @@ void waveshare_hal_loop();
  * control is not available without hardware modification.
  */
 void waveshare_hal_set_backlight(uint8_t percent);
+
+/**
+ * @brief Register a callback invoked when the user touches a fully-dimmed
+ * (percent == 0) screen, so the application can wake the UI.
+ *
+ * The callback fires from LVGL's PRESSED event on the dim overlay, runs in
+ * the LVGL task context, and must be fast and non-blocking. Pass nullptr to
+ * unregister.
+ */
+typedef void (*WaveshareWakeCallback)(void);
+void waveshare_hal_set_wake_callback(WaveshareWakeCallback cb);

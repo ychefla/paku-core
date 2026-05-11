@@ -320,6 +320,11 @@ static void lv_touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
         data->point.x = p.x;
         data->point.y = p.y;
         data->state = LV_INDEV_STATE_PR;
+        static uint32_t lastPrint = 0;
+        if (millis() - lastPrint > 300) {
+            Serial.printf("[TOUCH] x=%d y=%d\n", p.x, p.y);
+            lastPrint = millis();
+        }
     } else {
         data->state = LV_INDEV_STATE_REL;
     }
@@ -369,6 +374,19 @@ void waveshare_hal_loop() {
 /// A full-screen black rectangle on lv_layer_top() with variable opacity.
 static lv_obj_t *_dimOverlay = nullptr;
 
+/// Optional callback fired when the dim overlay receives a touch while the
+/// screen is fully dimmed. Set via waveshare_hal_set_wake_callback().
+static WaveshareWakeCallback _wakeCb = nullptr;
+
+void waveshare_hal_set_wake_callback(WaveshareWakeCallback cb) {
+    _wakeCb = cb;
+}
+
+static void _dim_overlay_pressed_cb(lv_event_t *e) {
+    (void)e;
+    if (_wakeCb) _wakeCb();
+}
+
 void waveshare_hal_set_backlight(uint8_t percent) {
     // Simulate brightness with a black overlay on lv_layer_top().
     // 100% → fully transparent (no dimming), 0% → fully opaque black.
@@ -378,6 +396,11 @@ void waveshare_hal_set_backlight(uint8_t percent) {
         lv_obj_set_size(_dimOverlay, LV_PCT(100), LV_PCT(100));
         lv_obj_set_style_bg_color(_dimOverlay, lv_color_black(), 0);
         lv_obj_clear_flag(_dimOverlay, LV_OBJ_FLAG_CLICKABLE);
+        // Wake-on-touch: a PRESSED on the dim overlay always invokes the
+        // app's wake callback. Touches at any other dim level pass through
+        // because CLICKABLE is cleared.
+        lv_obj_add_event_cb(_dimOverlay, _dim_overlay_pressed_cb,
+                            LV_EVENT_PRESSED, nullptr);
     }
 
     if (percent == 0) {
