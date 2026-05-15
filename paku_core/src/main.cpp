@@ -118,6 +118,20 @@ lcd_cmd_t lcd_st7789v[] = {
 // BLE settings (ESP32 only)
 #if HAS_BLE
 bool scanBT_enabled = true;
+// Binary semaphore used to synchronise BLE deinit/reinit with the MQTT cycle.
+//
+// Protocol:
+//   scanBT task  : takes semaphore before each scan, gives it back when done
+//                  (or when pausing between scans)
+//   main task    : takes semaphore to guarantee scan has finished, then calls
+//                  BLEDevice::deinit(true); gives semaphore back when done so
+//                  scanBT task can reinit and continue
+//
+// This eliminates the race condition where deinit() was called while a 5-second
+// scan was still running.
+SemaphoreHandle_t bleScanMutex = nullptr;
+// True while main task holds bleScanMutex for MQTT TLS (BLE is deinited)
+bool bleTakenForMqtt = false;
 // BLE scan interval in milliseconds between scan cycles
 #define BLE_SCAN_INTERVAL_MS 10000
 
@@ -1027,6 +1041,11 @@ void setup() {
     Serial.println("Phase 2: State machine initialized");
     
 #if HAS_BLE
+    // Binary semaphore for BLE deinit/reinit synchronisation with MQTT TLS.
+    // Created in the "given" state so scanBT task can take it immediately.
+    bleScanMutex = xSemaphoreCreateBinary();
+    xSemaphoreGive(bleScanMutex);
+
     // Create a task for scanning Bluetooth devices (ESP32 only)
     xTaskCreate(
       scanBT,          // Function to be called
@@ -2306,10 +2325,24 @@ void createPlaceholderPayloads(const char* timestamp) {
 
 // Function to scan for Bluetooth devices and parse RuuviTag data
 void scanBT(void* parameter) {
-  // Initialize BLE once
+  // Initialize BLE once at task start
   BLEDevice::init("");
-  
+
   while (scanBT_enabled) {
+    // Take mutex: main task may hold it while doing BLE deinit for MQTT TLS.
+    // When main releases it, we reinit and continue scanning.
+    if (xSemaphoreTake(bleScanMutex, portMAX_DELAY) != pdTRUE) continue;
+
+    // If BLE was deinited by main task, reinit it now from this task context.
+    // BLEDevice::init() must run in the task that will use BLE to avoid
+    // ESP_ERR_INVALID_STATE (err 259) on scan param setup.
+    if (!BLEDevice::getInitialized()) {
+      BLEDevice::init("");
+      vTaskDelay(200 / portTICK_PERIOD_MS);  // Let BT controller stabilise
+      Serial.printf("[BLE] Reinited in scanBT task — heap free=%u\n",
+                    ESP.getFreeHeap());
+    }
+
     Serial.println("Starting Bluetooth scan...");
 
     // Create a BLE scan object
@@ -2392,11 +2425,15 @@ void scanBT(void* parameter) {
     // Clear the scan results
     pBLEScan->clearResults();
 
+    // Release mutex — main task may now safely deinit BLE for MQTT TLS.
+    xSemaphoreGive(bleScanMutex);
+
     // Delay before the next scan using configured interval
     vTaskDelay(BLE_SCAN_INTERVAL_MS / portTICK_PERIOD_MS);
   }
 
   // Delete the task if scanBT_enabled is set to false
+  xSemaphoreGive(bleScanMutex);
   vTaskDelete(NULL);
 }
 #endif // HAS_BLE
@@ -3330,6 +3367,22 @@ void handleSystemState() {
       switch (connectPhase) {
 
         case PHASE_SCAN_START: {
+#if HAS_BLE
+          // Take the semaphore to guarantee the scanBT task has finished its
+          // current scan before we deinit the BLE stack for TLS memory.
+          // xSemaphoreTake with 0 timeout is non-blocking: if scan is running
+          // we return immediately and retry next loop() iteration.
+          if (!bleTakenForMqtt) {
+            if (xSemaphoreTake(bleScanMutex, 0) != pdTRUE) {
+              break;  // Scan still running — wait
+            }
+            // We hold the mutex — scanBT task is paused between scans.
+            BLEDevice::deinit(true);
+            bleTakenForMqtt = true;
+            Serial.printf("[BLE] Deinited for MQTT — heap free=%u max_alloc=%u\n",
+                          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+          }
+#endif
           if (WiFi.status() == WL_CONNECTED) {
             mqttMgr.resetForNewCycle();
             connectPhase = PHASE_MQTT_TRY;
@@ -3481,6 +3534,16 @@ void handleSystemState() {
         }
 
         case PHASE_MQTT_TRY: {
+#if HAS_BLE
+          // Ensure BLE is deinited even on the "WiFi already connected" fast path.
+          if (!bleTakenForMqtt) {
+            if (xSemaphoreTake(bleScanMutex, 0) != pdTRUE) break;
+            BLEDevice::deinit(true);
+            bleTakenForMqtt = true;
+            Serial.printf("[BLE] Deinited for MQTT (late) — heap free=%u max_alloc=%u\n",
+                          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+          }
+#endif
           // Single-attempt MQTT connect via failover manager
           // (probes local broker, falls back to cloud automatically)
 #if HAS_RGB_LCD
@@ -3489,6 +3552,9 @@ void handleSystemState() {
 #endif
           if (mqttMgr.tryConnectOnce()) {
             Serial.printf("MQTT connected to %s broker\n", mqttMgr.activeBrokerName());
+#if HAS_BLE
+            // Keep bleTakenForMqtt=true until DISCONNECT/TRANSMIT releases it.
+#endif
 #if HAS_LED
             ledMqttConnected();
 #endif
@@ -3511,6 +3577,9 @@ void handleSystemState() {
           if (!client.connected() &&
               (now - phaseStartMs) >= (deviceConfig.timing.mqtt_connect_timeout_s * 1000UL)) {
             Serial.println("MQTT connect timeout — will retry next cycle");
+#if HAS_BLE
+            // Keep bleTakenForMqtt=true; SYS_STATE_DISCONNECT releases mutex.
+#endif
             connectPhase = PHASE_SCAN_START;
             currentSystemState = SYS_STATE_DISCONNECT;
             stateEnteredAt = now;
@@ -3519,6 +3588,9 @@ void handleSystemState() {
         }
 
         case PHASE_MQTT_SETTLE: {
+#if HAS_BLE
+          // Keep bleTakenForMqtt=true; release happens in DISCONNECT or TRANSMIT->IDLE.
+#endif
           // Run client.loop() once per main-loop iteration (no delay!)
           // to drain retained messages from the broker.
           client.loop();
@@ -3569,6 +3641,13 @@ void handleSystemState() {
           stateEnteredAt = now;
           Serial.println("STATE: TRANSMIT -> DISCONNECT (deep sleep mode)");
         } else {
+#if HAS_BLE
+          // Release semaphore so scanBT task can reinit BLE from its context.
+          if (bleTakenForMqtt) {
+            bleTakenForMqtt = false;
+            xSemaphoreGive(bleScanMutex);
+          }
+#endif
           currentSystemState = SYS_STATE_IDLE;
           stateEnteredAt = now;
           Serial.println("STATE: TRANSMIT -> IDLE (staying connected)");
@@ -3583,6 +3662,13 @@ void handleSystemState() {
     }
       
     case SYS_STATE_DISCONNECT: {
+    #if HAS_BLE
+      // Release semaphore so scanBT task can reinit BLE from its context.
+      if (bleTakenForMqtt) {
+        bleTakenForMqtt = false;
+        xSemaphoreGive(bleScanMutex);
+      }
+    #endif
 #if HAS_RGB_LCD
       gui_hide_busy();
 #endif
