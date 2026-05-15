@@ -132,6 +132,9 @@ bool scanBT_enabled = true;
 SemaphoreHandle_t bleScanMutex = nullptr;
 // True while main task holds bleScanMutex for MQTT TLS (BLE is deinited)
 bool bleTakenForMqtt = false;
+// Set true by main task after BLEDevice::deinit(true), cleared by scanBT after reinit.
+// BLEDevice::getInitialized() is unreliable after deinit — use our own flag.
+volatile bool bleWasDeinited = false;
 // BLE scan interval in milliseconds between scan cycles
 #define BLE_SCAN_INTERVAL_MS 10000
 
@@ -2336,9 +2339,12 @@ void scanBT(void* parameter) {
     // If BLE was deinited by main task, reinit it now from this task context.
     // BLEDevice::init() must run in the task that will use BLE to avoid
     // ESP_ERR_INVALID_STATE (err 259) on scan param setup.
-    if (!BLEDevice::getInitialized()) {
+    // NOTE: BLEDevice::getInitialized() returns stale state after deinit(true)
+    // in the Arduino ESP32 framework — use our own flag instead.
+    if (bleWasDeinited) {
       BLEDevice::init("");
       vTaskDelay(200 / portTICK_PERIOD_MS);  // Let BT controller stabilise
+      bleWasDeinited = false;
       Serial.printf("[BLE] Reinited in scanBT task — heap free=%u\n",
                     ESP.getFreeHeap());
     }
@@ -3378,6 +3384,7 @@ void handleSystemState() {
             }
             // We hold the mutex — scanBT task is paused between scans.
             BLEDevice::deinit(true);
+            bleWasDeinited = true;
             bleTakenForMqtt = true;
             Serial.printf("[BLE] Deinited for MQTT — heap free=%u max_alloc=%u\n",
                           ESP.getFreeHeap(), ESP.getMaxAllocHeap());
@@ -3539,6 +3546,7 @@ void handleSystemState() {
           if (!bleTakenForMqtt) {
             if (xSemaphoreTake(bleScanMutex, 0) != pdTRUE) break;
             BLEDevice::deinit(true);
+            bleWasDeinited = true;
             bleTakenForMqtt = true;
             Serial.printf("[BLE] Deinited for MQTT (late) — heap free=%u max_alloc=%u\n",
                           ESP.getFreeHeap(), ESP.getMaxAllocHeap());
