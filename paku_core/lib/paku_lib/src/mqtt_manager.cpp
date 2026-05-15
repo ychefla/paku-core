@@ -99,6 +99,20 @@ bool MqttManager::maintain() {
 bool MqttManager::tryConnectOnce() {
     if (!_client) return false;
 
+    if (!_initialProbed) {
+        _initialProbed = true;
+        if (isLocalReachable()) {
+            LOG_INFO("MqttMgr", "Local broker reachable — using PRIMARY");
+            _activeBroker = MqttBroker::PRIMARY_LOCAL;
+            applyBrokerConfig(_primary);
+        } else {
+            LOG_INFO("MqttMgr", "Local broker unreachable — switching to CLOUD");
+            _activeBroker = MqttBroker::FALLBACK_CLOUD;
+            _failCount = 0;
+            applyBrokerConfig(_fallback);
+        }
+    }
+
     // Throttle: don't retry faster than CONNECT_RETRY_DELAY_MS
     unsigned long now = millis();
     if (_lastConnectAttempt != 0 &&
@@ -110,9 +124,6 @@ bool MqttManager::tryConnectOnce() {
     _lastAttemptWasReal = true;
 
     // --- Return-to-primary check ---
-    // If currently on CLOUD and enough time has passed, probe LOCAL first.
-    // This handles the Phase 2 state machine which disconnects WiFi between
-    // cycles and never calls maintain()'s connected-state probe path.
     if (isOnFallback() &&
         (now - _lastPrimaryRetry >= PRIMARY_RETRY_INTERVAL_MS)) {
         _lastPrimaryRetry = now;

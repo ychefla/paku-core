@@ -126,6 +126,9 @@ public:
     /// @brief Disconnect from the current broker.
     void disconnect();
 
+    /// @brief Reset broker state for a new WiFi connection cycle.
+    void resetForNewCycle() { _initialProbed = false; _failCount = 0; }
+
     /// @brief Get the currently active (or targeted) broker.
     MqttBroker activeBroker() const { return _activeBroker; }
 

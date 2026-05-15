@@ -611,8 +611,15 @@ void ledError() {
  */
 String getISO8601Timestamp() {
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    Serial.println("Failed to obtain time");
+  if (!getLocalTime(&timeinfo, 0)) {
+    // NTP sync happens asynchronously after WiFi connect; avoid noisy logs
+    // before the first valid time has been received.
+    static unsigned long lastNtpWarnMs = 0;
+    const unsigned long nowMs = millis();
+    if (nowMs - lastNtpWarnMs > 30000UL) {
+      Serial.println("Time not synced yet (NTP pending)");
+      lastNtpWarnMs = nowMs;
+    }
     // Return empty string to signal invalid timestamp (caller should not publish)
     return "";  // Fallback - empty indicates time not available
   }
@@ -2777,7 +2784,7 @@ void loadConfig() {
     deviceConfig.timing.wake_interval_s = preferences.getUInt("wake_int", 60);
     deviceConfig.timing.connection_duration_max_s = preferences.getUInt("conn_dur", 30);
     deviceConfig.timing.wifi_connect_timeout_s = preferences.getUInt("wifi_to", 10);
-    deviceConfig.timing.mqtt_connect_timeout_s = preferences.getUInt("mqtt_to", 5);
+    deviceConfig.timing.mqtt_connect_timeout_s = preferences.getUInt("mqtt_to", 30);
     String tz = preferences.getString("timezone", "EET-2EEST,M3.5.0/3,M10.5.0/4");
     strncpy(deviceConfig.timing.timezone, tz.c_str(), sizeof(deviceConfig.timing.timezone) - 1);
     deviceConfig.timing.timezone[sizeof(deviceConfig.timing.timezone) - 1] = '\0';
@@ -3315,15 +3322,16 @@ void handleSystemState() {
       static ConnectPhase connectPhase = PHASE_SCAN_START;
       static unsigned long phaseStartMs = 0;
       static int           settleLoops  = 0;
-      static int           ssidIndex    = 0;  // cycles through known SSIDs on WiFi timeout
+      struct CandidateNet { String ssid, pass; int rssi; };
+      static CandidateNet  candidates[10];
+      static int           candidateCount = 0;
+      static int           candidateIndex = 0;
 
       switch (connectPhase) {
 
         case PHASE_SCAN_START: {
-          // Connect directly without a WiFi scan — scanning is unreliable on
-          // some hardware (Waveshare S3 RGB LCD) and unnecessary for a fixed
-          // set of home SSIDs.  ssidIndex cycles on each WiFi timeout.
           if (WiFi.status() == WL_CONNECTED) {
+            mqttMgr.resetForNewCycle();
             connectPhase = PHASE_MQTT_TRY;
             phaseStartMs = now;
             Serial.println("WiFi already connected, skipping to MQTT");
@@ -3334,50 +3342,21 @@ void handleSystemState() {
           }
 
           extern WiFiManager wifiManager;
-          int nvsCount = wifiManager.getStoredNetworkCount();
-          int totalCount = nvsCount + WIFI_COUNT;
-
-          if (totalCount == 0) {
+          if (wifiManager.getStoredNetworkCount() + (int)WIFI_COUNT == 0) {
             Serial.println("No WiFi credentials configured");
-            connectPhase = PHASE_SCAN_START;
             currentSystemState = SYS_STATE_DISCONNECT;
             stateEnteredAt = now;
             break;
           }
 
-          // Tried all SSIDs without a successful WiFi connection — give up.
-          if (ssidIndex >= totalCount) {
-            ssidIndex = 0;
-            Serial.println("All SSIDs tried — backing off");
-            connectPhase = PHASE_SCAN_START;
-            currentSystemState = SYS_STATE_DISCONNECT;
-            stateEnteredAt = now;
-            break;
-          }
-
-          // Skip invalid NVS entries
-          if (ssidIndex < nvsCount) {
-            WiFiCredential cred = wifiManager.getNetwork(ssidIndex);
-            if (!cred.valid) { ssidIndex++; break; }
-          }
-
-          String ssid, pass;
-          if (ssidIndex < nvsCount) {
-            WiFiCredential cred = wifiManager.getNetwork(ssidIndex);
-            ssid = String(cred.ssid);
-            pass = String(cred.password);
-          } else {
-            int fi = ssidIndex - nvsCount;
-            ssid = String(WIFI_SSIDS[fi]);
-            pass = String(WIFI_PASSWORDS[fi]);
-          }
-
+          mqttMgr.resetForNewCycle();
+          candidateCount = 0;
+          candidateIndex = 0;
           if (WiFi.getMode() != WIFI_STA) WiFi.mode(WIFI_STA);
           WiFi.setAutoReconnect(false);
           WiFi.disconnect(false);
-          Serial.printf("Connecting WiFi: %s\n", ssid.c_str());
-          WiFi.begin(ssid.c_str(), pass.c_str());
-          connectPhase = PHASE_WIFI_WAIT;
+          WiFi.scanNetworks(true);
+          connectPhase = PHASE_SCAN_WAIT;
           phaseStartMs = now;
 #if HAS_RGB_LCD
           gui_show_busy("Connecting WiFi\xE2\x80\xA6");
@@ -3386,8 +3365,80 @@ void handleSystemState() {
         }
 
         case PHASE_SCAN_WAIT: {
-          // Unused — scan replaced by direct connect in PHASE_SCAN_START.
-          connectPhase = PHASE_SCAN_START;
+          int16_t scanResult = WiFi.scanComplete();
+          if (scanResult == WIFI_SCAN_RUNNING && (now - phaseStartMs < 8000)) break;
+
+          extern WiFiManager wifiManager;
+          int nvsCount = wifiManager.getStoredNetworkCount();
+
+          if (scanResult > 0) {
+            for (int ci = 0; ci < nvsCount + (int)WIFI_COUNT && candidateCount < 10; ci++) {
+              String ssid, pass;
+              if (ci < nvsCount) {
+                WiFiCredential cred = wifiManager.getNetwork(ci);
+                if (!cred.valid) continue;
+                ssid = String(cred.ssid);
+                pass = String(cred.password);
+              } else {
+                int fi = ci - nvsCount;
+                ssid = String(WIFI_SSIDS[fi]);
+                pass = String(WIFI_PASSWORDS[fi]);
+              }
+              int bestRssi = 0;
+              bool found = false;
+              for (int si = 0; si < scanResult; si++) {
+                if (WiFi.SSID(si) == ssid && (!found || WiFi.RSSI(si) > bestRssi)) {
+                  bestRssi = WiFi.RSSI(si);
+                  found = true;
+                }
+              }
+              if (!found) continue;
+              int pos = candidateCount;
+              while (pos > 0 && candidates[pos - 1].rssi < bestRssi) {
+                candidates[pos] = candidates[pos - 1];
+                pos--;
+              }
+              candidates[pos].ssid = ssid;
+              candidates[pos].pass = pass;
+              candidates[pos].rssi = bestRssi;
+              candidateCount++;
+            }
+            WiFi.scanDelete();
+            Serial.printf("Scan: %d/%d configured networks in range\n",
+                          candidateCount, nvsCount + (int)WIFI_COUNT);
+          } else {
+            WiFi.scanDelete();
+            Serial.println("Scan failed — trying all configured networks");
+            for (int ci = 0; ci < nvsCount + (int)WIFI_COUNT && candidateCount < 10; ci++) {
+              if (ci < nvsCount) {
+                WiFiCredential cred = wifiManager.getNetwork(ci);
+                if (!cred.valid) continue;
+                candidates[candidateCount].ssid = String(cred.ssid);
+                candidates[candidateCount].pass = String(cred.password);
+                candidates[candidateCount].rssi = -100;
+                candidateCount++;
+              } else {
+                int fi = ci - nvsCount;
+                candidates[candidateCount].ssid = String(WIFI_SSIDS[fi]);
+                candidates[candidateCount].pass = String(WIFI_PASSWORDS[fi]);
+                candidates[candidateCount].rssi = -100;
+                candidateCount++;
+              }
+            }
+          }
+
+          if (candidateCount == 0) {
+            Serial.println("No networks in range — backing off");
+            connectPhase = PHASE_SCAN_START;
+            currentSystemState = SYS_STATE_DISCONNECT;
+            stateEnteredAt = now;
+            break;
+          }
+
+          Serial.printf("Connecting WiFi: %s\n", candidates[0].ssid.c_str());
+          WiFi.begin(candidates[0].ssid.c_str(), candidates[0].pass.c_str());
+          connectPhase = PHASE_WIFI_WAIT;
+          phaseStartMs = now;
           break;
         }
 
@@ -3396,19 +3447,30 @@ void handleSystemState() {
             Serial.printf("WiFi connected: %s\n", WiFi.localIP().toString().c_str());
             wifi_status = "WiFi connected (" + WiFi.localIP().toString() + ")";
 #ifndef ESP8266
-            WiFi.setSleep(true);  // Enable modem sleep now that we're associated
+            WiFi.setSleep(true);
 #endif
 #if HAS_LED
             ledWifiConnected();
 #endif
-            ssidIndex = 0;  // Reset so reconnects start from the best SSID again
+            candidateIndex = 0;
             connectPhase = PHASE_MQTT_TRY;
             phaseStartMs = now;
           } else if (now - phaseStartMs >= (deviceConfig.timing.wifi_connect_timeout_s * 1000UL)) {
             Serial.println("WiFi connect timeout");
-            ssidIndex++;  // Try next SSID on next PHASE_SCAN_START entry
-            connectPhase = PHASE_SCAN_START;
-            // Stay in CONNECT_NETWORK to try next SSID before giving up
+            candidateIndex++;
+            if (candidateIndex < candidateCount) {
+              Serial.printf("Connecting WiFi: %s\n", candidates[candidateIndex].ssid.c_str());
+              WiFi.disconnect(false);
+              WiFi.begin(candidates[candidateIndex].ssid.c_str(),
+                         candidates[candidateIndex].pass.c_str());
+              phaseStartMs = now;
+            } else {
+              Serial.println("All SSIDs tried — backing off");
+              candidateIndex = 0;
+              connectPhase = PHASE_SCAN_START;
+              currentSystemState = SYS_STATE_DISCONNECT;
+              stateEnteredAt = now;
+            }
           }
 #if HAS_LED
           else {
@@ -3446,11 +3508,9 @@ void handleSystemState() {
           }
           // else: throttled — no-op, wait for next real attempt
 
-          // Overall MQTT timeout
           if (!client.connected() &&
-              stateElapsed >= (deviceConfig.timing.mqtt_connect_timeout_s * 1000UL)) {
+              (now - phaseStartMs) >= (deviceConfig.timing.mqtt_connect_timeout_s * 1000UL)) {
             Serial.println("MQTT connect timeout — will retry next cycle");
-            ssidIndex = 0;  // retry from best SSID on next cycle
             connectPhase = PHASE_SCAN_START;
             currentSystemState = SYS_STATE_DISCONNECT;
             stateEnteredAt = now;
@@ -3503,17 +3563,15 @@ void handleSystemState() {
       
       if (transmissionComplete && connectionTimeout) {
         transmissionStarted = false;
-        
-        // When on local broker (same network as HA), stay connected
-        // for real-time command responsiveness. Only disconnect on cloud.
-        if (mqttMgr.isOnFallback()) {
+
+        if (deviceConfig.power.deep_sleep_enabled) {
           currentSystemState = SYS_STATE_DISCONNECT;
           stateEnteredAt = now;
-          Serial.println("STATE: TRANSMIT -> DISCONNECT (cloud broker)");
+          Serial.println("STATE: TRANSMIT -> DISCONNECT (deep sleep mode)");
         } else {
           currentSystemState = SYS_STATE_IDLE;
           stateEnteredAt = now;
-          Serial.println("STATE: TRANSMIT -> IDLE (staying connected to local broker)");
+          Serial.println("STATE: TRANSMIT -> IDLE (staying connected)");
         }
       }
       
