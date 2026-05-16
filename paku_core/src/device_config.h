@@ -120,7 +120,9 @@
     #define HAS_TOUCH 0
     #define HAS_PSRAM 0
     #define HAS_LED 1           // Has onboard LED for status indication
-    #define HAS_BLE 1           // Supports BLE for Ruuvi tags and other BLE sensors
+    #define HAS_BLE 0           // BLE disabled: no PSRAM, BLE+TLS cannot coexist in heap
+                                // (WiFi+BLE stack leaves <24 KB max_alloc; mbedTLS needs 32 KB)
+                                // Use LilyGo T-Display S3 (has PSRAM) for BLE+TLS workloads.
     #define HAS_WIRED_SENSORS 0 // No wired sensors by default (can be added)
     // GPIO2 is used for the onboard LED (D2) on most ESP32 dev boards
     // Flow sensor has been moved to GPIO4 to avoid conflict
