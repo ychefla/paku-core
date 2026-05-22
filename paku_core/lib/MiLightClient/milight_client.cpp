@@ -184,18 +184,29 @@ bool milight_init(uint8_t ce_pin, uint8_t csn_pin, uint8_t sck_pin, uint8_t mosi
     Serial.printf("[MILIGHT] device_id=0x%04X\n", current_device_id);
     return true;
 #else
-    // SPI.begin() configures the GPIO Matrix with our custom pin mapping.
-    // We MUST use radio->begin(&SPI) (the _SPI* overload) — NOT radio->begin().
-    // begin(void) internally calls _SPI.begin() with no arguments which resets
-    // the GPIO Matrix to the variant defaults (MISO=13, SCK=12), overwriting
-    // our custom mapping and breaking SPI communication entirely.
+    // SPI.begin() called ONCE — repeated calls can corrupt USB CDC on ESP32-S3.
+    // We MUST use radio->begin(&SPI) — NOT radio->begin(), which resets the GPIO
+    // Matrix to variant defaults (MISO=13, SCK=12), breaking our custom mapping.
+    //
+    // NRF24L01+ on this module can take many seconds to fully stabilise after
+    // power-on (observed: STATUS=0xFF for 2 boots, then 0x0E on 3rd boot in
+    // tools/nrf_test).  Retry begin() up to 5× with 5 s gaps — no SPI reinit
+    // between attempts (SPI.begin is called exactly once above).
     SPI.begin(sck_pin, miso_pin, mosi_pin, csn_pin);
+    delay(100);
 
     if (radio) { delete radio; }
     radio = new RF24(ce_pin, csn_pin);
 
-    if (!radio->begin(&SPI)) {
-        Serial.println("[MILIGHT] ERROR: NRF24 init failed");
+    bool rf_ok = false;
+    for (int attempt = 1; attempt <= 5; attempt++) {
+        if (radio->begin(&SPI)) { rf_ok = true; break; }
+        Serial.printf("[MILIGHT] NRF24 attempt %d/5 failed — retrying in 5 s\n", attempt);
+        if (attempt < 5) delay(5000);
+    }
+
+    if (!rf_ok) {
+        Serial.println("[MILIGHT] ERROR: NRF24 init failed after 5 attempts");
         delete radio; radio = nullptr;
         return false;
     }
