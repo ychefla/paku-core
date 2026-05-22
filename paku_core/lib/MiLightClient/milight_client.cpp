@@ -80,8 +80,9 @@ static inline void ml_delay(unsigned long ms) {
 static const uint8_t MILIGHT_CHANNELS[MILIGHT_RF_CHANNELS] = {6, 41, 76};
 static const uint8_t MILIGHT_CCT_ADDRESS[5] = {0xAA, 0x5A, 0x05, 0x0A, 0x55};
 
-#define MILIGHT_TX_REPS      8    // repetitions per command (reliability)
-#define MILIGHT_TX_DELAY_US  400  // µs between reps
+#define MILIGHT_TX_REPS_CCT    8    // repetitions for CCT v1 commands
+#define MILIGHT_TX_REPS_FUT091 50   // repetitions for FUT091 — seq_num increments each rep
+#define MILIGHT_TX_DELAY_US    400  // µs between channel writes
 
 // ---------------------------------------------------------------------------
 //  V2 RF encoding (matches sidoh/esp8266_milight_hub V2RFEncoding.cpp)
@@ -157,6 +158,7 @@ static uint8_t      sequence_num = 0;
 static void cct_build_packet(uint8_t* packet, uint16_t device_id, uint8_t command, uint8_t arg);
 static void fut091_build_frame(uint8_t* tx12, uint16_t device_id, uint8_t group, uint8_t cmd, uint8_t arg);
 static bool transmit_packet(const uint8_t* packet, size_t len);
+static bool transmit_fut091_cmd(uint16_t device_id, uint8_t group, uint8_t cmd, uint8_t arg);
 static void log_packet_hex(const char* prefix, const uint8_t* packet, size_t len);
 
 // ---------------------------------------------------------------------------
@@ -265,15 +267,39 @@ static bool transmit_packet(const uint8_t* packet, size_t len) {
     if (!initialized || !radio) return false;
 
     bool success = false;
-    for (int rep = 0; rep < MILIGHT_TX_REPS; rep++) {
+    for (int rep = 0; rep < MILIGHT_TX_REPS_CCT; rep++) {
         for (int i = 0; i < MILIGHT_RF_CHANNELS; i++) {
             radio->setChannel(MILIGHT_CHANNELS[i]);
             if (radio->write(packet, len)) success = true;
             delayMicroseconds(MILIGHT_TX_DELAY_US);
         }
     }
-    Serial.printf("[MILIGHT] TX result: %s (isFifoFull=%d)\n",
-                  success ? "OK" : "FAIL", radio->isFifo(true, true));
+    return success;
+#endif
+}
+
+// FUT091-specific transmit: rebuilds frame each repetition so sequence_num
+// increments per-rep, matching esp8266_milight_hub behavior.
+static bool transmit_fut091_cmd(uint16_t device_id, uint8_t group, uint8_t cmd, uint8_t arg) {
+#if MILIGHT_DRY_RUN
+    return true;
+#else
+    if (!initialized || !radio) return false;
+
+    bool success = false;
+    for (int rep = 0; rep < MILIGHT_TX_REPS_FUT091; rep++) {
+        uint8_t tx[FUT091_FRAME_SIZE];
+        fut091_build_frame(tx, device_id, group, cmd, arg);  // seq_num++ each rep
+        for (int ch = 0; ch < MILIGHT_RF_CHANNELS; ch++) {
+            radio->setChannel(MILIGHT_CHANNELS[ch]);
+            if (radio->write(tx, FUT091_FRAME_SIZE)) success = true;
+            delayMicroseconds(MILIGHT_TX_DELAY_US);
+        }
+    }
+    Serial.printf("[MILIGHT] TX %s/%d result: %s\n",
+                  cmd == FUT091_CMD_ON ? "ON" : cmd == FUT091_CMD_OFF ? "OFF" :
+                  cmd == FUT091_CMD_BRIGHT ? "BRIGHT" : "TEMP",
+                  group, success ? "OK" : "FAIL");
     return success;
 #endif
 }
@@ -344,18 +370,13 @@ bool milight_send_state(const MiLightState& state) {
         return true;
 
     } else if (state.protocol == PROTOCOL_FUT091) {
-        uint8_t tx[FUT091_FRAME_SIZE];
         uint8_t cmd = state.on ? FUT091_CMD_ON : FUT091_CMD_OFF;
 
-        fut091_build_frame(tx, device_id, state.channel, cmd, state.channel);
-        log_packet_hex("[MILIGHT] FUT091 ON/OFF: ", tx, FUT091_FRAME_SIZE);
-        transmit_packet(tx, FUT091_FRAME_SIZE);
+        transmit_fut091_cmd(device_id, state.channel, cmd, state.channel);
         ml_delay(100);
 
         if (state.on) {
-            fut091_build_frame(tx, device_id, state.channel, FUT091_CMD_BRIGHT, state.brightness);
-            log_packet_hex("[MILIGHT] FUT091 BRIGHT: ", tx, FUT091_FRAME_SIZE);
-            transmit_packet(tx, FUT091_FRAME_SIZE);
+            transmit_fut091_cmd(device_id, state.channel, FUT091_CMD_BRIGHT, state.brightness);
             ml_delay(100);
 
             // FUT091 0x19 arg: 0=warm, 100=cool — verified empirically against the
@@ -367,9 +388,7 @@ bool milight_send_state(const MiLightState& state) {
             if (ct < 153) ct = 153;
             if (ct > 370) ct = 370;
             uint8_t temp_val = (uint8_t)map(ct, 153, 370, 100, 0);
-            fut091_build_frame(tx, device_id, state.channel, FUT091_CMD_TEMP, temp_val);
-            log_packet_hex("[MILIGHT] FUT091 TEMP: ", tx, FUT091_FRAME_SIZE);
-            transmit_packet(tx, FUT091_FRAME_SIZE);
+            transmit_fut091_cmd(device_id, state.channel, FUT091_CMD_TEMP, temp_val);
         }
         return true;
     }
@@ -399,13 +418,7 @@ bool milight_pair(uint8_t channel, MiLightProtocol protocol, uint16_t device_id)
             ml_delay(200);
         }
     } else if (protocol == PROTOCOL_FUT091) {
-        uint8_t tx[FUT091_FRAME_SIZE];
-        for (int i = 0; i < 5; i++) {
-            fut091_build_frame(tx, device_id, channel, FUT091_CMD_ON, channel);
-            log_packet_hex("[MILIGHT] FUT091 PAIR: ", tx, FUT091_FRAME_SIZE);
-            transmit_packet(tx, FUT091_FRAME_SIZE);
-            ml_delay(200);
-        }
+        transmit_fut091_cmd(device_id, channel, FUT091_CMD_ON, channel);
     }
     return true;
 }
@@ -428,13 +441,7 @@ bool milight_unpair(uint8_t channel, MiLightProtocol protocol) {
             ml_delay(200);
         }
     } else if (protocol == PROTOCOL_FUT091) {
-        uint8_t tx[FUT091_FRAME_SIZE];
-        for (int i = 0; i < 5; i++) {
-            fut091_build_frame(tx, current_device_id, channel, FUT091_CMD_OFF, channel);
-            log_packet_hex("[MILIGHT] FUT091 UNPAIR: ", tx, FUT091_FRAME_SIZE);
-            transmit_packet(tx, FUT091_FRAME_SIZE);
-            ml_delay(200);
-        }
+        transmit_fut091_cmd(current_device_id, channel, FUT091_CMD_OFF, channel);
     }
     return true;
 }
