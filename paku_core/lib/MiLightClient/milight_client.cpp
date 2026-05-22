@@ -193,13 +193,25 @@ bool milight_init(uint8_t ce_pin, uint8_t csn_pin, uint8_t sck_pin, uint8_t mosi
     Serial.printf("[MILIGHT] device_id=0x%04X\n", current_device_id);
     return true;
 #else
+    _ce_pin  = ce_pin;
+    _csn_pin = csn_pin;
+
+    // Drive CSN HIGH and CE LOW *before* SPI.begin().
+    // On a soft reset (DTR/button) the ESP32 GPIO pins briefly float.
+    // If CSN (GPIO2) goes LOW during that float the NRF24 interprets the
+    // subsequent SPI peripheral re-init as a garbage SPI transaction and
+    // ends up in an unknown state where begin() returns false.
+    // Asserting CSN HIGH here aborts any pending NRF24 SPI transaction
+    // and returns the module to standby before we touch the SPI bus.
+    pinMode(csn_pin, OUTPUT); digitalWrite(csn_pin, HIGH);
+    pinMode(ce_pin,  OUTPUT); digitalWrite(ce_pin,  LOW);
+    delayMicroseconds(500);   // give NRF24 time to process the deselect
+
     // SPI.begin() called ONCE — repeated calls can corrupt USB CDC on ESP32-S3.
     // We MUST use radio->begin(&SPI) — NOT radio->begin(), which resets the GPIO
     // Matrix to variant defaults (MISO=13, SCK=12), breaking our custom mapping.
     SPI.begin(sck_pin, miso_pin, mosi_pin, csn_pin);
     _spi_started = true;
-    _ce_pin  = ce_pin;
-    _csn_pin = csn_pin;
     delay(100);
 
     if (radio) { delete radio; }
@@ -345,11 +357,15 @@ bool milight_send_state(const MiLightState& state) {
     if (!initialized) {
 #if !MILIGHT_DRY_RUN
         // Lazy reinit: NRF24 may have settled since setup() failed.
-        // Throttle to once every 30 s to avoid log spam.
+        // Throttle to once every 10 s to avoid log spam.
         unsigned long now = millis();
-        if (_spi_started && radio && (now - _last_reinit_ms >= 30000UL)) {
+        if (_spi_started && radio && (now - _last_reinit_ms >= 10000UL)) {
             _last_reinit_ms = now;
             Serial.println("[MILIGHT] Lazy reinit attempt...");
+            // Assert CSN HIGH so NRF24 is in a clean deselected state
+            // before we call begin() — same reason as in milight_init().
+            digitalWrite(_csn_pin, HIGH);
+            delayMicroseconds(500);
             if (radio->begin(&SPI)) {
                 nrf24_configure();
                 initialized = true;
