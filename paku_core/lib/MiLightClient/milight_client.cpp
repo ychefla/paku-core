@@ -152,6 +152,14 @@ static MiLightState channel_states[4];
 static uint16_t     current_device_id = 0;
 static uint8_t      sequence_num = 0;
 
+// Stored so milight_send_state can do a lazy reinit if setup() failed
+// (NRF24L01+ often needs >25 s from power-on before responding; by the
+// time the first MQTT command arrives the module is usually ready).
+static bool    _spi_started   = false;
+static uint8_t _ce_pin        = 0;
+static uint8_t _csn_pin       = 0;
+static unsigned long _last_reinit_ms = 0;
+
 // ---------------------------------------------------------------------------
 //  Forward declarations
 // ---------------------------------------------------------------------------
@@ -160,6 +168,7 @@ static void fut091_build_frame(uint8_t* tx12, uint16_t device_id, uint8_t group,
 static bool transmit_packet(const uint8_t* packet, size_t len);
 static bool transmit_fut091_cmd(uint16_t device_id, uint8_t group, uint8_t cmd, uint8_t arg);
 static void log_packet_hex(const char* prefix, const uint8_t* packet, size_t len);
+static void nrf24_configure();
 
 // ---------------------------------------------------------------------------
 //  Init
@@ -187,30 +196,36 @@ bool milight_init(uint8_t ce_pin, uint8_t csn_pin, uint8_t sck_pin, uint8_t mosi
     // SPI.begin() called ONCE — repeated calls can corrupt USB CDC on ESP32-S3.
     // We MUST use radio->begin(&SPI) — NOT radio->begin(), which resets the GPIO
     // Matrix to variant defaults (MISO=13, SCK=12), breaking our custom mapping.
-    //
-    // NRF24L01+ on this module can take many seconds to fully stabilise after
-    // power-on (observed: STATUS=0xFF for 2 boots, then 0x0E on 3rd boot in
-    // tools/nrf_test).  Retry begin() up to 5× with 5 s gaps — no SPI reinit
-    // between attempts (SPI.begin is called exactly once above).
     SPI.begin(sck_pin, miso_pin, mosi_pin, csn_pin);
+    _spi_started = true;
+    _ce_pin  = ce_pin;
+    _csn_pin = csn_pin;
     delay(100);
 
     if (radio) { delete radio; }
     radio = new RF24(ce_pin, csn_pin);
 
-    bool rf_ok = false;
-    for (int attempt = 1; attempt <= 5; attempt++) {
-        if (radio->begin(&SPI)) { rf_ok = true; break; }
-        Serial.printf("[MILIGHT] NRF24 attempt %d/5 failed — retrying in 5 s\n", attempt);
-        if (attempt < 5) delay(5000);
+    // Single attempt here — NRF24L01+ often needs >25 s from cold power-on
+    // before MISO responds.  If it fails we keep 'radio' allocated and let
+    // milight_send_state() do a lazy reinit when the first MQTT command
+    // arrives (typically ~20-30 s after boot, by which time the module is
+    // ready).  No blocking retry here so the rest of setup() is not delayed.
+    if (radio->begin(&SPI)) {
+        nrf24_configure();
+        initialized = true;
+        Serial.printf("[MILIGHT] Initialized — device_id=0x%04X\n", current_device_id);
+        return true;
     }
 
-    if (!rf_ok) {
-        Serial.println("[MILIGHT] ERROR: NRF24 init failed after 5 attempts");
-        delete radio; radio = nullptr;
-        return false;
-    }
+    Serial.println("[MILIGHT] NRF24 not ready at setup — will retry on first command");
+    return false;
+#endif
+}
 
+// ---------------------------------------------------------------------------
+//  NRF24 hardware configuration (called after begin() succeeds)
+// ---------------------------------------------------------------------------
+static void nrf24_configure() {
     radio->setAutoAck(false);
     radio->setDataRate(RF24_1MBPS);
     radio->setPALevel(RF24_PA_MAX);
@@ -220,11 +235,6 @@ bool milight_init(uint8_t ce_pin, uint8_t csn_pin, uint8_t sck_pin, uint8_t mosi
     radio->openWritingPipe(MILIGHT_CCT_ADDRESS);
     radio->stopListening();
     radio->setChannel(MILIGHT_CHANNELS[0]);
-
-    initialized = true;
-    Serial.printf("[MILIGHT] Initialized — device_id=0x%04X\n", current_device_id);
-    return true;
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -333,8 +343,26 @@ bool milight_send_state(const MiLightState& state) {
         channel_states[state.channel - 1] = state;
 
     if (!initialized) {
-        Serial.println("[MILIGHT] ERROR: not initialized");
-        return false;
+#if !MILIGHT_DRY_RUN
+        // Lazy reinit: NRF24 may have settled since setup() failed.
+        // Throttle to once every 30 s to avoid log spam.
+        unsigned long now = millis();
+        if (_spi_started && radio && (now - _last_reinit_ms >= 30000UL)) {
+            _last_reinit_ms = now;
+            Serial.println("[MILIGHT] Lazy reinit attempt...");
+            if (radio->begin(&SPI)) {
+                nrf24_configure();
+                initialized = true;
+                Serial.printf("[MILIGHT] Lazy reinit OK — device_id=0x%04X\n", current_device_id);
+            } else {
+                Serial.println("[MILIGHT] Lazy reinit failed — NRF24 still not ready");
+            }
+        }
+#endif
+        if (!initialized) {
+            Serial.println("[MILIGHT] ERROR: not initialized");
+            return false;
+        }
     }
 
     uint16_t device_id = (state.device_id != 0) ? state.device_id : current_device_id;
