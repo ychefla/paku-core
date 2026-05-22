@@ -161,6 +161,22 @@ private:
     void renderFanScreen();
     void toggleFan();     ///< Toggle fan power (called on long-press)
 #endif
+
+public:
+    /**
+     * @brief Returns true (and clears the flag) if fan state was toggled via
+     *        a local button press since the last call.  main.cpp uses this
+     *        to publish an MQTT status update after a LilyGo button-press.
+     */
+    bool consumeFanToggle() {
+        if (_fanToggled) { _fanToggled = false; return true; }
+        return false;
+    }
+
+private:
+#if HAS_FAN_IR
+    bool _fanToggled = false;  ///< Set by toggleFan(), cleared by consumeFanToggle()
+#endif
 #if HAS_MILIGHT
     void renderLightScreen();
     void toggleLight();    ///< Toggle light on/off (called on long-press)

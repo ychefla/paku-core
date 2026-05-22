@@ -51,23 +51,55 @@
 #define PIN_IIC_SCL                  17
 #define PIN_IIC_SDA                  18
 
-#define PIN_TOUCH_INT                16
-#define PIN_TOUCH_RES                21
+#define PIN_TOUCH_INT                16   // Not used — no touch hardware on this board (free GPIO)
+#define PIN_TOUCH_RES                21   // Not used — no touch hardware on this board (free GPIO)
 
 /* External expansion */
 #define PIN_SD_CMD                   13
 #define PIN_SD_CLK                   11
 #define PIN_SD_D0                    12
 
-/* MaxxFan IR LED */
-#define PIN_IR_LED                   3    // GPIO 3 - free on T-Display S3
+// =============================================================================
+// P2 connector  (top→bottom, antenna end→USB end)
+// Pin order as labeled on PCB: 3V · 1 · 2 · 3 · 10 · 11 · 12 · 13 · NC · NC · G · +5V
+// =============================================================================
+// NRF24L01+ and IR transmitter run on 5 V — use the +5V pin at the BOTTOM of P2.
+//   3V   (top)    — 3.3 V, available
+//   G1   → NRF24 CE
+//   G2   → NRF24 CSN
+//   G3   → NRF24 IRQ  (GPIO3 is a strapping pin; NRF24 IRQ idles HIGH = OK)
+//   G10  → NRF24 SCK
+//   G11  → NRF24 MOSI
+//   G12  → NRF24 MISO
+//   G13  → IR DATA
+//   NC
+//   NC
+//   G    → GND  (NRF24 GND, IR GND)
+//   +5V  (bottom) → NRF24 VCC, IR VCC
 
-/* NRF24L01+ for MiLight/MIBO control (reuses former SD card pins) */
-#define PIN_NRF24_CE                 1   // Chip Enable
-#define PIN_NRF24_CSN                2   // SPI Chip Select
-#define PIN_NRF24_SCK                11  // SPI Clock (former SD_CLK)
-#define PIN_NRF24_MOSI               13  // SPI MOSI (former SD_CMD)
-#define PIN_NRF24_MISO               12  // SPI MISO (former SD_D0)
+/* NRF24L01+ for MiLight/MIBO control */
+#define PIN_NRF24_CE                 1    // Chip Enable
+#define PIN_NRF24_CSN                2    // SPI Chip Select
+#define PIN_NRF24_IRQ                3    // Interrupt (active LOW, idles HIGH — safe on strapping pin)
+#define PIN_NRF24_SCK                10   // SPI Clock
+#define PIN_NRF24_MOSI               11   // SPI MOSI
+#define PIN_NRF24_MISO               12   // SPI MISO
+
+/* MaxxFan IR LED — follows the NRF24 bundle on the left connector */
+#define PIN_IR_LED                   13   // IR transmitter DATA
+
+// =============================================================================
+// P1 connector — rows 1-4 (top = antenna end)
+// =============================================================================
+// Relay module connects to the top rows of P1:
+//   GND  (row 1 or 2) → Relay GND
+//   G43  (row 3)      → Relay IN1  (GPIO43 = CLK_OUT1; free when USB CDC active)
+//   G44  (row 4)      → Relay IN2  (GPIO44 = CLK_OUT2; free when USB CDC active)
+// GPIO43/44 are also accessible via the JST Qwiic connector at the bottom of the board.
+
+/* 2-channel relay module */
+#define PIN_RELAY_1                  43   // Relay channel 1 control (active LOW typical)
+#define PIN_RELAY_2                  44   // Relay channel 2 control (active LOW typical)
 
 #elif defined(DEVICE_WAVESHARE_LCD_4_3) || defined(DEVICE_WAVESHARE_LCD_5)
 // =============================================================================

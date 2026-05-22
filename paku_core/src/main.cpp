@@ -118,23 +118,12 @@ lcd_cmd_t lcd_st7789v[] = {
 // BLE settings (ESP32 only)
 #if HAS_BLE
 bool scanBT_enabled = true;
-// Binary semaphore used to synchronise BLE deinit/reinit with the MQTT cycle.
-//
-// Protocol:
-//   scanBT task  : takes semaphore before each scan, gives it back when done
-//                  (or when pausing between scans)
-//   main task    : takes semaphore to guarantee scan has finished, then calls
-//                  BLEDevice::deinit(true); gives semaphore back when done so
-//                  scanBT task can reinit and continue
-//
-// This eliminates the race condition where deinit() was called while a 5-second
-// scan was still running.
+// Binary semaphore to pause the scanBT task while MQTT is active.
+// scanBT takes it before each scan and gives it back when done;
+// main task takes it (non-blocking) to guarantee no scan is in progress.
+// All HAS_BLE boards have PSRAM, so BLE and TLS coexist — no deinit needed.
 SemaphoreHandle_t bleScanMutex = nullptr;
-// True while main task holds bleScanMutex for MQTT TLS (BLE is deinited)
 bool bleTakenForMqtt = false;
-// Set true by main task after BLEDevice::deinit(true), cleared by scanBT after reinit.
-// BLEDevice::getInitialized() is unreliable after deinit — use our own flag.
-volatile bool bleWasDeinited = false;
 // BLE scan interval in milliseconds between scan cycles
 #define BLE_SCAN_INTERVAL_MS 10000
 
@@ -1146,7 +1135,30 @@ void loop() {
   // CRITICAL: Update display UI FIRST to ensure button responsiveness
   // Must be before any potentially blocking operations
   displayUI.update();
-#endif
+
+#if HAS_FAN_IR
+  // If the user toggled fan power via a local button press, publish the new
+  // state so that any remote GUI (e.g. Waveshare) stays in sync.
+  if (displayUI.consumeFanToggle() && client.connected()) {
+    const MaxxFanState& s = maxxfan_ir_get_state();
+    String statusTopic = String("paku/edge/") + deviceId + "/status/fan";
+    JsonDocument statusDoc;
+    statusDoc["power"]       = s.fan_on;
+    statusDoc["speed"]       = s.speed;
+    statusDoc["direction"]   = s.exhaust ? "exhaust" : "intake";
+    statusDoc["lid"]         = s.lid_open ? "open" : "closed";
+    statusDoc["mode"]        = s.auto_mode ? "auto" : "manual";
+    statusDoc["auto_temp_f"] = s.auto_temp_f;
+    statusDoc["timestamp"]   = getISO8601Timestamp();
+    String payload;
+    serializeJson(statusDoc, payload);
+    client.publish(statusTopic.c_str(), payload.c_str(), true);
+    LOG_INFO("MQTT", "Fan state published after local toggle: power=%s speed=%d",
+             s.fan_on ? "true" : "false", s.speed);
+  }
+#endif // HAS_FAN_IR
+
+#endif // HAS_DISPLAY
 
 #if HAS_RGB_LCD
   // CRITICAL: Run LVGL timer handler FIRST for touch responsiveness
@@ -2336,18 +2348,7 @@ void scanBT(void* parameter) {
     // When main releases it, we reinit and continue scanning.
     if (xSemaphoreTake(bleScanMutex, portMAX_DELAY) != pdTRUE) continue;
 
-    // If BLE was deinited by main task, reinit it now from this task context.
-    // BLEDevice::init() must run in the task that will use BLE to avoid
-    // ESP_ERR_INVALID_STATE (err 259) on scan param setup.
-    // NOTE: BLEDevice::getInitialized() returns stale state after deinit(true)
-    // in the Arduino ESP32 framework — use our own flag instead.
-    if (bleWasDeinited) {
-      BLEDevice::init("");
-      vTaskDelay(200 / portTICK_PERIOD_MS);  // Let BT controller stabilise
-      bleWasDeinited = false;
-      Serial.printf("[BLE] Reinited in scanBT task — heap free=%u\n",
-                    ESP.getFreeHeap());
-    }
+
 
     Serial.println("Starting Bluetooth scan...");
 
@@ -3374,20 +3375,12 @@ void handleSystemState() {
 
         case PHASE_SCAN_START: {
 #if HAS_BLE
-          // Take the semaphore to guarantee the scanBT task has finished its
-          // current scan before we deinit the BLE stack for TLS memory.
-          // xSemaphoreTake with 0 timeout is non-blocking: if scan is running
-          // we return immediately and retry next loop() iteration.
+          // Pause the scanBT task before connecting — non-blocking.
           if (!bleTakenForMqtt) {
             if (xSemaphoreTake(bleScanMutex, 0) != pdTRUE) {
               break;  // Scan still running — wait
             }
-            // We hold the mutex — scanBT task is paused between scans.
-            BLEDevice::deinit(true);
-            bleWasDeinited = true;
             bleTakenForMqtt = true;
-            Serial.printf("[BLE] Deinited for MQTT — heap free=%u max_alloc=%u\n",
-                          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
           }
 #endif
           if (WiFi.status() == WL_CONNECTED) {
@@ -3542,14 +3535,10 @@ void handleSystemState() {
 
         case PHASE_MQTT_TRY: {
 #if HAS_BLE
-          // Ensure BLE is deinited even on the "WiFi already connected" fast path.
+          // Ensure scan is paused even on the "WiFi already connected" fast path.
           if (!bleTakenForMqtt) {
             if (xSemaphoreTake(bleScanMutex, 0) != pdTRUE) break;
-            BLEDevice::deinit(true);
-            bleWasDeinited = true;
             bleTakenForMqtt = true;
-            Serial.printf("[BLE] Deinited for MQTT (late) — heap free=%u max_alloc=%u\n",
-                          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
           }
 #endif
           // Single-attempt MQTT connect via failover manager
@@ -4790,6 +4779,11 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     // Pass speed=0 when fan is off so GUI _fanPower stays false
     gui_set_fan_data(state.fan_on ? state.speed : 0, !state.exhaust, state.lid_open);
 #endif
+#if HAS_DISPLAY
+    // Force LilyGo TFT to redraw immediately so the fan screen reflects the
+    // new state without waiting for the next periodic refresh tick.
+    displayUI.refresh();
+#endif
     
     // Publish updated state
     String statusTopic = String("paku/edge/") + deviceId + "/status/fan";
@@ -4818,7 +4812,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   String topicStr        = String(topic);
   bool isDeviceLight  = topicStr.startsWith(lightCmdPrefix);
   bool isSharedLight  = topicStr.startsWith(sharedLightPfx);
-  if (milightActive && (isDeviceLight || isSharedLight)) {
+  if (isDeviceLight || isSharedLight) {
     String suffix = topicStr.substring(isDeviceLight ? lightCmdPrefix.length() : sharedLightPfx.length());
 
     // ── Broadcast: cmd/light/all ─────────────────────────────────────────
@@ -4855,13 +4849,26 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           state.color_temp = new_color_temp; changed = true;
         }
 
-        if (changed && milight_send_state(state)) {
-          Serial.printf("[MILIGHT] ALL zone %d → on:%d bright:%d temp:%d\n",
-                        ch, state.on, state.brightness, state.color_temp);
+        if (changed) {
+          bool rfSent = false;
+          if (milightActive) {
+            rfSent = milight_send_state(state);
+            if (!rfSent) Serial.printf("[MILIGHT] ALL zone %d RF send failed\n", ch);
+          } else {
+            // NRF24 not available — persist state via milight_send_state
+            // (state is saved even when not initialized, see milight_client.cpp)
+            milight_send_state(state);
+          }
+          Serial.printf("[MILIGHT] ALL zone %d → on:%d bright:%d temp:%d (rf:%s)\n",
+                        ch, state.on, state.brightness, state.color_temp,
+                        rfSent ? "sent" : "no hw");
 #if HAS_RGB_LCD
           uint16_t colorTempK = (state.color_temp > 0)
               ? (uint16_t)(1000000UL / state.color_temp) : 4000;
           gui_set_light_zone(ch - 1, state.on, state.brightness, colorTempK);
+#endif
+#if HAS_DISPLAY
+          displayUI.refresh();
 #endif
           // Publish per-zone status so HA sensors pick up each zone
           String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + ch;
@@ -4877,7 +4884,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           String statusPayload;
           serializeJson(statusDoc, statusPayload);
           client.publish(statusTopic.c_str(), statusPayload.c_str(), true);
-        }  // if (changed && milight_send_state)
+        }  // if (changed)
       }  // for ch
       return;
     }  // if (suffix == "all")
@@ -4969,34 +4976,38 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     
     // Send state if changed
     if (state_changed) {
-      if (milight_send_state(state)) {
-        Serial.printf("[MILIGHT] Zone %d updated - on:%d bright:%d temp:%d\n",
-                     channel, state.on, state.brightness, state.color_temp);
-
-#if HAS_RGB_LCD
-        // Sync Waveshare GUI — convert mireds (153-500) to Kelvin for GUI sliders
-        uint16_t colorTempK = (state.color_temp > 0) ? (uint16_t)(1000000UL / state.color_temp) : 4000;
-        gui_set_light_zone(channel - 1, state.on, state.brightness, colorTempK);
-#endif
-        
-        // Publish status to per-zone topic
-        String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + channel;
-        JsonDocument statusDoc;
-        statusDoc["state"] = state.on ? "ON" : "OFF";
-        statusDoc["brightness"] = state.brightness;
-        statusDoc["color_mode"] = "color_temp";
-        statusDoc["color_temp"] = state.color_temp;
-        statusDoc["channel"] = channel;
-        statusDoc["protocol"] = milight_protocol_to_string(state.protocol);
-        statusDoc["device_id"] = state.device_id;
-        statusDoc["timestamp"] = getISO8601Timestamp();
-        
-        String statusPayload;
-        serializeJson(statusDoc, statusPayload);
-        client.publish(statusTopic.c_str(), statusPayload.c_str());
+      bool rfSent = false;
+      if (milightActive) {
+        rfSent = milight_send_state(state);
+        if (!rfSent) Serial.println("[MILIGHT] ERROR: Failed to send RF");
       } else {
-        Serial.println("[MILIGHT] ERROR: Failed to send state");
+        // Persist state even without hardware
+        milight_send_state(state);
       }
+      Serial.printf("[MILIGHT] Zone %d updated - on:%d bright:%d temp:%d (rf:%s)\n",
+                   channel, state.on, state.brightness, state.color_temp,
+                   rfSent ? "sent" : "no hw");
+#if HAS_RGB_LCD
+      uint16_t colorTempK = (state.color_temp > 0) ? (uint16_t)(1000000UL / state.color_temp) : 4000;
+      gui_set_light_zone(channel - 1, state.on, state.brightness, colorTempK);
+#endif
+#if HAS_DISPLAY
+      displayUI.refresh();
+#endif
+      // Publish status to per-zone topic
+      String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + channel;
+      JsonDocument statusDoc;
+      statusDoc["state"] = state.on ? "ON" : "OFF";
+      statusDoc["brightness"] = state.brightness;
+      statusDoc["color_mode"] = "color_temp";
+      statusDoc["color_temp"] = state.color_temp;
+      statusDoc["channel"] = channel;
+      statusDoc["protocol"] = milight_protocol_to_string(state.protocol);
+      statusDoc["device_id"] = state.device_id;
+      statusDoc["timestamp"] = getISO8601Timestamp();
+      String statusPayload;
+      serializeJson(statusDoc, statusPayload);
+      client.publish(statusTopic.c_str(), statusPayload.c_str());
     }
     
     return;

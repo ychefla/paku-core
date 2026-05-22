@@ -182,13 +182,19 @@ bool milight_init(uint8_t ce_pin, uint8_t csn_pin, uint8_t sck_pin, uint8_t mosi
     Serial.printf("[MILIGHT] device_id=0x%04X\n", current_device_id);
     return true;
 #else
+    // SPI.begin() configures the GPIO Matrix with our custom pin mapping.
+    // We MUST use radio->begin(&SPI) (the _SPI* overload) — NOT radio->begin().
+    // begin(void) internally calls _SPI.begin() with no arguments which resets
+    // the GPIO Matrix to the variant defaults (MISO=13, SCK=12), overwriting
+    // our custom mapping and breaking SPI communication entirely.
     SPI.begin(sck_pin, miso_pin, mosi_pin, csn_pin);
+
+    if (radio) { delete radio; }
     radio = new RF24(ce_pin, csn_pin);
 
-    if (!radio->begin()) {
+    if (!radio->begin(&SPI)) {
         Serial.println("[MILIGHT] ERROR: NRF24 init failed");
-        delete radio;
-        radio = nullptr;
+        delete radio; radio = nullptr;
         return false;
     }
 
@@ -266,6 +272,8 @@ static bool transmit_packet(const uint8_t* packet, size_t len) {
             delayMicroseconds(MILIGHT_TX_DELAY_US);
         }
     }
+    Serial.printf("[MILIGHT] TX result: %s (isFifoFull=%d)\n",
+                  success ? "OK" : "FAIL", radio->isFifo(true, true));
     return success;
 #endif
 }
@@ -284,13 +292,15 @@ static void log_packet_hex(const char* prefix, const uint8_t* packet, size_t len
 //  Send state
 // ---------------------------------------------------------------------------
 bool milight_send_state(const MiLightState& state) {
+    // Always persist the state so GUI and status publishing work even when
+    // the NRF24 hardware is absent.
+    if (state.channel >= 1 && state.channel <= 4)
+        channel_states[state.channel - 1] = state;
+
     if (!initialized) {
         Serial.println("[MILIGHT] ERROR: not initialized");
         return false;
     }
-
-    if (state.channel >= 1 && state.channel <= 4)
-        channel_states[state.channel - 1] = state;
 
     uint16_t device_id = (state.device_id != 0) ? state.device_id : current_device_id;
 

@@ -940,10 +940,18 @@ void DisplayUI::toggleFan() {
     // Toggle power state
     fan.fan_on = !fan.fan_on;
     
+    // When turning on with no speed set, use a sensible default so the
+    // published MQTT status shows a non-zero speed (avoids Waveshare GUI
+    // treating speed=0 as power-off).
+    if (fan.fan_on && fan.speed == 0) {
+        fan.speed = 40;
+    }
+    
     Serial.printf("[Display] Fan toggle: %s\n", fan.fan_on ? "ON" : "OFF");
     
     // Send IR command
     maxxfan_ir_send(fan);
+    _fanToggled = true;  // Signal main loop to publish MQTT status
 }
 
 #endif // HAS_FAN_IR
