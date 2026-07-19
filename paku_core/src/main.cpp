@@ -995,14 +995,19 @@ void setup() {
     if (deviceConfig.peripherals.milight) {
         Serial.println("Setup MiLight Light Controller...");
         if (milight_init(PIN_NRF24_CE, PIN_NRF24_CSN, PIN_NRF24_SCK, PIN_NRF24_MOSI, PIN_NRF24_MISO)) {
-#ifdef MILIGHT_DEVICE_ID
-            milight_set_device_id(MILIGHT_DEVICE_ID);
-#endif
             Serial.println("  MiLight controller initialized");
             milightActive = true;
         } else {
-            Serial.println("  Warning: MiLight initialization failed");
+            Serial.println("  Warning: MiLight initialization failed (lazy reinit will be attempted on first command)");
         }
+        // Apply the sniffed device_id AFTER milight_init() because init()
+        // always overwrites current_device_id from the MAC address.
+        // This must be unconditional so the correct ID is used even when
+        // NRF24 fails at cold boot and lazy reinit fires on the first command.
+#ifdef MILIGHT_DEVICE_ID
+        milight_set_device_id(MILIGHT_DEVICE_ID);
+        Serial.printf("  MiLight device_id overridden to 0x%04X (from secrets.h)\n", (uint16_t)MILIGHT_DEVICE_ID);
+#endif
     } else {
         Serial.println("MiLight: disabled by peripheral config");
     }
@@ -5007,7 +5012,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       statusDoc["timestamp"] = getISO8601Timestamp();
       String statusPayload;
       serializeJson(statusDoc, statusPayload);
-      client.publish(statusTopic.c_str(), statusPayload.c_str());
+      client.publish(statusTopic.c_str(), statusPayload.c_str(), true);  // retained so GUI/HA picks up state on reconnect
     }
     
     return;
