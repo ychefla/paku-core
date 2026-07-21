@@ -4745,7 +4745,10 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       state.fan_on = doc["power"].as<bool>();
     }
     if (!doc["speed"].isNull()) {
-      state.speed = doc["speed"].as<uint8_t>();
+      uint8_t raw = doc["speed"].as<uint8_t>();
+      // MaxxFan only accepts multiples of 10 (10-100); round to nearest valid step
+      state.speed = ((raw + 5) / 10) * 10;
+      if (state.speed < 10)  state.speed = 10;
       if (state.speed > 100) state.speed = 100;
     }
     if (!doc["direction"].isNull()) {
