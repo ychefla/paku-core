@@ -26,6 +26,7 @@
 #include "OtaClient.h"
 #include "wifi_manager.h"       // WiFi credentials manager with NVS persistence
 #include "mqtt_manager.h"       // MQTT broker failover (local-preferred, cloud-synced)
+#include "site_config.h"        // SITE_ID: MQTT topic root (build flag, default "paku")
 #ifndef ESP8266
 #include <ESPmDNS.h>            // mDNS for resolving homeassistant.local
 #endif
@@ -676,7 +677,7 @@ static void on_gui_light_changed(uint8_t zone, bool on, uint8_t brightness, uint
     Serial.printf("[DBG] GUI light cb zone=%u conn=%d\n", zone + 1, client.connected());
     if (!client.connected()) return;
     // Publish to shared topic so data board receives regardless of which board HA points to
-    String topic = String("paku/cmd/light/") + (zone + 1);
+    String topic = String(SITE_ID "/cmd/light/") + (zone + 1);
     JsonDocument doc;
     doc["state"]      = on ? "ON" : "OFF";
     doc["brightness"] = brightness;
@@ -695,7 +696,7 @@ static void on_gui_light_changed(uint8_t zone, bool on, uint8_t brightness, uint
 
 static void on_gui_fan_changed(bool power, uint8_t speed, bool dirIn, bool lidOpen) {
     if (!client.connected()) return;
-    String topic = "paku/cmd/fan";
+    String topic = SITE_ID "/cmd/fan";
     JsonDocument doc;
     doc["power"]     = power;
     doc["speed"]     = speed;
@@ -711,7 +712,7 @@ static void on_gui_fan_changed(bool power, uint8_t speed, bool dirIn, bool lidOp
 
 static void on_gui_heater_changed(bool on, HeaterMode mode, uint8_t powerLevel, uint8_t targetTempC) {
     if (!client.connected()) return;
-    String topic = "paku/cmd/heater";
+    String topic = SITE_ID "/cmd/heater";
     JsonDocument doc;
     if (mode == HEATER_MODE_VENT) {
         doc["cmd"]   = "vent";
@@ -1146,7 +1147,7 @@ void loop() {
   // state so that any remote GUI (e.g. Waveshare) stays in sync.
   if (displayUI.consumeFanToggle() && client.connected()) {
     const MaxxFanState& s = maxxfan_ir_get_state();
-    String statusTopic = String("paku/edge/") + deviceId + "/status/fan";
+    String statusTopic = String(SITE_ID "/edge/") + deviceId + "/status/fan";
     JsonDocument statusDoc;
     statusDoc["power"]       = s.fan_on;
     statusDoc["speed"]       = s.speed;
@@ -1762,83 +1763,83 @@ void onMqttConnect(PubSubClient& mqttClient, MqttBroker broker) {
              (broker == MqttBroker::PRIMARY_LOCAL) ? "LOCAL" : "CLOUD");
 
     // Subscribe to legacy control topic (backward compatibility)
-    mqttClient.subscribe("paku/control");
+    mqttClient.subscribe(SITE_ID "/control");
     
     // Subscribe to new edge device control topic (schema-compliant)
-    String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
+    String edgeControlTopic = String(SITE_ID "/edge/") + deviceId + "/control";
     mqttClient.subscribe(edgeControlTopic.c_str());
     
     // Phase 2: Subscribe to config/set topic
-    String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
+    String edgeConfigTopic = String(SITE_ID "/edge/") + deviceId + "/config/set";
     mqttClient.subscribe(edgeConfigTopic.c_str());
     
     // Subscribe to OTA command topic
-    String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
+    String otaTopic = String(SITE_ID "/edge/") + deviceId + "/cmd/ota";
     mqttClient.subscribe(otaTopic.c_str());
     
     // Subscribe to WiFi management command topic
-    String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
+    String wifiCmdTopic = String(SITE_ID "/devices/") + deviceId + "/cmd/wifi";
     mqttClient.subscribe(wifiCmdTopic.c_str());
 
 #if HAS_BLE
     // Subscribe to Ruuvi whitelist management command topic
-    String ruuviCmdTopic = String("paku/devices/") + deviceId + "/cmd/ruuvi";
+    String ruuviCmdTopic = String(SITE_ID "/devices/") + deviceId + "/cmd/ruuvi";
     mqttClient.subscribe(ruuviCmdTopic.c_str());
 #endif
 
 #ifdef HEATER_ENABLED
     {
-      String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
+      String heaterCmdTopic = String(SITE_ID "/heater/") + deviceId + "/cmd";
       mqttClient.subscribe(heaterCmdTopic.c_str());
       // Shared topic so GUI boards and HA can send without knowing device_id
-      mqttClient.subscribe("paku/cmd/heater");
+      mqttClient.subscribe(SITE_ID "/cmd/heater");
     }
 #endif
 
 #if HAS_FAN_IR
     {
-      String fanCmdTopic = String("paku/edge/") + deviceId + "/cmd/fan";
+      String fanCmdTopic = String(SITE_ID "/edge/") + deviceId + "/cmd/fan";
       mqttClient.subscribe(fanCmdTopic.c_str());
-      mqttClient.subscribe("paku/cmd/fan");
+      mqttClient.subscribe(SITE_ID "/cmd/fan");
     }
 #endif
 
 #if HAS_MILIGHT
     for (int ch = 1; ch <= 4; ch++) {
-      String lightCmdTopic = String("paku/edge/") + deviceId + "/cmd/light/" + ch;
+      String lightCmdTopic = String(SITE_ID "/edge/") + deviceId + "/cmd/light/" + ch;
       mqttClient.subscribe(lightCmdTopic.c_str());
       Serial.printf("  Subscribed to %s\n", lightCmdTopic.c_str());
       // Shared per-zone topic
-      String sharedLightTopic = String("paku/cmd/light/") + ch;
+      String sharedLightTopic = String(SITE_ID "/cmd/light/") + ch;
       mqttClient.subscribe(sharedLightTopic.c_str());
     }
     {
-      String lightAllTopic = String("paku/edge/") + deviceId + "/cmd/light/all";
+      String lightAllTopic = String(SITE_ID "/edge/") + deviceId + "/cmd/light/all";
       mqttClient.subscribe(lightAllTopic.c_str());
       Serial.printf("  Subscribed to %s\n", lightAllTopic.c_str());
-      mqttClient.subscribe("paku/cmd/light/all");
+      mqttClient.subscribe(SITE_ID "/cmd/light/all");
     }
 #endif
 
 #if HAS_RGB_LCD
     // Subscribe to EcoFlow power data for the Power tab
     {
-      const char* ecoflowTopic = "paku/ecoflow/+/power";
+      const char* ecoflowTopic = SITE_ID "/ecoflow/+/power";
       mqttClient.subscribe(ecoflowTopic);
       Serial.printf("  Subscribed to %s\n", ecoflowTopic);
     }
     // Subscribe to sensor data from data-acquisition boards for GUI display.
     // Waveshare boards have HAS_BLE=0 so they receive sensor readings via MQTT
     // rather than by scanning BLE directly.
-    mqttClient.subscribe("paku/sensors/+/data");
-    mqttClient.subscribe("paku/heater/+/data");
+    mqttClient.subscribe(SITE_ID "/sensors/+/data");
+    mqttClient.subscribe(SITE_ID "/heater/+/data");
     Serial.println("  Subscribed to paku/sensors/+/data (GUI sensor feed)");
     Serial.println("  Subscribed to paku/heater/+/data (GUI heater feed)");
     // Subscribe to state feedback from data boards so GUI stays in sync when
     // HA or another client changes the state of lights or the fan.
-    mqttClient.subscribe("paku/edge/+/status/light/+");
-    mqttClient.subscribe("paku/edge/+/status/fan");
-    mqttClient.subscribe("paku/edge/+/status/heater");
+    mqttClient.subscribe(SITE_ID "/edge/+/status/light/+");
+    mqttClient.subscribe(SITE_ID "/edge/+/status/fan");
+    mqttClient.subscribe(SITE_ID "/edge/+/status/heater");
     Serial.println("  Subscribed to paku/edge/+/status/light/+ (GUI light sync)");
     Serial.println("  Subscribed to paku/edge/+/status/fan (GUI fan sync)");
     Serial.println("  Subscribed to paku/edge/+/status/heater (GUI heater sync)");
@@ -2085,7 +2086,7 @@ void createRuuviPayloads(const char* timestamp) {
     // Serialize and buffer as snapshot
     String payload;
     serializeJson(doc, payload);
-    String topic = String("paku/sensors/") + deviceId + "/data";
+    String topic = String(SITE_ID "/sensors/") + deviceId + "/data";
     
     // Add to snapshot buffer
     if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
@@ -2188,7 +2189,7 @@ void createMoKoPayloads(const char* timestamp) {
     // Serialize and buffer as snapshot
     String payload;
     serializeJson(doc, payload);
-    String topic = String("paku/sensors/") + deviceId + "/data";
+    String topic = String(SITE_ID "/sensors/") + deviceId + "/data";
     
     // Add to snapshot buffer
     if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
@@ -2265,7 +2266,7 @@ void createWiredSensorPayloads(const char* timestamp) {
   String payload;
   serializeJson(doc, payload);
   
-  String topic = String("paku/sensors/") + deviceId + WIRED_SENSOR_SUFFIX + "/data";
+  String topic = String(SITE_ID "/sensors/") + deviceId + WIRED_SENSOR_SUFFIX + "/data";
   
   // Add to sensor snapshot buffer (used for all consolidated sensor transmissions)
   if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
@@ -2316,31 +2317,31 @@ void createPlaceholderPayloads(const char* timestamp) {
     // Only create placeholders if no real Ruuvi data exists for this location
     if (!hasRuuviData) {
       // Generate placeholder values (SENSOR_NOT_AVAILABLE indicates no hardware)
-      String humidTopic = String("paku/devices/") + deviceId + "/telemetry/humidity/" + placeholderLocations[i];
+      String humidTopic = String(SITE_ID "/devices/") + deviceId + "/telemetry/humidity/" + placeholderLocations[i];
       createPayload(humidTopic, SENSOR_NOT_AVAILABLE, timestamp);
       
-      String tempTopic = String("paku/devices/") + deviceId + "/telemetry/temperature/" + placeholderLocations[i];
+      String tempTopic = String(SITE_ID "/devices/") + deviceId + "/telemetry/temperature/" + placeholderLocations[i];
       createPayload(tempTopic, SENSOR_NOT_AVAILABLE, timestamp);
     }
   }
   
   // Additional placeholder sensors for heating system
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/floor", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/heater_in", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/temperature/heater_out", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/temperature/floor", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/temperature/heater_in", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/temperature/heater_out", SENSOR_NOT_AVAILABLE, timestamp);
   
   // Power readings placeholders
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/power/heat", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/power/cool", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/power/heat", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/power/cool", SENSOR_NOT_AVAILABLE, timestamp);
   
   // Battery voltage placeholders
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/voltage/car", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/voltage/leisure", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/voltage/car", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/voltage/leisure", SENSOR_NOT_AVAILABLE, timestamp);
   
   // Status placeholders
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/status/heater", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/status/heater_timer", SENSOR_NOT_AVAILABLE, timestamp);
-  createPayload(String("paku/devices/") + deviceId + "/telemetry/status/pump", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/status/heater", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/status/heater_timer", SENSOR_NOT_AVAILABLE, timestamp);
+  createPayload(String(SITE_ID "/devices/") + deviceId + "/telemetry/status/pump", SENSOR_NOT_AVAILABLE, timestamp);
 }
 
 // Function to scan for Bluetooth devices and parse RuuviTag data
@@ -2505,7 +2506,7 @@ void publishDeviceStatus() {
   
   Serial.println("publishDeviceStatus: Starting...");
   
-  String statusTopic = String("paku/edge/") + deviceId + "/status";
+  String statusTopic = String(SITE_ID "/edge/") + deviceId + "/status";
   JsonDocument doc;
   
   // Get MAC address
@@ -2572,7 +2573,7 @@ void publishDeviceConfig() {
   Serial.println("publishDeviceConfig: Starting...");
   printConfig("Publishing to MQTT");
   
-  String configTopic = String("paku/edge/") + deviceId + "/config/report";
+  String configTopic = String(SITE_ID "/edge/") + deviceId + "/config/report";
   JsonDocument doc;
 
   doc["version"] = FIRMWARE_VERSION;
@@ -3009,7 +3010,7 @@ void transmitBufferedData() {
     }
     
     // Create MQTT topic according to schema
-    String topic = String("paku/sensors/") + reading->sensor_id + "/data";
+    String topic = String(SITE_ID "/sensors/") + reading->sensor_id + "/data";
     
     // Create JSON payload
     JsonDocument doc;
@@ -3288,7 +3289,7 @@ void handleSystemState() {
 
               String payload;
               serializeJson(doc, payload);
-              String topic = String("paku/sensors/") + deviceId + WIRED_SENSOR_SUFFIX + "/data";
+              String topic = String(SITE_ID "/sensors/") + deviceId + WIRED_SENSOR_SUFFIX + "/data";
 
               if (sensorSnapshotCount < MAX_SENSOR_SNAPSHOTS) {
                 sensorSnapshots[sensorSnapshotCount].topic = topic;
@@ -3756,7 +3757,7 @@ void createFrezzerPayloads(const char* timestamp) {
 
     String payload;
     serializeJson(doc, payload);
-    String topic = String("paku/fridge/") + device->location + "/data";
+    String topic = String(SITE_ID "/fridge/") + device->location + "/data";
 
     if (payloadIndex < MAX_MQTT_PAYLOADS) {
       payloads[payloadIndex].topic = topic;
@@ -3783,7 +3784,7 @@ void createFrezzerPayloads(const char* timestamp) {
  */
 void handleFrezzerMqttCommand(const char* topic, const char* payload) {
   String topicStr = String(topic);
-  if (!topicStr.startsWith("paku/fridge/") || !topicStr.endsWith("/cmd")) return;
+  if (!topicStr.startsWith(SITE_ID "/fridge/") || !topicStr.endsWith("/cmd")) return;
 
   int startIdx = 12;
   int endIdx = topicStr.lastIndexOf("/cmd");
@@ -3957,7 +3958,7 @@ void processOtaUpdate() {
   OtaResult result = otaClient.startUpdate(config, otaProgressCallback);
 
   // Report result via MQTT
-  String resultTopic = String("paku/edge/") + deviceId + "/ota/result";
+  String resultTopic = String(SITE_ID "/edge/") + deviceId + "/ota/result";
   JsonDocument resultDoc;
   resultDoc["timestamp"] = getISO8601Timestamp();
   resultDoc["current_version"] = FIRMWARE_VERSION;
@@ -4034,7 +4035,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   Serial.println(message);
 
   // Check for new edge device control topic (Phase 1: not yet fully implemented)
-  String edgeControlTopic = String("paku/edge/") + deviceId + "/control";
+  String edgeControlTopic = String(SITE_ID "/edge/") + deviceId + "/control";
   if (String(topic) == edgeControlTopic) {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
@@ -4063,7 +4064,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   }
 
   // Check if this is a legacy control command
-  if (String(topic) == "paku/control") {
+  if (String(topic) == SITE_ID "/control") {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
     
@@ -4094,7 +4095,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 #if HAS_RGB_LCD
   // Handle sensor telemetry from data-acquisition boards — update GUI display.
   // Topics: paku/sensors/{sensor_id}/data  and  paku/heater/{device_id}/data
-  if (strncmp(topic, "paku/sensors/", 13) == 0 && strstr(topic, "/data") != nullptr) {
+  if (strncmp(topic, SITE_ID "/sensors/", sizeof(SITE_ID "/sensors/") - 1) == 0 && strstr(topic, "/data") != nullptr) {
     JsonDocument sDoc;
     if (!deserializeJson(sDoc, message)) {
       // Modern payloads use device_id; legacy flat payloads use sensor_id.
@@ -4134,7 +4135,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  if (strncmp(topic, "paku/heater/", 12) == 0 && strstr(topic, "/data") != nullptr) {
+  if (strncmp(topic, SITE_ID "/heater/", sizeof(SITE_ID "/heater/") - 1) == 0 && strstr(topic, "/data") != nullptr) {
     JsonDocument hDoc;
     if (!deserializeJson(hDoc, message)) {
       const char* stateStr = hDoc["metrics"]["heater_state"] | "unknown";
@@ -4150,7 +4151,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 
   // Sync GUI light zones when a data board reports its state.
   // Topic: paku/edge/{data_board_id}/status/light/{1-4}
-  if (strncmp(topic, "paku/edge/", 10) == 0) {
+  if (strncmp(topic, SITE_ID "/edge/", sizeof(SITE_ID "/edge/") - 1) == 0) {
     String topicStr = String(topic);
     int lightIdx = topicStr.indexOf("/status/light/");
     if (lightIdx > 0) {
@@ -4192,7 +4193,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 #endif  // HAS_RGB_LCD
 
   // Phase 2: Check for configuration command topic (config/set)
-  String edgeConfigTopic = String("paku/edge/") + deviceId + "/config/set";
+  String edgeConfigTopic = String(SITE_ID "/edge/") + deviceId + "/config/set";
   if (String(topic) == edgeConfigTopic) {
     Serial.println("========================================");
     Serial.println("MQTT CONFIG/SET MESSAGE RECEIVED");
@@ -4467,7 +4468,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
   }
 
   // Phase 2: Check for WiFi management commands (paku/devices/{deviceId}/cmd/wifi)
-  String wifiCmdTopic = String("paku/devices/") + deviceId + "/cmd/wifi";
+  String wifiCmdTopic = String(SITE_ID "/devices/") + deviceId + "/cmd/wifi";
   if (String(topic) == wifiCmdTopic) {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
@@ -4479,7 +4480,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     }
     
     const char* action = doc["action"];
-    String responseTopic = String("paku/devices/") + deviceId + "/wifi/status";
+    String responseTopic = String(SITE_ID "/devices/") + deviceId + "/wifi/status";
     JsonDocument responseDoc;
     responseDoc["timestamp"] = getISO8601Timestamp();
     
@@ -4551,7 +4552,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 #if HAS_BLE
   // Phase 2: Check for Ruuvi whitelist commands (paku/devices/{deviceId}/cmd/ruuvi)
-  String ruuviCmdTopic = String("paku/devices/") + deviceId + "/cmd/ruuvi";
+  String ruuviCmdTopic = String(SITE_ID "/devices/") + deviceId + "/cmd/ruuvi";
   if (String(topic) == ruuviCmdTopic) {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, message);
@@ -4563,7 +4564,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     }
     
     const char* action = doc["action"];
-    String responseTopic = String("paku/devices/") + deviceId + "/ruuvi/status";
+    String responseTopic = String(SITE_ID "/devices/") + deviceId + "/ruuvi/status";
     JsonDocument responseDoc;
     responseDoc["timestamp"] = getISO8601Timestamp();
     
@@ -4678,8 +4679,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 #ifdef HEATER_ENABLED
   // Route heater commands — device-specific or shared broadcast topic
-  String heaterCmdTopic = String("paku/heater/") + deviceId + "/cmd";
-  if (String(topic) == heaterCmdTopic || String(topic) == "paku/cmd/heater") {
+  String heaterCmdTopic = String(SITE_ID "/heater/") + deviceId + "/cmd";
+  if (String(topic) == heaterCmdTopic || String(topic) == SITE_ID "/cmd/heater") {
     LOG_INFO("MQTT", "Heater command received: %s", message.c_str());
     if (heaterAddonActive) heater_addon_command(message.c_str(), message.length());
 
@@ -4705,7 +4706,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
         statusDoc["timestamp"] = getISO8601Timestamp();
         String statusPayload;
         serializeJson(statusDoc, statusPayload);
-        String heaterStatusTopic = String("paku/edge/") + deviceId + "/status/heater";
+        String heaterStatusTopic = String(SITE_ID "/edge/") + deviceId + "/status/heater";
         client.publish(heaterStatusTopic.c_str(), statusPayload.c_str(), true);  // retained
 
 #if HAS_RGB_LCD
@@ -4722,8 +4723,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 #if HAS_FAN_IR
   // Route fan commands — device-specific or shared broadcast topic
-  String fanCmdTopic = String("paku/edge/") + deviceId + "/cmd/fan";
-  if (String(topic) == fanCmdTopic || String(topic) == "paku/cmd/fan") {
+  String fanCmdTopic = String(SITE_ID "/edge/") + deviceId + "/cmd/fan";
+  if (String(topic) == fanCmdTopic || String(topic) == SITE_ID "/cmd/fan") {
     if (!fanIrActive) return;
     LOG_INFO("MQTT", "Fan command received: %s", message.c_str());
 
@@ -4794,7 +4795,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 #endif
     
     // Publish updated state
-    String statusTopic = String("paku/edge/") + deviceId + "/status/fan";
+    String statusTopic = String(SITE_ID "/edge/") + deviceId + "/status/fan";
     JsonDocument statusDoc;
     statusDoc["power"] = state.fan_on;
     statusDoc["speed"] = state.speed;
@@ -4815,8 +4816,8 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 #if HAS_MILIGHT
   // Handle MiLight/MIBO light commands — device-specific or shared topics
   {
-  String lightCmdPrefix  = String("paku/edge/") + deviceId + "/cmd/light/";
-  String sharedLightPfx  = "paku/cmd/light/";
+  String lightCmdPrefix  = String(SITE_ID "/edge/") + deviceId + "/cmd/light/";
+  String sharedLightPfx  = SITE_ID "/cmd/light/";
   String topicStr        = String(topic);
   bool isDeviceLight  = topicStr.startsWith(lightCmdPrefix);
   bool isSharedLight  = topicStr.startsWith(sharedLightPfx);
@@ -4879,7 +4880,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
           displayUI.refresh();
 #endif
           // Publish per-zone status so HA sensors pick up each zone
-          String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + ch;
+          String statusTopic = String(SITE_ID "/edge/") + deviceId + "/status/light/" + ch;
           JsonDocument statusDoc;
           statusDoc["state"]      = state.on ? "ON" : "OFF";
           statusDoc["brightness"] = state.brightness;
@@ -5003,7 +5004,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
       displayUI.refresh();
 #endif
       // Publish status to per-zone topic
-      String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + channel;
+      String statusTopic = String(SITE_ID "/edge/") + deviceId + "/status/light/" + channel;
       JsonDocument statusDoc;
       statusDoc["state"] = state.on ? "ON" : "OFF";
       statusDoc["brightness"] = state.brightness;
@@ -5025,7 +5026,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 #if HAS_RGB_LCD
   // Handle EcoFlow power data — topic: paku/ecoflow/+/power
-  if (String(topic).startsWith("paku/ecoflow/") && String(topic).endsWith("/power")) {
+  if (String(topic).startsWith(SITE_ID "/ecoflow/") && String(topic).endsWith("/power")) {
     JsonDocument doc;
     if (!deserializeJson(doc, message)) {
       float solarW   = doc["solar_w"]  | 0.0f;
@@ -5043,7 +5044,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
 #endif
 
   // Check if this is an OTA command
-  String otaTopic = String("paku/edge/") + deviceId + "/cmd/ota";
+  String otaTopic = String(SITE_ID "/edge/") + deviceId + "/cmd/ota";
   if (String(topic) == otaTopic) {
     // Parse OTA command JSON
     JsonDocument doc;
@@ -5077,7 +5078,7 @@ void handleMqttMessage(char* topic, byte* payload, unsigned int length) {
     Serial.println(pendingOtaVersion);
 
     // Send acknowledgment
-    String ackTopic = String("paku/edge/") + deviceId + "/ota/status";
+    String ackTopic = String(SITE_ID "/edge/") + deviceId + "/ota/status";
     JsonDocument ackDoc;
     ackDoc["timestamp"] = getISO8601Timestamp();
     ackDoc["status"] = "accepted";
@@ -5135,7 +5136,7 @@ void otaProgressCallback(const OtaProgress& progress) {
 #endif
 
   // Publish progress to MQTT
-  String progressTopic = String("paku/edge/") + deviceId + "/ota/progress";
+  String progressTopic = String(SITE_ID "/edge/") + deviceId + "/ota/progress";
   JsonDocument progressDoc;
   progressDoc["timestamp"] = getISO8601Timestamp();
   progressDoc["state"] = OtaClient::stateToString(progress.state);

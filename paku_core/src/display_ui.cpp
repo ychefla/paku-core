@@ -4,6 +4,7 @@
  */
 
 #include "display_ui.h"
+#include "site_config.h"
 
 #if HAS_DISPLAY
 
@@ -1072,7 +1073,7 @@ void DisplayUI::toggleLight() {
         
         // Publish MQTT status so HA stays in sync
         if (client.connected()) {
-            String statusTopic = String("paku/edge/") + deviceId + "/status/light/" + displayLightZone;
+            String statusTopic = String(SITE_ID "/edge/") + deviceId + "/status/light/" + displayLightZone;
             JsonDocument statusDoc;
             statusDoc["state"] = state.on ? "ON" : "OFF";
             statusDoc["brightness"] = state.brightness;

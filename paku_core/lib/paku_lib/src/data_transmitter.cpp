@@ -8,6 +8,7 @@
  *       The BLE scanner task does NOT call these functions directly.
  */
 #include "data_transmitter.h"
+#include "site_config.h"
 #include <cstring>
 #include <cstdio>
 
@@ -261,9 +262,9 @@ const char* buildMqttTopic(const char* deviceId, const char* readingTopic,
         return nullptr;
     }
     
-    // Format: paku/devices/{device_id}/telemetry/{topic}
+    // Format: {SITE_ID}/devices/{device_id}/telemetry/{topic}
     int written = snprintf(buffer, bufferSize, 
-                           "paku/devices/%s/telemetry/%s", 
+                           SITE_ID "/devices/%s/telemetry/%s", 
                            deviceId, readingTopic);
     
     if (written < 0 || static_cast<size_t>(written) >= bufferSize) {

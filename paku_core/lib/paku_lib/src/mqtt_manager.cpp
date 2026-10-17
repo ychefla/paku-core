@@ -11,6 +11,7 @@
  */
 
 #include "mqtt_manager.h"
+#include "site_config.h"
 
 // Logging macros — fall back to Serial.printf if logging.h is not available
 // (mqtt_manager lives in paku_lib which may not access project-level includes)
@@ -152,8 +153,8 @@ bool MqttManager::tryConnectOnce() {
     LOG_INFO("MqttMgr", "Connecting to %s broker %s:%d ...",
              activeBrokerName(), cfg.host, cfg.port);
 
-    // Build LWT topic: paku/edge/{deviceId}/status
-    String lwtTopic = String("paku/edge/") + _deviceId + "/status";
+    // Build LWT topic: {SITE_ID}/edge/{deviceId}/status
+    String lwtTopic = String(SITE_ID "/edge/") + _deviceId + "/status";
 
     bool connected;
     if (cfg.user && strlen(cfg.user) > 0) {
