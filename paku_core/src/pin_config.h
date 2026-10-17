@@ -215,4 +215,11 @@
 #define PIN_NRF24_MOSI               23   // VSPI MOSI
 #define PIN_NRF24_MISO               19   // VSPI MISO
 
+#elif defined(DEVICE_ESP32_S3_HEADLESS)
+// =============================================================================
+// ESP32-S3 N16R8 headless dev board
+// =============================================================================
+// GPIO35-37 are taken by the octal PSRAM — do not use.
+// No peripherals wired yet (Ruuvi tags are BLE only).
+
 #endif  // Board selection

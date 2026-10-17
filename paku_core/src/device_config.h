@@ -26,6 +26,7 @@
 //   DEVICE_WAVESHARE_LCD_5         - ESP32-S3, Waveshare 5" 800×480 RGB LCD (SKU:28117)
 //   DEVICE_ESP32_CH340C_30PIN     - ESP32 (not S3), Generic 30-pin board, no display
 //   DEVICE_ESP8266_WIRED_SENSORS  - ESP8266, NodeMCU or generic board with DS18B20 sensor
+//   DEVICE_ESP32_S3_HEADLESS      - ESP32-S3 N16R8 dev board (PSRAM), no display
 //
 // If a device is defined via build flags (-D), use that.
 // Otherwise fall back to the manual selection below.
@@ -33,6 +34,7 @@
     !defined(DEVICE_WAVESHARE_LCD_4_3) && \
     !defined(DEVICE_WAVESHARE_LCD_5) && \
     !defined(DEVICE_ESP32_CH340C_30PIN) && \
+    !defined(DEVICE_ESP32_S3_HEADLESS) && \
     !defined(DEVICE_ESP8266_WIRED_SENSORS)
 #define DEVICE_LILYGO_T_DISPLAY_S3
 // #define DEVICE_ESP32_CH340C_30PIN
@@ -108,6 +110,22 @@
     #define HAS_SD_CARD 1       // SD card slot (CS via CH422G EXIO4)
     #define HAS_RTC 1           // PCF85063A RTC on I2C (addr 0x51)
     #define HAS_ISOLATED_IO 1   // Isolated DI/DO via CH422G
+
+// =============================================================================
+// Device Configuration: ESP32-S3 headless (N16R8 dev board, e.g. DevKitC-1)
+// =============================================================================
+// Data-acquisition board for sites that need BLE (Ruuvi) + TLS (cloud MQTT):
+// the 8 MB PSRAM gives mbedTLS room next to the WiFi+BLE stacks, which the
+// non-PSRAM CH340C board cannot do.
+#elif defined(DEVICE_ESP32_S3_HEADLESS)
+    #define DEVICE_NAME "ESP32-S3 headless"
+    #define MCU_ESP32_S3 1
+    #define HAS_DISPLAY 0
+    #define HAS_TOUCH 0
+    #define HAS_PSRAM 1
+    #define HAS_LED 0           // DevKitC RGB LED is WS2812 (needs a driver); unused
+    #define HAS_BLE 1
+    #define HAS_WIRED_SENSORS 0
 
 // =============================================================================
 // Device Configuration: ESP32 CH340C 30PIN (ESP32, not S3)
